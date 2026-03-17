@@ -1,0 +1,60 @@
+Dưới đây là Bản cập nhật Đặc tả Kỹ thuật (Tài liệu bổ sung) dành riêng cho luồng Resume. Bạn có thể chuyển thẳng tài liệu này cho các bạn dev Backend (Node.js) và Frontend để triển khai.
+BẢN CẬP NHẬT ĐẶC TẢ: TÍNH NĂNG RESUME CHECKPOINT
+1. Cập nhật Database Schema (MongoDB - Phía Backend Node.js)
+Để khôi phục được, Backend phải là "nguồn chân lý" (Source of Truth) lưu trữ thông tin về checkpoint cuối cùng.
+Bổ sung các trường sau vào Collection Jobs:
+latest_checkpoint_file_id (String): ID của file zip checkpoint mới nhất trên Google Drive. (Được Colab gửi về qua SSE hoặc qua một API callback).
+drive_folder_id (String): ID thư mục Drive lưu checkpoint của Job này.
+config_snapshot (Object): Lưu lại toàn bộ cục config ban đầu (model, learning_rate, epochs, v.v.) để khi Resume không bắt user nhập lại.
+dataset_path (String): Đường dẫn lưu file dataset (.csv, .jsonl) trên server Node.js (Vì Colab reset sẽ mất file, Node.js phải gửi lại file này khi Resume).
+2. Đặc tả API Backend (Node.js)
+Backend cần cung cấp 2 Endpoint mới cho chức năng này:
+API 2.1: Cập nhật Checkpoint ID (Internal API / Worker gọi về)
+Route: PUT /api/internal/jobs/:jobId/checkpoint
+Mô tả: Trong lúc train, mỗi khi Colab nén và đưa file lên Drive thành công (cứ mỗi 50 steps), Node.js (thông qua việc đọc luồng SSE hoặc Colab gọi trực tiếp API này) sẽ cập nhật latest_checkpoint_file_id vào Database.
+Payload: { "checkpoint_file_id": "1A2B3C_xxx" }
+API 2.2: Kích hoạt Resume (Dành cho Frontend)
+Route: POST /api/jobs/:jobId/resume
+Mô tả: Khởi động lại một Job đang ở trạng thái STOPPED hoặc FAILED.
+Logic xử lý (Rất quan trọng):
+Lấy thông tin Job từ MongoDB (bao gồm config_snapshot, latest_checkpoint_file_id, dataset_path).
+Kiểm tra nếu latest_checkpoint_file_id là null, trả về lỗi 400 (Chưa có checkpoint nào để khôi phục).
+Đóng gói lại FormData (giống hệt lúc Start Training):
+Nhét config_snapshot và latest_checkpoint_file_id vào config.
+Đọc file từ dataset_path đính kèm vào field file.
+Gọi HTTP POST (axios) sang URL của GPU Worker (Flask): /api/train/start.
+Cập nhật trạng thái Job trong DB thành RUNNING và trả về 200 OK cho Frontend.
+3. Đặc tả Giao diện Frontend (React/Vue)
+Frontend cần xử lý ở 2 màn hình: Job Management (Danh sách) và Process Management (Chi tiết).
+3.1. Màn hình Quản lý Công việc (Job Management)
+Hiển thị Trạng thái: Các Job bị ngắt kết nối quá 30s (Watchdog kích hoạt) cần được hiển thị với trạng thái là Tạm dừng (STOPPED) hoặc Lỗi (FAILED).
+Nút Hành động (Action): Thêm một nút "▶ Resume Training" (Tiếp tục huấn luyện) ở cột Action cho các dòng có trạng thái STOPPED/FAILED.
+Lưu ý UI: Nút này chỉ được phép enabled (sáng lên) nếu bản ghi trả về từ API có trường latest_checkpoint_file_id khác null.
+3.2. Luồng Tương tác (User Flow)
+User bấm nút "Resume Training".
+Hiển thị một Modal/Toast loading: "Đang khôi phục môi trường...".
+Frontend gọi API POST /api/jobs/:jobId/resume.
+Khi API trả về thành công, điều hướng (Redirect) User sang Màn hình Quản lý Tiến trình (Process Management) của chính Job đó.
+Tại Màn hình Tiến trình, Frontend gọi lại kết nối SSE (EventSource) đến /api/jobs/:jobId/stream như bình thường.
+4. Sơ đồ Luồng Hoạt động (Sequence Workflow) bổ sung
+Plaintext
+[Frontend]                     [Node.js Backend]                     [GPU Worker - Colab]
+    |                                 |                                      |
+    |--- Bấm nút "Resume" ----------->|                                      |
+    |                                 |--- 1. Query DB lấy Config & File --->|
+    |                                 |--- 2. POST /api/train/start -------->|
+    |                                 |    (Kèm checkpoint_file_id)          |
+    |<-- 3. Trả về 200 OK ------------|                                      |
+    |                                 |                                      |
+    |--- 4. Mở lại trang Process ---->|                                      |
+    |--- 5. Kết nối lại SSE --------->|                                      |
+    |                                 |                                      |
+    |                                 |                                      |--- 6. Tải ZIP từ Drive & Giải nén
+    |                                 |                                      |--- 7. Load lại Model & Optimizer
+    |                                 |<-- 8. Bắn log SSE (Tiếp tục Step) ---|
+    |<-- 9. Vẽ tiếp biểu đồ ----------|                                      |
+Lời khuyên cho đội ngũ:
+Để tiết kiệm thời gian cho bạn làm Node.js Backend, thay vì bắt Colab phải gọi ngược API về Node.js để báo cáo checkpoint_file_id, hãy tận dụng chính luồng SSE / Polling status hiện tại.
+Trong class UnifiedAutoTrainCallback ở Colab (phần logic hôm trước), tôi đã thêm dòng này vào jobs_db:
+jobs_db[self.job_id]['latest_checkpoint'] = new_file_id
+Node.js Backend của bạn khi đi "kéo" (pull) log từ Colab, chỉ cần kiểm tra: Nếu payload trả về có chứa key latest_checkpoint, thì lập tức update nó vào MongoDB. Như vậy Node.js không cần viết thêm Webhook API phức tạp nào cả!
