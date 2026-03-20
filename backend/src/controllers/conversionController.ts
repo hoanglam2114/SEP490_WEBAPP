@@ -111,21 +111,23 @@ export class ConversionController {
 
       let result: any;
       if (stored.metadata.fileType === 'lesson') {
-        // Logic cho Lesson
-        const alpacaData = conversionService.convertLessonToAlpaca(stored.data);
-        const totalText = JSON.stringify(alpacaData);
+        // Lesson supports both Alpaca and OpenAI formats
+        const selectedFormat = options.format === 'openai' ? 'openai' : 'alpaca';
+        const lessonData =
+          selectedFormat === 'openai'
+            ? conversionService.convertLessonToOpenAI(stored.data, options)
+            : conversionService.convertLessonToAlpaca(stored.data);
+        const totalText = JSON.stringify(lessonData);
         const totalTokensEstimate = conversionService.estimateTokens(totalText);
         result = {
-          data: alpacaData,
-          format: 'alpaca',
+          data: lessonData,
+          format: selectedFormat,
           stats: {
-            totalConversations: stored.metadata.lessonCount || 0,
-            totalMessages: stored.metadata.exerciseCount || 0,
+            totalConversations: lessonData.length,
+            totalMessages: selectedFormat === 'openai' ? lessonData.length * 2 : lessonData.length,
             totalTokensEstimate
           }
         };
-        // override options.format for lessons to guarantee JSONL
-        options.format = 'alpaca';
       } else {
         result = conversionService.convert(stored.data as MongoDBMessage[], options);
       }
@@ -147,7 +149,8 @@ export class ConversionController {
 
       // Format output dựa vào format type
       let output: string;
-      const isJsonl = options.format === 'openai' || options.format === 'anthropic' || options.format === 'alpaca';
+      const outputFormat = result.format;
+      const isJsonl = outputFormat === 'openai' || outputFormat === 'anthropic' || outputFormat === 'alpaca';
 
       if (isJsonl) {
         // JSONL format: mỗi dòng là một JSON object
@@ -160,7 +163,7 @@ export class ConversionController {
       res.json({
         ...result,
         output,
-        filename: `converted_${options.format}_${Date.now()}.${isJsonl ? 'jsonl' : 'json'
+        filename: `converted_${outputFormat}_${Date.now()}.${isJsonl ? 'jsonl' : 'json'
           }`,
       });
     } catch (error: any) {

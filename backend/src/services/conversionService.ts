@@ -255,6 +255,60 @@ export class ConversionService {
   }
 
   /**
+   * Convert Lesson Structures sang OpenAI messages format
+   */
+  convertLessonToOpenAI(data: any[], options: ConversionOptions): OpenAIFormat[] {
+    const openAIData: OpenAIFormat[] = [];
+
+    data.forEach((record) => {
+      if (!record.lessons || !Array.isArray(record.lessons)) {
+        return;
+      }
+
+      record.lessons.forEach((lesson: any) => {
+        if (!lesson.sections || !Array.isArray(lesson.sections)) {
+          return;
+        }
+
+        lesson.sections.forEach((section: any) => {
+          if (section.type !== 'exercise') {
+            return;
+          }
+
+          const userContent = this.cleanContent(
+            String(section.content || ''),
+            options.removeThinkTags || false
+          );
+          const assistantContent = this.cleanContent(
+            String(section.answer_text || section.answer || ''),
+            options.removeThinkTags || false
+          );
+
+          if (!userContent || !assistantContent) {
+            return;
+          }
+
+          const messages: OpenAIFormat['messages'] = [];
+
+          if (options.includeSystemPrompt && options.systemPrompt) {
+            messages.push({
+              role: 'system',
+              content: options.systemPrompt,
+            });
+          }
+
+          messages.push({ role: 'user', content: userContent });
+          messages.push({ role: 'assistant', content: assistantContent });
+
+          openAIData.push({ messages });
+        });
+      });
+    });
+
+    return openAIData;
+  }
+
+  /**
    * Convert sang ShareGPT format
    */
   toShareGPTFormat(

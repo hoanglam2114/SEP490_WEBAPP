@@ -81,6 +81,7 @@ export interface PreviewData {
 export interface SampleEvaluation {
   instruction: string;
   output: string;
+  reason: string;
   scores: {
     accuracy: number;
     clarity: number;

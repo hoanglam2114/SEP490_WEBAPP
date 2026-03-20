@@ -19,14 +19,6 @@ import {
   getDistinctBaseModels,
 } from '../controllers/trainingHistoryController';
 import { chatWithAI, inferWithAI, chatWithAIStream, inferWithAIStream } from '../controllers/chatController';
-import {
-  runEvaluation,
-  streamEvalStatus,
-  saveEvalResult,
-  getEvaluation,
-  getEvaluatedModels,
-  getEvalHistory,
-} from '../controllers/evalModelController';
 
 const router = express.Router();
 const controller = new ConversionController();
@@ -74,6 +66,7 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 
 // Gemini Evaluation
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
+router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
 
 // Training Routes
 router.post('/train/start', upload.single('dataset_file'), startTraining);
@@ -89,13 +82,5 @@ router.post('/train/history', saveTrainingHistory);
 router.get('/train/history', getTrainingHistoryList);
 router.get('/train/history/:jobId', getTrainingHistoryDetail);
 router.delete('/train/history/:jobId', deleteTrainingHistory);
-
-// Eval Model Routes
-router.get('/models', getEvaluatedModels);
-router.post('/eval/run/:jobId', upload.single('eval_file'), runEvaluation);
-router.get('/eval/stream/:evalJobId', streamEvalStatus);
-router.post('/eval/save', saveEvalResult);
-router.get('/eval/history/:jobId', getEvalHistory);
-router.get('/eval/:evalId', getEvaluation); // ⚠️ phải đứng sau /eval/stream và /eval/history
 
 export default router;

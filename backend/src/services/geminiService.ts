@@ -16,6 +16,7 @@ const model = genAI.getGenerativeModel({
 export interface SampleEvaluation {
     instruction: string;
     output: string;
+    reason: string;        // Lý do đánh giá
     scores: {
         accuracy: number;    // Chính xác (0–10)
         clarity: number;     // Rõ ràng (0–10)
@@ -75,7 +76,7 @@ export class GeminiService {
 
         const prompt = `Bạn là chuyên gia đánh giá chất lượng dữ liệu huấn luyện AI.
 
-Dưới đây là ${samples.length} mẫu dữ liệu. Hãy đánh giá từng mẫu theo 3 tiêu chí (thang điểm 0–10).
+Dưới đây là ${samples.length} mẫu dữ liệu. Hãy đánh giá từng mẫu theo 3 tiêu chí (thang điểm 0–10) và cung cấp lý do ngắn gọn cho điểm số đó.
 1. **Chính xác** (accuracy): Câu trả lời có đúng về mặt nội dung không?
 2. **Rõ ràng** (clarity): Câu trả lời có dễ hiểu, văn phong rõ ràng không?
 3. **Đủ ý** (completeness): Câu trả lời có bao phủ đầy đủ nội dung câu hỏi không?
@@ -88,7 +89,8 @@ Trích xuất kết quả dưới dạng một mảng JSON (chứa đúng ${samp
   {
     "accuracy": <số từ 0–10>,
     "clarity": <số từ 0–10>,
-    "completeness": <số từ 0–10>
+    "completeness": <số từ 0–10>,
+    "reason": "<lý do đánh giá ngắn gọn>"
   },
   ...
 ]`;
@@ -105,7 +107,7 @@ Trích xuất kết quả dưới dạng một mảng JSON (chứa đúng ${samp
             if (jsonMatch) {
                 jsonString = jsonMatch[0];
             }
-            
+
             let parsedArray: any[];
             try {
                 parsedArray = JSON.parse(jsonString);
@@ -119,16 +121,18 @@ Trích xuất kết quả dưới dạng một mảng JSON (chứa đúng ${samp
             }
 
             return samples.map((sample, idx) => {
-                const parsed = parsedArray[idx] || { accuracy: 0, clarity: 0, completeness: 0 };
+                const parsed = parsedArray[idx] || { accuracy: 0, clarity: 0, completeness: 0, reason: 'N/A' };
 
                 const accuracy = Math.min(10, Math.max(0, Number(parsed.accuracy) || 0));
                 const clarity = Math.min(10, Math.max(0, Number(parsed.clarity) || 0));
                 const completeness = Math.min(10, Math.max(0, Number(parsed.completeness) || 0));
+                const reason = String(parsed.reason || 'Không có lý do cụ thể');
                 const overall = Math.round(((accuracy + clarity + completeness) / 3) * 10) / 10;
 
                 return {
                     instruction: sample.instruction,
                     output: sample.output,
+                    reason: reason,
                     scores: { accuracy, clarity, completeness, overall },
                 };
             });
@@ -138,6 +142,7 @@ Trích xuất kết quả dưới dạng một mảng JSON (chứa đúng ${samp
             return samples.map((sample) => ({
                 instruction: sample.instruction,
                 output: sample.output,
+                reason: 'Lỗi API: ' + error.message,
                 scores: { accuracy: 0, clarity: 0, completeness: 0, overall: 0 },
             }));
         }
@@ -150,13 +155,22 @@ Trích xuất kết quả dưới dạng một mảng JSON (chứa đúng ${samp
         data: AlpacaFormat[]
     ): Promise<EvaluationResult> {
         const populationSize = data.length;
-        const sampleSize = this.calculateSampleSize(populationSize);
 
+        // YÊU CẦU: Chỉ lấy 10 mẫu đầu tiên để gửi đi đánh giá
+        const sampleSize = Math.min(10, populationSize);
+
+        // ĐOẠN CODE LẤY MẪU THỐNG KÊ (COMMENT LẠI ĐỂ SỬ DỤNG SAU)
+        /*
+        const sampleSize = this.calculateSampleSize(populationSize);
         console.log(`[Evaluation] Lấy mẫu thống kê: population=${populationSize}, calculated_sample=${sampleSize}`);
 
         // Lấy mẫu ngẫu nhiên
         const shuffled = [...data].sort(() => Math.random() - 0.5);
         const samples = shuffled.slice(0, Math.min(sampleSize, populationSize));
+        */
+
+        const samples = data.slice(0, sampleSize);
+        console.log(`[Evaluation] Lấy 10 mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
 
         const CHUNK_SIZE = 50;
         const DELAY_MS = 10000; // 10 giây delay => tối đa 6 req/phút

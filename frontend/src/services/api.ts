@@ -142,5 +142,27 @@ export const apiService = {
     return response.data;
   },
 
+  saveEvaluationResults: async (payload: {
+    fileId: string;
+    format: string;
+    dataGroup: 'all' | number;
+    results: Array<{
+      rowId: string;
+      groupId?: number;
+      instruction: string;
+      output: string;
+      scores: {
+        accuracy: number;
+        clarity: number;
+        completeness: number;
+        overall: number;
+      };
+      reason: string;
+    }>;
+  }): Promise<{ message: string; id: string }> => {
+    const response = await api.post<{ message: string; id: string }>('/evaluate/save', payload);
+    return response.data;
+  },
+
   
 };

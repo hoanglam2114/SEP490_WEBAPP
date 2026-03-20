@@ -88,19 +88,15 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // GET /api/train/history
 // Lấy tất cả lịch sử training, sắp xếp mới nhất trước
-// Hỗ trợ query params: ?baseModel=... và ?status=... để lọc
+// Hỗ trợ query param ?baseModel=... để lọc theo base model
 // ---------------------------------------------------------------------------
 export const getTrainingHistoryList = async (req: Request, res: Response) => {
   try {
-    const { baseModel, status } = req.query;
+    const { baseModel } = req.query;
     const filter: Record<string, any> = {};
 
     if (baseModel && typeof baseModel === 'string' && baseModel.trim()) {
       filter.baseModel = baseModel.trim();
-    }
-
-    if (status && typeof status === 'string' && status.trim()) {
-      filter.status = status.trim();
     }
 
     const histories = await TrainingHistory.find(filter)

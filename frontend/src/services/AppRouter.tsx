@@ -34,7 +34,10 @@ export default function AppRouter() {
               </MainLayout>
             }
           />
-          <Route path="/autotrain" element={<AutoTrainScreen />} />
+          <Route
+            path="/autotrain"
+            element={<AutoTrainScreen />}
+          />
           <Route path="/training-history" element={<TrainingHistoryScreen />} />
           <Route path="/chat" element={<ChatPage />} />
 

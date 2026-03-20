@@ -94,7 +94,6 @@ export const startTraining = async (req: Request, res: Response) => {
       weight_decay,
       lr_scheduler_type,
       seed,
-      push_to_hub,
       hf_repo_id,
       hf_token,
       // Metadata from frontend to save initial TrainingHistory
