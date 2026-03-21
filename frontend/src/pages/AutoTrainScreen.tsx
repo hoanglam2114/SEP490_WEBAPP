@@ -67,7 +67,6 @@ export const AutoTrainScreen: React.FC = () => {
   const [localFile, setLocalFile] = useState<File | null>(null);
   const [hubPath, setHubPath] = useState('');
   const [columnMapping, setColumnMapping] = useState('text');
-  const [pushToHub, setPushToHub] = useState(true); // Always true as requested
   const [hfRepoId, setHfRepoId] = useState('');
   const [hfToken, setHfToken] = useState('');
 

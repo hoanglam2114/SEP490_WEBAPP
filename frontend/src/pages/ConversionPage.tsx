@@ -22,9 +22,12 @@ type Step = 1 | 2 | 3 | 4 | 5;
 type PreviewMode = 'alpaca' | 'openai';
 
 type EvaluationScores = {
-  accuracy: number;
-  clarity: number;
-  completeness: number;
+  accuracy?: number;
+  clarity?: number;
+  completeness?: number;
+  socratic?: number;
+  alignment?: number;
+  factuality?: number;
   overall: number;
   reason: string;
 };
@@ -315,9 +318,15 @@ function ConvertedDatasetTable({
               </th>
               {showEvaluationColumns && (
                 <>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">accuracy</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">clarity</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">completeness</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
+                    {mode === 'openai' ? 'socratic' : 'accuracy'}
+                  </th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
+                    {mode === 'openai' ? 'alignment' : 'clarity'}
+                  </th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
+                    {mode === 'openai' ? 'factuality' : 'completeness'}
+                  </th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">overall</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700 min-w-[280px]">reason</th>
                 </>
@@ -340,9 +349,15 @@ function ConvertedDatasetTable({
                     <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
                     {showEvaluationColumns && (
                       <>
-                        <td className="px-4 py-3 text-gray-700">{score?.accuracy ?? ''}</td>
-                        <td className="px-4 py-3 text-gray-700">{score?.clarity ?? ''}</td>
-                        <td className="px-4 py-3 text-gray-700">{score?.completeness ?? ''}</td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {mode === 'openai' ? (score?.socratic ?? '') : (score?.accuracy ?? '')}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {mode === 'openai' ? (score?.alignment ?? '') : (score?.clarity ?? '')}
+                        </td>
+                        <td className="px-4 py-3 text-gray-700">
+                          {mode === 'openai' ? (score?.factuality ?? '') : (score?.completeness ?? '')}
+                        </td>
                         <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
                         <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">{score?.reason ?? ''}</td>
                       </>
@@ -681,13 +696,16 @@ export function ConversionPage() {
 
     const total = values.reduce(
       (acc, item) => {
-        acc.accuracy += item.accuracy;
-        acc.clarity += item.clarity;
-        acc.completeness += item.completeness;
-        acc.overall += item.overall;
+        acc.accuracy += item.accuracy || 0;
+        acc.clarity += item.clarity || 0;
+        acc.completeness += item.completeness || 0;
+        acc.socratic += item.socratic || 0;
+        acc.alignment += item.alignment || 0;
+        acc.factuality += item.factuality || 0;
+        acc.overall += item.overall || 0;
         return acc;
       },
-      { accuracy: 0, clarity: 0, completeness: 0, overall: 0 }
+      { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, alignment: 0, factuality: 0, overall: 0 }
     );
 
     const size = values.length;
@@ -696,6 +714,9 @@ export function ConversionPage() {
       accuracy: Number((total.accuracy / size).toFixed(2)),
       clarity: Number((total.clarity / size).toFixed(2)),
       completeness: Number((total.completeness / size).toFixed(2)),
+      socratic: Number((total.socratic / size).toFixed(2)),
+      alignment: Number((total.alignment / size).toFixed(2)),
+      factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
   }, [evaluationMap]);
@@ -743,7 +764,7 @@ export function ConversionPage() {
         output: row.output,
       }));
 
-      const evaluation = await apiService.evaluateData(payload);
+      const evaluation = await apiService.evaluateData(payload, previewMode);
 
       const successfulRows: Array<{
         rowId: string;
@@ -751,9 +772,12 @@ export function ConversionPage() {
         instruction: string;
         output: string;
         scores: {
-          accuracy: number;
-          clarity: number;
-          completeness: number;
+          accuracy?: number;
+          clarity?: number;
+          completeness?: number;
+          socratic?: number;
+          alignment?: number;
+          factuality?: number;
           overall: number;
         };
         reason: string;
@@ -768,10 +792,7 @@ export function ConversionPage() {
 
         const isSuccess =
           Number.isFinite(sample.scores.overall) &&
-          sample.scores.overall > 0 &&
-          Number.isFinite(sample.scores.accuracy) &&
-          Number.isFinite(sample.scores.clarity) &&
-          Number.isFinite(sample.scores.completeness);
+          sample.scores.overall > 0;
 
         if (!isSuccess) {
           return;
@@ -781,6 +802,9 @@ export function ConversionPage() {
           accuracy: sample.scores.accuracy,
           clarity: sample.scores.clarity,
           completeness: sample.scores.completeness,
+          socratic: sample.scores.socratic,
+          alignment: sample.scores.alignment,
+          factuality: sample.scores.factuality,
           overall: sample.scores.overall,
           reason: sample.reason,
         };
@@ -1100,8 +1124,10 @@ export function ConversionPage() {
                   <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-900">
                     <p className="font-semibold">Average scores ({averagedEvaluation.count} rows)</p>
                     <p className="mt-1">
-                      accuracy: {averagedEvaluation.accuracy} | clarity: {averagedEvaluation.clarity} | completeness:{' '}
-                      {averagedEvaluation.completeness} | overall: {averagedEvaluation.overall}
+                      {previewMode === 'openai' 
+                        ? `socratic: ${averagedEvaluation.socratic} | alignment: ${averagedEvaluation.alignment} | factuality: ${averagedEvaluation.factuality} | overall: ${averagedEvaluation.overall}`
+                        : `accuracy: ${averagedEvaluation.accuracy} | clarity: ${averagedEvaluation.clarity} | completeness: ${averagedEvaluation.completeness} | overall: ${averagedEvaluation.overall}`
+                      }
                     </p>
                   </div>
                 )}

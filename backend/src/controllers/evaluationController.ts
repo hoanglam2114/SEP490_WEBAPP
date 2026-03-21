@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { GeminiService } from '../services/geminiService';
+import { evaluationService } from '../services/evaluationService';
 import { AlpacaFormat } from '../types';
 import { EvaluationHistory } from '../models/EvaluationHistory';
 
-const geminiService = new GeminiService();
 
 export class EvaluationController {
     /**
@@ -12,8 +11,9 @@ export class EvaluationController {
      */
     async evaluate(req: Request, res: Response): Promise<void> {
         try {
-            const { data } = req.body as {
+            const { data, format } = req.body as {
                 data: AlpacaFormat[];
+                format?: string;
             };
 
             if (!data || !Array.isArray(data) || data.length === 0) {
@@ -21,7 +21,7 @@ export class EvaluationController {
                 return;
             }
 
-            const result = await geminiService.evaluateBatch(data);
+            const result = await evaluationService.evaluateBatch(data, format);
 
             res.json(result);
         } catch (error: any) {
@@ -50,9 +50,12 @@ export class EvaluationController {
                     output: string;
                     reason: string;
                     scores: {
-                        accuracy: number;
-                        clarity: number;
-                        completeness: number;
+                        accuracy?: number;
+                        clarity?: number;
+                        completeness?: number;
+                        socratic?: number;
+                        alignment?: number;
+                        factuality?: number;
                         overall: number;
                     };
                 }>;
@@ -69,9 +72,6 @@ export class EvaluationController {
                 item.instruction !== undefined &&
                 item.output !== undefined &&
                 item.scores &&
-                Number.isFinite(item.scores.accuracy) &&
-                Number.isFinite(item.scores.clarity) &&
-                Number.isFinite(item.scores.completeness) &&
                 Number.isFinite(item.scores.overall)
             );
 
@@ -82,13 +82,16 @@ export class EvaluationController {
 
             const avgScores = validResults.reduce(
                 (acc, item) => {
-                    acc.accuracy += item.scores.accuracy;
-                    acc.clarity += item.scores.clarity;
-                    acc.completeness += item.scores.completeness;
-                    acc.overall += item.scores.overall;
+                    acc.accuracy += item.scores.accuracy || 0;
+                    acc.clarity += item.scores.clarity || 0;
+                    acc.completeness += item.scores.completeness || 0;
+                    acc.socratic += item.scores.socratic || 0;
+                    acc.alignment += item.scores.alignment || 0;
+                    acc.factuality += item.scores.factuality || 0;
+                    acc.overall += item.scores.overall || 0;
                     return acc;
                 },
-                { accuracy: 0, clarity: 0, completeness: 0, overall: 0 }
+                { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, alignment: 0, factuality: 0, overall: 0 }
             );
 
             const size = validResults.length;
@@ -101,6 +104,9 @@ export class EvaluationController {
                     accuracy: Number((avgScores.accuracy / size).toFixed(4)),
                     clarity: Number((avgScores.clarity / size).toFixed(4)),
                     completeness: Number((avgScores.completeness / size).toFixed(4)),
+                    socratic: Number((avgScores.socratic / size).toFixed(4)),
+                    alignment: Number((avgScores.alignment / size).toFixed(4)),
+                    factuality: Number((avgScores.factuality / size).toFixed(4)),
                     overall: Number((avgScores.overall / size).toFixed(4)),
                 },
             };

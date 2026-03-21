@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
-import path from 'path';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';

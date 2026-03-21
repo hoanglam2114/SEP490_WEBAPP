@@ -1,9 +1,12 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 interface IEvaluationScore {
-  accuracy: number;
-  clarity: number;
-  completeness: number;
+  accuracy?: number;
+  clarity?: number;
+  completeness?: number;
+  socratic?: number;
+  alignment?: number;
+  factuality?: number;
   overall: number;
 }
 
@@ -28,9 +31,12 @@ export interface IEvaluationHistory extends Document {
 
 const EvaluationScoreSchema = new Schema<IEvaluationScore>(
   {
-    accuracy: { type: Number, required: true },
-    clarity: { type: Number, required: true },
-    completeness: { type: Number, required: true },
+    accuracy: { type: Number },
+    clarity: { type: Number },
+    completeness: { type: Number },
+    socratic: { type: Number },
+    alignment: { type: Number },
+    factuality: { type: Number },
     overall: { type: Number, required: true },
   },
   { _id: false }

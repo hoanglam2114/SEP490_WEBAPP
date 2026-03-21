@@ -83,9 +83,12 @@ export interface SampleEvaluation {
   output: string;
   reason: string;
   scores: {
-    accuracy: number;
-    clarity: number;
-    completeness: number;
+    accuracy?: number;
+    clarity?: number;
+    completeness?: number;
+    socratic?: number;
+    alignment?: number;
+    factuality?: number;
     overall: number;
   };
 }
@@ -95,9 +98,12 @@ export interface EvaluationResult {
   evaluated: number;
   totalPopulation: number;
   avgScores: {
-    accuracy: number;
-    clarity: number;
-    completeness: number;
+    accuracy?: number;
+    clarity?: number;
+    completeness?: number;
+    socratic?: number;
+    alignment?: number;
+    factuality?: number;
     overall: number;
   };
   passRate: number;

@@ -133,10 +133,12 @@ export const apiService = {
 
   evaluateData: async (
     data: any[],
+    format?: string,
     sampleSize?: number
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
+      format,
       sampleSize,
     });
     return response.data;
@@ -152,9 +154,12 @@ export const apiService = {
       instruction: string;
       output: string;
       scores: {
-        accuracy: number;
-        clarity: number;
-        completeness: number;
+        accuracy?: number;
+        clarity?: number;
+        completeness?: number;
+        socratic?: number;
+        alignment?: number;
+        factuality?: number;
         overall: number;
       };
       reason: string;
