@@ -32,14 +32,29 @@ export const apiService = {
     return response.data;
   },
 
-  inferStream: async (text_input: string, hf_model_id: string = "", onChunk: (text: string) => void) => {
+  inferStream: async (
+    text_input: string,
+    hf_model_id: string = "",
+    options: {
+      system_prompt?: string;
+      max_new_tokens?: number;
+      temperature?: number;
+      top_k?: number;
+      top_p?: number;
+      repetition_penalty?: number;
+      signal?: AbortSignal;
+    } = {},
+    onChunk: (text: string) => void
+  ) => {
+    const { signal, ...restOptions } = options;
     const response = await fetch(`${API_BASE_URL}/infer/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
       },
-      body: JSON.stringify({ text_input, hf_model_id }),
+      body: JSON.stringify({ text_input, hf_model_id, ...restOptions }),
+      signal,
     });
 
     if (!response.ok) {
@@ -60,7 +75,7 @@ export const apiService = {
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      
+
       // Giữ lại phần tử cuối cùng trong buffer (nếu nó không kết thúc bằng newline)
       buffer = lines.pop() || "";
 
@@ -76,7 +91,7 @@ export const apiService = {
             try {
               const dataObj = JSON.parse(dataText);
               if (dataObj.error) {
-                 throw new Error(dataObj.error);
+                throw new Error(dataObj.error);
               }
               if (dataObj.text) {
                 onChunk(dataObj.text);
@@ -169,5 +184,5 @@ export const apiService = {
     return response.data;
   },
 
-  
+
 };

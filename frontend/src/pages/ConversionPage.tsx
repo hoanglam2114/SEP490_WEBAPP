@@ -548,7 +548,7 @@ function PostConversionSummary({ result }: { result: ConversionResult | null }) 
   );
 }
 
-function CleaningPipelineOptions() {
+function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void; isLoading: boolean }) {
   const { conversionOptions, updateConversionOptions } = useAppStore();
 
   return (
@@ -588,57 +588,161 @@ function CleaningPipelineOptions() {
               />
               <span className="text-sm font-medium text-gray-700">Deduplicate records</span>
             </label>
+
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={conversionOptions.removeEmptyOutput ?? true}
+                onChange={(e) => updateConversionOptions({ removeEmptyOutput: e.target.checked })}
+                className="rounded"
+              />
+              <span className="text-sm font-medium text-gray-700">Loại bỏ những mẫu không có nội dung của Assistant</span>
+            </label>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Min instruction</label>
-              <input
-                type="number"
-                value={conversionOptions.minCharsInstruction ?? 10}
-                onChange={(e) =>
-                  updateConversionOptions({ minCharsInstruction: parseInt(e.target.value, 10) || 10 })
-                }
-                min="1"
-                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Max instruction</label>
-              <input
-                type="number"
-                value={conversionOptions.maxCharsInstruction ?? 2000}
-                onChange={(e) =>
-                  updateConversionOptions({ maxCharsInstruction: parseInt(e.target.value, 10) || 2000 })
-                }
-                min="1"
-                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Min output</label>
-              <input
-                type="number"
-                value={conversionOptions.minCharsOutput ?? 5}
-                onChange={(e) =>
-                  updateConversionOptions({ minCharsOutput: parseInt(e.target.value, 10) || 5 })
-                }
-                min="1"
-                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Max output</label>
-              <input
-                type="number"
-                value={conversionOptions.maxCharsOutput ?? 4000}
-                onChange={(e) =>
-                  updateConversionOptions({ maxCharsOutput: parseInt(e.target.value, 10) || 4000 })
-                }
-                min="1"
-                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-              />
-            </div>
+            {conversionOptions.format === 'openai' ? (
+              <>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Min &lt;think&gt;</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minCharsThink ?? 10}
+                    onChange={(e) =>
+                      updateConversionOptions({ minCharsThink: parseInt(e.target.value, 10) || 10 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Max &lt;think&gt;</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.maxCharsThink ?? 2000}
+                    onChange={(e) =>
+                      updateConversionOptions({ maxCharsThink: parseInt(e.target.value, 10) || 2000 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Min assistant</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minCharsAssistant ?? 5}
+                    onChange={(e) =>
+                      updateConversionOptions({ minCharsAssistant: parseInt(e.target.value, 10) || 5 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Max assistant</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.maxCharsAssistant ?? 4000}
+                    onChange={(e) =>
+                      updateConversionOptions({ maxCharsAssistant: parseInt(e.target.value, 10) || 4000 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Số cặp hỏi đáp tối thiểu:</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minTurns ?? 1}
+                    onChange={(e) =>
+                      updateConversionOptions({ minTurns: e.target.value ? parseInt(e.target.value, 10) : 1 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Min instruction</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minCharsInstruction ?? 10}
+                    onChange={(e) =>
+                      updateConversionOptions({ minCharsInstruction: parseInt(e.target.value, 10) || 10 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Max instruction</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.maxCharsInstruction ?? 2000}
+                    onChange={(e) =>
+                      updateConversionOptions({ maxCharsInstruction: parseInt(e.target.value, 10) || 2000 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Min output</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minCharsOutput ?? 5}
+                    onChange={(e) =>
+                      updateConversionOptions({ minCharsOutput: parseInt(e.target.value, 10) || 5 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Max output</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.maxCharsOutput ?? 4000}
+                    onChange={(e) =>
+                      updateConversionOptions({ maxCharsOutput: parseInt(e.target.value, 10) || 4000 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">Số cặp hỏi đáp tối thiểu:</label>
+                  <input
+                    type="number"
+                    value={conversionOptions.minTurns ?? 1}
+                    onChange={(e) =>
+                      updateConversionOptions({ minTurns: e.target.value ? parseInt(e.target.value, 10) : 1 })
+                    }
+                    min="1"
+                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="pt-2 border-t border-gray-100 flex justify-end">
+            <button
+              onClick={onAccept}
+              disabled={isLoading}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-400 text-white rounded-lg text-sm font-semibold transition-colors"
+            >
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Wand2 className="w-4 h-4" />
+              )}
+              Accept & Apply Cleaning
+            </button>
           </div>
         </>
       )}
@@ -970,22 +1074,18 @@ export function ConversionPage() {
 
             <div className="space-y-4 lg:col-span-1">
               <PostConversionSummary result={conversionResult} />
-              <CleaningPipelineOptions />
+              <CleaningPipelineOptions 
+                onAccept={() => convertMutation.mutate('clean')} 
+                isLoading={convertMutation.isPending} 
+              />
 
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => convertMutation.mutate('clean')}
-                  disabled={!uploadedFile || convertMutation.isPending}
-                  className="px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold"
-                >
-                  {convertMutation.isPending ? 'Applying...' : 'Accept'}
-                </button>
+              <div className="flex justify-end mt-2">
                 <button
                   onClick={handleResetCleaning}
                   disabled={!originalConvertedResult || convertMutation.isPending}
-                  className="px-4 py-3 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
+                  className="px-4 py-2 text-xs rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
                 >
-                  Reset
+                  Reset to Original
                 </button>
               </div>
             </div>

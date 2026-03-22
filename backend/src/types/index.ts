@@ -73,8 +73,14 @@ export interface ConversionOptions {
   maxCharsInstruction?: number;  // Mặc định: 2000
   minCharsOutput?: number;       // Mặc định: 5
   maxCharsOutput?: number;       // Mặc định: 4000
+  minCharsThink?: number;        // Mặc định: 10
+  maxCharsThink?: number;        // Mặc định: 2000
+  minCharsAssistant?: number;    // Mặc định: 5
+  maxCharsAssistant?: number;    // Mặc định: 4000
   removeBoilerplate?: boolean;   // Xóa các câu trả lời mẫu của AI
   deduplicate?: boolean;         // Xóa các bản ghi trùng lặp
+  removeEmptyOutput?: boolean;   // Lọc bỏ mẫu không có Assistant content
+  minTurns?: number;             // Số cặp hỏi đáp tối thiểu (QA pairs)
 }
 
 export interface DataCleaningStats {

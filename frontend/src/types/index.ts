@@ -17,8 +17,14 @@ export interface ConversionOptions {
   maxCharsInstruction?: number;
   minCharsOutput?: number;
   maxCharsOutput?: number;
+  minCharsThink?: number;
+  maxCharsThink?: number;
+  minCharsAssistant?: number;
+  maxCharsAssistant?: number;
   removeBoilerplate?: boolean;
   deduplicate?: boolean;
+  removeEmptyOutput?: boolean;
+  minTurns?: number;
 }
 
 export interface FileUploadResult {

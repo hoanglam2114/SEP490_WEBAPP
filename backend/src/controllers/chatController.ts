@@ -7,7 +7,7 @@ const PYTHON_INFERENCE_URL = `${gpuServiceUrl}/api/infer`;
 export const chatWithAI = async (req: Request, res: Response): Promise<void> => {
   // Hàm này giờ đây sẽ bị deprecate hoặc dùng làm proxy tới Python infer endpoint mượt hơn
   try {
-    const { text_input, hf_hub_id, message, model } = req.body;
+    const { text_input, hf_hub_id, message, model, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty } = req.body;
 
     // Hỗ trợ cả payload cũ và mới
     const actualMessage = text_input || message;
@@ -26,7 +26,8 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       },
       body: JSON.stringify({
         hf_model_id: actualModelId,
-        text_input: actualMessage
+        text_input: actualMessage,
+        system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
 
@@ -46,7 +47,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
 export const inferWithAI = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { text_input, hf_model_id } = req.body;
+    const { text_input, hf_model_id, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty } = req.body;
 
     if (!text_input || !hf_model_id) {
       res.status(400).json({ error: 'text_input và hf_model_id là bắt buộc' });
@@ -61,7 +62,8 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       },
       body: JSON.stringify({
         hf_model_id: hf_model_id,
-        text_input: text_input
+        text_input: text_input,
+        system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
 
@@ -81,7 +83,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
 export const chatWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { text_input, hf_hub_id, message, model } = req.body;
+    const { text_input, hf_hub_id, message, model, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty } = req.body;
 
     // Support both old and new payload formats
     const actualMessage = text_input || message;
@@ -100,7 +102,8 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       },
       body: JSON.stringify({
         hf_model_id: actualModelId,
-        text_input: actualMessage
+        text_input: actualMessage,
+        system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
 
@@ -142,7 +145,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
 export const inferWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { text_input, hf_model_id } = req.body;
+    const { text_input, hf_model_id, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty } = req.body;
 
     if (!text_input || !hf_model_id) {
       res.status(400).json({ error: 'text_input và hf_model_id là bắt buộc' });
@@ -154,7 +157,8 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         hf_model_id: hf_model_id,
-        text_input: text_input
+        text_input: text_input,
+        system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
 

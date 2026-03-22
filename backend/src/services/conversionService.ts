@@ -438,6 +438,165 @@ export class ConversionService {
       stats.removedDuplicates = before - cleaned.length;
     }
 
+    // --- BƯỚC 5: REMOVE EMPTY OUTPUT ---
+    if (options.removeEmptyOutput) {
+      const before = cleaned.length;
+      cleaned = cleaned.filter((item) => item.output.trim().length > 0);
+      stats.removedTooShort += before - cleaned.length;
+    }
+
+    // --- BƯỚC 6: MIN TURNS ---
+    if (options.minTurns && options.minTurns > 1) {
+      const before = cleaned.length;
+      // Alpaca format luôn là 1 turn (1 cặp QA). Nếu yêu cầu > 1 thì lọc hết.
+      cleaned = [];
+      stats.removedTooShort += before;
+    }
+
+    stats.finalCount = cleaned.length;
+    return { cleaned, stats };
+  }
+
+  /**
+   * === PIPELINE LÀM SẠCH DỮ LIỆU OPENAI ===
+   *
+   * Áp dụng theo thứ tự:
+   * 1. Keywords removal - Xóa bỏ các mẫu dữ liệu bị lỗi chứa từ khóa
+   * 2. Length filtering - Lọc theo min/max của <think> và assistant content
+   * 3. Deduplication - Loại bỏ bản ghi trùng
+   */
+  cleanOpenAIData(
+    data: OpenAIFormat[],
+    options: ConversionOptions
+  ): { cleaned: OpenAIFormat[]; stats: DataCleaningStats } {
+    const stats: DataCleaningStats = {
+      originalCount: data.length,
+      removedBoilerplate: 0,
+      removedTooShort: 0,
+      removedTooLong: 0,
+      removedDuplicates: 0,
+      finalCount: 0,
+    };
+
+    const minThink = options.minCharsThink ?? 10;
+    const maxThink = options.maxCharsThink ?? 2000;
+    const minAssistant = options.minCharsAssistant ?? 5;
+    const maxAssistant = options.maxCharsAssistant ?? 4000;
+
+    let cleaned = [...data];
+
+    // BƯỚC 1: Xóa bỏ mẫu lỗi có chứa keyword
+    const ERROR_KEYWORDS = [
+      "Unknown error",
+      "LLM call failed",
+      "Error code:",
+      "Không tìm thấy agent",
+      "Status",
+      "not supported by",
+      "__CHUNK__"
+    ];
+
+    if (options.removeBoilerplate !== false) {
+      const before = cleaned.length;
+      cleaned = cleaned.filter((item) => {
+        // Trả về false nếu có bất kỳ tin nhắn assistant nào chứa error keyword -> để filter out
+        return !item.messages.some(msg => {
+          if (msg.role !== 'assistant') return false;
+          return ERROR_KEYWORDS.some(keyword => msg.content.includes(keyword));
+        });
+      });
+      stats.removedBoilerplate = before - cleaned.length;
+    }
+
+    // BƯỚC 2: Kiểm tra độ dài content và <think>
+    const tooShort: OpenAIFormat[] = [];
+    const tooLong: OpenAIFormat[] = [];
+
+    cleaned = cleaned.filter((item) => {
+      let isValid = true;
+      for (const msg of item.messages) {
+        if (msg.role === 'assistant') {
+          const content = msg.content || '';
+          const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/i);
+          const thinkText = thinkMatch ? thinkMatch[1].trim() : '';
+          const assistantText = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+          // Condition 1: Assistant text length
+          if (assistantText.length < minAssistant) {
+            tooShort.push(item);
+            isValid = false;
+            break;
+          }
+          if (assistantText.length > maxAssistant) {
+            tooLong.push(item);
+            isValid = false;
+            break;
+          }
+
+          // Condition 2: <think> length (minMax check only if think tags exist)
+          if (thinkMatch) {
+            if (thinkText.length < minThink) {
+              tooShort.push(item);
+              isValid = false;
+              break;
+            }
+            if (thinkText.length > maxThink) {
+              tooLong.push(item);
+              isValid = false;
+              break;
+            }
+          }
+        }
+      }
+      return isValid;
+    });
+
+    stats.removedTooShort = tooShort.length;
+    stats.removedTooLong = tooLong.length;
+
+    // BƯỚC 3: DEDUPLICATION
+    if (options.deduplicate !== false) {
+      const before = cleaned.length;
+      const seen = new Set<string>();
+      cleaned = cleaned.filter((item) => {
+        const userMessages = item.messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
+        const key = userMessages.slice(0, 60).toLowerCase().replace(/\s+/g, ' ').trim();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      stats.removedDuplicates = before - cleaned.length;
+    }
+
+    // BƯỚC 4: REMOVE EMPTY ASSISTANT CONTENT
+    if (options.removeEmptyOutput) {
+      const before = cleaned.length;
+      cleaned = cleaned.filter((item) => {
+        return item.messages.some(msg => {
+          if (msg.role !== 'assistant') return false;
+          const assistantText = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          return assistantText.length > 0;
+        });
+      });
+      stats.removedTooShort += before - cleaned.length;
+    }
+
+    // BƯỚC 5: MIN TURNS
+    if (options.minTurns && options.minTurns > 1) {
+      const before = cleaned.length;
+      cleaned = cleaned.filter((item) => {
+        // Đếm số cặp QA (User tiếp nối bởi Assistant)
+        let pairs = 0;
+        for (let i = 0; i < item.messages.length - 1; i++) {
+          if (item.messages[i].role === 'user' && item.messages[i+1].role === 'assistant') {
+            pairs++;
+          }
+        }
+        return pairs >= (options.minTurns || 1);
+      });
+      stats.removedTooShort += before - cleaned.length;
+    }
+
     stats.finalCount = cleaned.length;
     return { cleaned, stats };
   }

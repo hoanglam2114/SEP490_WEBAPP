@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { apiService } from "../services/api";
 import {
     Menu, Plus, MessageSquare, MoreVertical,
-    Sparkles,
+    Sparkles, ChevronDown, ChevronUp, Square,
     ThumbsUp, ThumbsDown, Copy, RotateCcw, Mic, Send
 } from "lucide-react";
 
@@ -20,7 +20,26 @@ export default function ChatPage() {
     const [hfHubId, setHfHubId] = useState(""); // Lưu HF Hub ID
     const [modelLoaded, setModelLoaded] = useState(false); // Trạng thái model đã load chưa
     const [isSidebarOpen, setSidebarOpen] = useState(true);
+
+    // AI Parameters State
+    const [showSettings, setShowSettings] = useState(false);
+    const [systemPrompt, setSystemPrompt] = useState("");
+    const [maxNewTokens, setMaxNewTokens] = useState<number | "">("");
+    const [temperature, setTemperature] = useState<number | "">("");
+    const [topK, setTopK] = useState<number | "">("");
+    const [topP, setTopP] = useState<number | "">("");
+    const [repetitionPenalty, setRepetitionPenalty] = useState<number | "">("");
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const abortControllerRef = useRef<AbortController | null>(null);
+
+    const handleStopResponse = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        setLoading(false);
+    };
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -33,6 +52,9 @@ export default function ChatPage() {
     const sendMessage = async () => {
         if (!input.trim() || loading || !modelLoaded) return;
 
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+
         const userMessage: Message = { role: "user", content: input };
         setMessages((prev) => [...prev, userMessage]);
         setInput("");
@@ -40,15 +62,25 @@ export default function ChatPage() {
 
         const startTime = Date.now();
         let aiMessageContent = "";
-        
+
         // Tạo placeholder cho tin nhắn AI
         setMessages((prev) => [
-            ...prev, 
+            ...prev,
             { role: "ai", content: "", model: hfHubId || "Hugging Face Model" }
         ]);
 
         try {
-            await apiService.inferStream(userMessage.content, hfHubId, (chunk) => {
+            const options = {
+                system_prompt: systemPrompt || undefined,
+                max_new_tokens: maxNewTokens === "" ? undefined : maxNewTokens,
+                temperature: temperature === "" ? undefined : temperature,
+                top_k: topK === "" ? undefined : topK,
+                top_p: topP === "" ? undefined : topP,
+                repetition_penalty: repetitionPenalty === "" ? undefined : repetitionPenalty,
+                signal: abortController.signal,
+            };
+
+            await apiService.inferStream(userMessage.content, hfHubId, options, (chunk: string) => {
                 aiMessageContent += chunk;
                 // Cập nhật liên tục tin nhắn AI cuối cùng
                 setMessages((prev) => {
@@ -62,7 +94,7 @@ export default function ChatPage() {
             });
 
             const responseTime = (Date.now() - startTime) / 1000;
-            
+
             // Cập nhật lại thời gian phản hồi khi stream kết thúc
             setMessages((prev) => {
                 const newMessages = [...prev];
@@ -73,17 +105,22 @@ export default function ChatPage() {
                 return newMessages;
             });
 
-        } catch (error) {
-            setMessages((prev) => {
-                const newMessages = [...prev];
-                newMessages[newMessages.length - 1] = {
-                    ...newMessages[newMessages.length - 1],
-                    content: aiMessageContent + "\n\n[Lỗi: " + (error as any).message + "]",
-                };
-                return newMessages;
-            });
+        } catch (error: any) {
+            if (error.name === "AbortError" || error.message?.includes("aborted") || error.message?.includes("The operation was aborted")) {
+                console.log("Stream stopped by user");
+            } else {
+                setMessages((prev) => {
+                    const newMessages = [...prev];
+                    newMessages[newMessages.length - 1] = {
+                        ...newMessages[newMessages.length - 1],
+                        content: aiMessageContent + "\n\n[Lỗi: " + (error as any).message + "]",
+                    };
+                    return newMessages;
+                });
+            }
         } finally {
             setLoading(false);
+            abortControllerRef.current = null;
         }
     };
 
@@ -91,11 +128,11 @@ export default function ChatPage() {
         if (!hfHubId.trim()) return;
         setLoading(true);
         setModelLoaded(false);
-        
+
         try {
             // Initiate a dummy or actual request to load the model
             // For now, we will send a ping request to load it
-            await apiService.inferStream("ping", hfHubId, () => {});
+            await apiService.inferStream("ping", hfHubId, {}, () => { });
             setModelLoaded(true);
             setMessages(prev => [...prev, { role: "ai", content: `Đã load sẵn sàng model: ${hfHubId}` }]);
         } catch (error) {
@@ -158,7 +195,7 @@ export default function ChatPage() {
                         </span>
                         <input
                             type="text"
-                            className="flex-1 bg-gray-50 border border-gray-200 text-[15px] text-gray-800 outline-none px-4 py-2 rounded-xl transition-all focus:bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-100 placeholder-gray-400 disabled:opacity-60"
+                            className="flex-1 bg-gray-50 border border-gray-100 text-[15px] text-gray-800 outline-none px-5 py-2.5 rounded-2xl transition-all focus:bg-white focus:border-blue-400 focus:ring-4 focus:ring-blue-100/50 placeholder-gray-400 disabled:opacity-60 shadow-sm"
                             placeholder="Nhập Hugging Face Hub ID (VD: meta-llama/Llama-2-7b-chat-hf)"
                             value={hfHubId}
                             onChange={(e) => {
@@ -168,19 +205,112 @@ export default function ChatPage() {
                             disabled={loading}
                         />
                         <button
+                            onClick={() => setShowSettings(!showSettings)}
+                            className={`p-2.5 ml-1 rounded-xl transition-all flex items-center justify-center shrink-0 shadow-sm active:scale-95 ${showSettings
+                                    ? 'bg-gray-800 text-white'
+                                    : 'bg-red-50 text-[#de5c5c] hover:bg-red-100'
+                                }`}
+                        >
+                            {showSettings ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
+                        </button>
+                        <button
                             onClick={handleConfirmModel}
                             disabled={!hfHubId.trim() || loading || modelLoaded}
-                            className={`px-5 py-2 rounded-xl font-medium transition-colors whitespace-nowrap ${
-                                modelLoaded 
-                                    ? 'bg-green-100 text-green-700 cursor-default' 
-                                    : 'bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
-                            }`}
+                            className={`px-6 py-2.5 rounded-xl font-semibold transition-all whitespace-nowrap ml-2 shadow-sm active:scale-95 ${modelLoaded
+                                ? 'bg-green-100 text-green-700 cursor-default shadow-none'
+                                : 'bg-[#849bf3] hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed'
+                                }`}
                         >
                             {loading && !modelLoaded ? 'Đang tải...' : modelLoaded ? 'Đã tải' : 'Xác nhận'}
                         </button>
+
                     </div>
 
-                    {/* <div className="flex items-center gap-4 mr-2">
+                    {showSettings && (
+                        <div className="absolute top-[85px] left-4 md:left-[210px] lg:left-[240px] z-50 w-[90vw] md:w-[450px] bg-white/95 backdrop-blur-xl border border-gray-100 p-7 shadow-[0_20px_50px_rgba(0,0,0,0.15)] rounded-[32px] flex flex-col gap-6 animate-in fade-in zoom-in duration-300 origin-top">
+                            <div className="flex items-center justify-between mb-1">
+                                <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                                    <Sparkles size={18} className="text-blue-500" />
+                                    Tham số AI
+                                </h3>
+                                <button
+                                    onClick={() => setShowSettings(false)}
+                                    className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-colors"
+                                >
+                                    <Square size={14} />
+                                </button>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                                <label className="text-[13px] font-medium text-gray-500 ml-1">System Prompt</label>
+                                <div className="bg-gray-50 border border-transparent focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100 rounded-2xl transition-all p-3 group">
+                                    <textarea
+                                        placeholder="Nhập hướng dẫn cho AI..."
+                                        value={systemPrompt}
+                                        onChange={(e) => setSystemPrompt(e.target.value)}
+                                        className="w-full text-[15px] outline-none bg-transparent placeholder-gray-400 font-normal resize-none h-20"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[13px] font-medium text-gray-500 ml-1">Max Tokens</label>
+                                    <input
+                                        type="number"
+                                        placeholder="VD: 512"
+                                        value={maxNewTokens}
+                                        onChange={(e) => setMaxNewTokens(e.target.value === "" ? "" : Number(e.target.value))}
+                                        className="w-full bg-gray-50 border border-transparent focus:bg-white focus:ring-2 focus:ring-blue-100 rounded-2xl transition-all p-3 text-[15px]"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[13px] font-medium text-gray-500 ml-1">Temperature</label>
+                                    <input
+                                        type="number"
+                                        step="0.1"
+                                        placeholder="VD: 0.7"
+                                        value={temperature}
+                                        onChange={(e) => setTemperature(e.target.value === "" ? "" : Number(e.target.value))}
+                                        className="w-full bg-gray-50 border border-transparent focus:bg-white focus:ring-2 focus:ring-blue-100 rounded-2xl transition-all p-3 text-[15px]"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[13px] font-medium text-gray-500 ml-1">Top K</label>
+                                    <input
+                                        type="number"
+                                        placeholder="VD: 50"
+                                        value={topK}
+                                        onChange={(e) => setTopK(e.target.value === "" ? "" : Number(e.target.value))}
+                                        className="w-full bg-gray-50 border border-transparent focus:bg-white focus:ring-2 focus:ring-blue-100 rounded-2xl transition-all p-3 text-[15px]"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-[13px] font-medium text-gray-500 ml-1">Top P</label>
+                                    <input
+                                        type="number"
+                                        step="0.05"
+                                        placeholder="VD: 0.95"
+                                        value={topP}
+                                        onChange={(e) => setTopP(e.target.value === "" ? "" : Number(e.target.value))}
+                                        className="w-full bg-gray-50 border border-transparent focus:bg-white focus:ring-2 focus:ring-blue-100 rounded-2xl transition-all p-3 text-[15px]"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                                <label className="text-[13px] font-medium text-gray-500 ml-1">Repetition Penalty</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    placeholder="VD: 1.1"
+                                    value={repetitionPenalty}
+                                    onChange={(e) => setRepetitionPenalty(e.target.value === "" ? "" : Number(e.target.value))}
+                                    className="w-full bg-gray-50 border border-transparent focus:bg-white focus:ring-2 focus:ring-blue-100 rounded-2xl transition-all p-3 text-[15px]"
+                                />
+                            </div>
+                        </div>
+                    )}                    {/* <div className="flex items-center gap-4 mr-2">
                         <div className="hidden md:flex items-center">
                             <a href="#" className="hidden sm:inline-block bg-[#1a1a1c] hover:bg-[#282a2c] px-4 py-2 rounded-lg text-[13px] font-medium transition-colors border border-[#333537]">
                                 Dùng thử Gemini Advanced
@@ -192,7 +322,6 @@ export default function ChatPage() {
                     </div> */}
                 </div>
 
-                {/* Messages */}
                 <div className="flex-1 overflow-y-auto px-4 md:px-10 lg:px-24 xl:px-48 pb-40 pt-8 scroll-smooth" id="chat-container">
                     {messages.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center mt-[-50px]">
@@ -222,7 +351,7 @@ export default function ChatPage() {
                                                 </div>
 
                                                 <div className="flex items-center gap-1 mt-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                                    <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Câu trả lời tốt">
+                                                    {/* <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Câu trả lời tốt">
                                                         <ThumbsUp size={16} />
                                                     </button>
                                                     <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Câu trả lời chưa tốt">
@@ -230,7 +359,7 @@ export default function ChatPage() {
                                                     </button>
                                                     <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Sao chép">
                                                         <Copy size={16} />
-                                                    </button>
+                                                    </button> */}
                                                     <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Thử lại">
                                                         <RotateCcw size={16} />
                                                     </button>
@@ -281,7 +410,7 @@ export default function ChatPage() {
                                 <button className="p-2 mb-[2px] bg-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded-full flex-shrink-0 transition-colors" title="Tải lên tệp">
                                     <Plus size={24} />
                                 </button>
-    
+
                                 <textarea
                                     value={input}
                                     onChange={(e) => {
@@ -296,12 +425,20 @@ export default function ChatPage() {
                                     style={{ minHeight: '48px' }}
                                     disabled={!modelLoaded || loading}
                                 />
-    
+
                                 <div className="flex items-center gap-1 pb-1 mb-[-2px]">
-                                    {input.trim() ? (
+                                    {loading ? (
+                                        <button
+                                            onClick={handleStopResponse}
+                                            className="p-3 bg-black hover:bg-gray-800 text-white rounded-full flex-shrink-0 transition-colors"
+                                            title="Dừng phản hồi"
+                                        >
+                                            <Square size={16} fill="currentColor" strokeWidth={0} />
+                                        </button>
+                                    ) : input.trim() ? (
                                         <button
                                             onClick={sendMessage}
-                                            disabled={loading || !modelLoaded}
+                                            disabled={!modelLoaded}
                                             className="p-3 bg-black hover:bg-gray-800 text-white rounded-full flex-shrink-0 transition-colors disabled:opacity-50"
                                         >
                                             <Send size={18} className="translate-x-[-1px]" />

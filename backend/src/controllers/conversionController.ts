@@ -133,17 +133,30 @@ export class ConversionController {
       }
 
       // === PIPELINE LÀM SẠCH DỮ LIỆU (nếu được bật) ===
-      if (options.enableCleaning && result.format === 'alpaca') {
-        const { cleaned, stats: cleaningStats } = conversionService.cleanAlpacaData(
-          result.data,
-          options
-        );
-        result.data = cleaned;
-        result.stats.cleaning = cleaningStats;
-        // Recompute token estimate sau khi lọc
-        result.stats.totalTokensEstimate = conversionService.estimateTokens(
-          JSON.stringify(cleaned)
-        );
+      if (options.enableCleaning) {
+        if (result.format === 'alpaca') {
+          const { cleaned, stats: cleaningStats } = conversionService.cleanAlpacaData(
+            result.data,
+            options
+          );
+          result.data = cleaned;
+          result.stats.cleaning = cleaningStats;
+          // Recompute token estimate sau khi lọc
+          result.stats.totalTokensEstimate = conversionService.estimateTokens(
+            JSON.stringify(cleaned)
+          );
+        } else if (result.format === 'openai') {
+          const { cleaned, stats: cleaningStats } = conversionService.cleanOpenAIData(
+            result.data,
+            options
+          );
+          result.data = cleaned;
+          result.stats.cleaning = cleaningStats;
+          // Recompute token estimate sau khi lọc
+          result.stats.totalTokensEstimate = conversionService.estimateTokens(
+            JSON.stringify(cleaned)
+          );
+        }
       }
 
 
