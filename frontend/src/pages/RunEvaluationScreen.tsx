@@ -7,6 +7,7 @@ interface CompletedJob {
   baseModel: string;
   hfRepoId: string;
   completedAt: string;
+  status?: string; // thêm field status để filter chính xác
 }
 
 type EvalPhase = 'idle' | 'uploading' | 'running' | 'done' | 'error';
@@ -73,7 +74,13 @@ export const RunEvaluationScreen: React.FC = () => {
     fetch('/api/train/history?status=COMPLETED')
       .then(r => r.json())
       .then((data: CompletedJob[]) => {
-        setJobs(data.filter(j => j.hfRepoId));
+        // FIX: filter rõ ràng theo cả status COMPLETED lẫn hfRepoId
+        // Phòng trường hợp API không filter đúng hoặc trả về mixed data
+        const completedWithRepo = data.filter(j =>
+          j.hfRepoId &&
+          (!j.status || j.status.toUpperCase() === 'COMPLETED')
+        );
+        setJobs(completedWithRepo);
         setLoadingJobs(false);
       })
       .catch(() => setLoadingJobs(false));

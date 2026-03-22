@@ -5,6 +5,10 @@ import {
     Sparkles, ChevronDown, ChevronUp, Square,
     ThumbsUp, ThumbsDown, Copy, RotateCcw, Mic, Send
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 
 interface Message {
     role: "user" | "ai";
@@ -13,12 +17,79 @@ interface Message {
     model?: string;
 }
 
+const MarkdownRenderer = ({ content }: { content: string }) => (
+    <ReactMarkdown
+        remarkPlugins={[remarkMath, remarkGfm]}
+        rehypePlugins={[rehypeKatex]}
+        components={{
+            strong: ({ children }) => (
+                <strong className="font-semibold text-gray-900">{children}</strong>
+            ),
+            em: ({ children }) => (
+                <em className="italic text-gray-800">{children}</em>
+            ),
+            code: ({ inline, children, ...props }: any) =>
+                inline ? (
+                    <code className="bg-gray-100 text-pink-600 px-1.5 py-0.5 rounded text-[13.5px] font-mono">
+                        {children}
+                    </code>
+                ) : (
+                    <pre className="bg-gray-900 text-gray-100 rounded-xl p-4 overflow-x-auto my-3 text-[13.5px] font-mono leading-relaxed">
+                        <code {...props}>{children}</code>
+                    </pre>
+                ),
+            h1: ({ children }) => (
+                <h1 className="text-xl font-bold text-gray-900 mt-4 mb-2">{children}</h1>
+            ),
+            h2: ({ children }) => (
+                <h2 className="text-lg font-semibold text-gray-900 mt-3 mb-1.5">{children}</h2>
+            ),
+            h3: ({ children }) => (
+                <h3 className="text-base font-semibold text-gray-800 mt-2 mb-1">{children}</h3>
+            ),
+            ul: ({ children }) => (
+                <ul className="list-disc list-inside space-y-1 my-2 text-gray-800">{children}</ul>
+            ),
+            ol: ({ children }) => (
+                <ol className="list-decimal list-inside space-y-1 my-2 text-gray-800">{children}</ol>
+            ),
+            li: ({ children }) => (
+                <li className="leading-relaxed">{children}</li>
+            ),
+            blockquote: ({ children }) => (
+                <blockquote className="border-l-4 border-blue-400 pl-4 italic text-gray-600 my-3">
+                    {children}
+                </blockquote>
+            ),
+            table: ({ children }) => (
+                <div className="overflow-x-auto my-3">
+                    <table className="border-collapse w-full text-sm">{children}</table>
+                </div>
+            ),
+            th: ({ children }) => (
+                <th className="border border-gray-300 bg-gray-100 px-3 py-1.5 text-left font-semibold">
+                    {children}
+                </th>
+            ),
+            td: ({ children }) => (
+                <td className="border border-gray-300 px-3 py-1.5">{children}</td>
+            ),
+            p: ({ children }) => (
+                <p className="leading-relaxed mb-2 last:mb-0">{children}</p>
+            ),
+            hr: () => <hr className="my-4 border-gray-200" />,
+        }}
+    >
+        {content}
+    </ReactMarkdown>
+);
+
 export default function ChatPage() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const [loading, setLoading] = useState(false);
-    const [hfHubId, setHfHubId] = useState(""); // Lưu HF Hub ID
-    const [modelLoaded, setModelLoaded] = useState(false); // Trạng thái model đã load chưa
+    const [hfHubId, setHfHubId] = useState("");
+    const [modelLoaded, setModelLoaded] = useState(false);
     const [isSidebarOpen, setSidebarOpen] = useState(true);
 
     // AI Parameters State
@@ -63,7 +134,6 @@ export default function ChatPage() {
         const startTime = Date.now();
         let aiMessageContent = "";
 
-        // Tạo placeholder cho tin nhắn AI
         setMessages((prev) => [
             ...prev,
             { role: "ai", content: "", model: hfHubId || "Hugging Face Model" }
@@ -82,7 +152,6 @@ export default function ChatPage() {
 
             await apiService.inferStream(userMessage.content, hfHubId, options, (chunk: string) => {
                 aiMessageContent += chunk;
-                // Cập nhật liên tục tin nhắn AI cuối cùng
                 setMessages((prev) => {
                     const newMessages = [...prev];
                     newMessages[newMessages.length - 1] = {
@@ -95,7 +164,6 @@ export default function ChatPage() {
 
             const responseTime = (Date.now() - startTime) / 1000;
 
-            // Cập nhật lại thời gian phản hồi khi stream kết thúc
             setMessages((prev) => {
                 const newMessages = [...prev];
                 newMessages[newMessages.length - 1] = {
@@ -130,8 +198,6 @@ export default function ChatPage() {
         setModelLoaded(false);
 
         try {
-            // Initiate a dummy or actual request to load the model
-            // For now, we will send a ping request to load it
             await apiService.inferStream("ping", hfHubId, {}, () => { });
             setModelLoaded(true);
             setMessages(prev => [...prev, { role: "ai", content: `Đã load sẵn sàng model: ${hfHubId}` }]);
@@ -174,11 +240,9 @@ export default function ChatPage() {
                                 <MessageSquare size={16} className="min-w-[16px] ml-1" />
                                 <span className="truncate">Greeting And Offer Of Help</span>
                             </button>
-                            {/* Dummy history items */}
                             {[...Array(1)].map((_, i) => (
                                 <button key={i} className="flex items-center gap-3 hover:bg-gray-100 p-2.5 rounded-full transition-colors text-sm w-full text-left truncate">
                                     <MessageSquare size={16} className="min-w-[16px] text-gray-500 ml-1" />
-                                    {/* <span className="truncate text-gray-400 hover:text-gray-300">Cuộc trò chuyện {i + 1}</span> */}
                                 </button>
                             ))}
                         </div>
@@ -200,15 +264,15 @@ export default function ChatPage() {
                             value={hfHubId}
                             onChange={(e) => {
                                 setHfHubId(e.target.value);
-                                setModelLoaded(false); // Reset trạng thái load khi đổi ID
+                                setModelLoaded(false);
                             }}
                             disabled={loading}
                         />
                         <button
                             onClick={() => setShowSettings(!showSettings)}
                             className={`p-2.5 ml-1 rounded-xl transition-all flex items-center justify-center shrink-0 shadow-sm active:scale-95 ${showSettings
-                                    ? 'bg-gray-800 text-white'
-                                    : 'bg-red-50 text-[#de5c5c] hover:bg-red-100'
+                                ? 'bg-gray-800 text-white'
+                                : 'bg-red-50 text-[#de5c5c] hover:bg-red-100'
                                 }`}
                         >
                             {showSettings ? <ChevronUp size={22} /> : <ChevronDown size={22} />}
@@ -223,7 +287,6 @@ export default function ChatPage() {
                         >
                             {loading && !modelLoaded ? 'Đang tải...' : modelLoaded ? 'Đã tải' : 'Xác nhận'}
                         </button>
-
                     </div>
 
                     {showSettings && (
@@ -310,18 +373,10 @@ export default function ChatPage() {
                                 />
                             </div>
                         </div>
-                    )}                    {/* <div className="flex items-center gap-4 mr-2">
-                        <div className="hidden md:flex items-center">
-                            <a href="#" className="hidden sm:inline-block bg-[#1a1a1c] hover:bg-[#282a2c] px-4 py-2 rounded-lg text-[13px] font-medium transition-colors border border-[#333537]">
-                                Dùng thử Gemini Advanced
-                            </a>
-                        </div>
-                        <div className="w-10 h-10 bg-gradient-to-br from-emerald-700 to-teal-500 rounded-full flex items-center justify-center font-bold text-white shadow-md cursor-pointer hover:opacity-90 transition-opacity">
-                            <User size={20} />
-                        </div>
-                    </div> */}
+                    )}
                 </div>
 
+                {/* Messages */}
                 <div className="flex-1 overflow-y-auto px-4 md:px-10 lg:px-24 xl:px-48 pb-40 pt-8 scroll-smooth" id="chat-container">
                     {messages.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center mt-[-50px]">
@@ -346,20 +401,12 @@ export default function ChatPage() {
                                                 <Sparkles className="text-blue-500 fill-current object-contain" size={26} />
                                             </div>
                                             <div className="flex-1 min-w-0 pr-0 md:pr-4">
-                                                <div className="text-black leading-relaxed whitespace-pre-wrap text-[15.5px]">
-                                                    {msg.content}
+                                                {/* ✅ Markdown renderer thay thế plain text */}
+                                                <div className="text-black leading-relaxed text-[15.5px]">
+                                                    <MarkdownRenderer content={msg.content} />
                                                 </div>
 
                                                 <div className="flex items-center gap-1 mt-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                                    {/* <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Câu trả lời tốt">
-                                                        <ThumbsUp size={16} />
-                                                    </button>
-                                                    <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Câu trả lời chưa tốt">
-                                                        <ThumbsDown size={16} />
-                                                    </button>
-                                                    <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Sao chép">
-                                                        <Copy size={16} />
-                                                    </button> */}
                                                     <button className="p-2.5 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-800 transition-colors" title="Thử lại">
                                                         <RotateCcw size={16} />
                                                     </button>
@@ -453,7 +500,6 @@ export default function ChatPage() {
                         </div>
                     </div>
                 )}
-
             </div>
 
             <style>{`
