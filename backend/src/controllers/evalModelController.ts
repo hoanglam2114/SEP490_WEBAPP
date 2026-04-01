@@ -4,11 +4,22 @@ import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import { Evaluation } from '../models/Evaluation';
+import { ModelEvaluation } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';
 dotenv.config();
 
 const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
+const GPU_WORKERS = process.env.GPU_WORKERS
+  ? process.env.GPU_WORKERS.split(',').map((w) => w.trim())
+  : [GPU_SERVICE_URL];
+
+// evalJobId -> worker URL mapping
+const workerRegistry = new Map<string, string>();
+
+function pickAvailableWorker(): string {
+  // simple random selection
+  return GPU_WORKERS[Math.floor(Math.random() * GPU_WORKERS.length)];
+}
 
 // ---------------------------------------------------------------------------
 // Helper: POST multipart/form-data với Content-Length (giống trainController)
@@ -36,7 +47,7 @@ async function fetchWithForm(url: string, form: FormData): Promise<ReturnType<ty
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/eval/run/:jobId
+// POST /api/model-eval/run/:jobId
 // FE upload file đánh giá → BE forward sang GPU service POST /api/eval/start
 // GPU nhận file + hf_repo_id → load model → chạy run_auto_evaluation()
 // ---------------------------------------------------------------------------
@@ -70,15 +81,25 @@ export const runEvaluation = async (req: Request, res: Response) => {
     const eval_job_id = `eval_${uuidv4()}`;
     console.log(`[Backend] Starting eval ${eval_job_id} for job ${jobId} → model=${history.hfRepoId}`);
 
+    const config = {
+      eval_job_id,
+      job_id: jobId,
+      hf_repo_id: history.hfRepoId,
+      hf_token: history.hfToken || '',
+      model_max_length: history.parameters?.modelMaxLength || 2048,
+      judge_model: req.body.judge_model || req.body['judge_model'] || 'claude-haiku-4-5-20251001',
+    };
+
     // 4. Tạo Evaluation record trong MongoDB với status PENDING
-    await Evaluation.create({
-      evalId: eval_job_id,
+    await ModelEvaluation.create({
+      modelEvalId: eval_job_id,
       jobId,
       status: 'PENDING',
       totalSamples: 0,
       subjectBreakdown: {},
       skippedBySimilarity: 0,
       results: [],
+      judgeModel: config.judge_model,
       summary: {
         overall: { base_avg: 0, ft_avg: 0, improvement_pct: 0 },
         by_subject: {},
@@ -87,15 +108,6 @@ export const runEvaluation = async (req: Request, res: Response) => {
       startedAt: new Date(),
       completedAt: new Date(),
     });
-
-    // 5. Build form gửi GPU service
-    const config = {
-      eval_job_id,
-      job_id: jobId,
-      hf_repo_id: history.hfRepoId,
-      hf_token: history.hfToken || '',
-      model_max_length: history.parameters?.modelMaxLength || 2048,
-    };
 
     const form = new FormData();
     form.append('config', JSON.stringify(config));
@@ -106,8 +118,15 @@ export const runEvaluation = async (req: Request, res: Response) => {
     });
 
     // 6. Forward sang GPU service
-    console.log(`[Backend] Forwarding eval to GPU: ${GPU_SERVICE_URL}/api/eval/start`);
-    const gpuResponse = await fetchWithForm(`${GPU_SERVICE_URL}/api/eval/start`, form);
+    const workerUrl = pickAvailableWorker();
+    console.log(`[Backend] Forwarding eval to GPU worker (${workerUrl}): /api/eval/start`);
+    const gpuResponse = await fetchWithForm(`${workerUrl}/api/eval/start`, form);
+
+    if (gpuResponse.status === 409) {
+      fs.unlink(evalFile.path, () => { });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      return res.status(503).json({ error: 'worker_busy' });
+    }
 
     const responseText = await gpuResponse.text();
     console.log(`[Backend] GPU eval response (${gpuResponse.status}): ${responseText.slice(0, 300)}`);
@@ -126,9 +145,12 @@ export const runEvaluation = async (req: Request, res: Response) => {
 
     if (!gpuResponse.ok) {
       fs.unlink(evalFile.path, () => { });
-      await Evaluation.deleteOne({ evalId: eval_job_id });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
       return res.status(gpuResponse.status).json(gpuData);
     }
+
+    // Save evalJobId to worker mapped in registry
+    workerRegistry.set(eval_job_id, workerUrl);
 
     // 7. Xóa file tạm (GPU đã lưu bản của nó rồi)
     fs.unlink(evalFile.path, (err) => {
@@ -149,7 +171,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/eval/stream/:evalJobId
+// GET /api/model-eval/stream/:evalJobId
 // SSE — poll GPU /api/eval/status/:evalJobId mỗi 2s
 // Khi COMPLETED → gọi GPU lấy result → lưu MongoDB → update TrainingHistory
 // ---------------------------------------------------------------------------
@@ -171,7 +193,8 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 
   const intervalId = setInterval(async () => {
     try {
-      const response = await fetch(`${GPU_SERVICE_URL}/api/eval/status/${evalJobId}`, {
+      const workerUrl = workerRegistry.get(evalJobId) || GPU_WORKERS[0];
+      const response = await fetch(`${workerUrl}/api/eval/status/${evalJobId}`, {
         headers: { 'ngrok-skip-browser-warning': 'true' },
       });
       const text = await response.text();
@@ -192,9 +215,9 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
           await _fetchAndSaveResult(evalJobId);
         } else {
           // FAILED — cập nhật DB
-          await Evaluation.updateOne({ evalId: evalJobId }, { status: 'FAILED' });
+          await ModelEvaluation.updateOne({ modelEvalId: evalJobId }, { status: 'FAILED' });
           // Tìm jobId để update TrainingHistory
-          const evalDoc = await Evaluation.findOne({ evalId: evalJobId });
+          const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalJobId });
           if (evalDoc) {
             await TrainingHistory.updateOne(
               { jobId: evalDoc.jobId },
@@ -218,11 +241,12 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 
 // ---------------------------------------------------------------------------
 // Helper nội bộ: lấy kết quả từ GPU → lưu Evaluation MongoDB
-//               → update TrainingHistory status = 'evaluated'
+//               → TrainingHistory: status COMPLETED (train xong), auto-pin nếu chưa có
 // ---------------------------------------------------------------------------
 async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
   try {
-    const resp = await fetch(`${GPU_SERVICE_URL}/api/eval/result/${evalJobId}`, {
+    const workerUrl = workerRegistry.get(evalJobId) || GPU_WORKERS[0];
+    const resp = await fetch(`${workerUrl}/api/eval/result/${evalJobId}`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
     });
 
@@ -239,8 +263,8 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
     }
 
     // Lưu vào Evaluation collection
-    await Evaluation.findOneAndUpdate(
-      { evalId: evalJobId },
+    await ModelEvaluation.findOneAndUpdate(
+      { modelEvalId: evalJobId },
       {
         status: 'COMPLETED',
         totalSamples: result.totalSamples ?? 0,
@@ -254,34 +278,37 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
       { upsert: true }
     );
 
-    // Update TrainingHistory → evaluated
-    await TrainingHistory.updateOne(
-      { jobId: result.jobId },
-      { status: 'evaluated' }
-    );
+    // Training job vẫn là COMPLETED; Leaderboard dựa vào pinnedEvalId (auto-pin lần eval đầu)
+    const history = await TrainingHistory.findOne({ jobId: result.jobId });
+    const updateFields: Record<string, any> = { status: 'COMPLETED' };
+    if (!history?.pinnedEvalId) {
+      updateFields.pinnedEvalId = evalJobId;
+      console.log(`[Backend] 📌 Auto-pinned first eval ${evalJobId} for job ${result.jobId}`);
+    }
+    await TrainingHistory.updateOne({ jobId: result.jobId }, updateFields);
 
-    console.log(`[Backend] ✅ Eval result saved for ${evalJobId}, job ${result.jobId} → evaluated`);
+    console.log(`[Backend] ✅ Eval result saved for ${evalJobId}, job ${result.jobId} → COMPLETED + pin nếu cần`);
   } catch (err: any) {
     console.error(`[Backend] _fetchAndSaveResult error for ${evalJobId}:`, err.message);
   }
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/eval/save
+// POST /api/model-eval/save
 // Dùng cho manual trigger từ fetchAndSaveEvalResult (trainController)
-// Body: kết quả eval trực tiếp từ GPU (format cũ, evalId = "eval_<jobId>")
+// Body: kết quả eval trực tiếp từ GPU (format cũ, modelEvalId = "eval_<jobId>")
 // ---------------------------------------------------------------------------
 export const saveEvalResult = async (req: Request, res: Response) => {
   try {
     const result = req.body;
-    if (!result || !result.evalId || !result.jobId) {
-      return res.status(400).json({ error: 'Missing evalId or jobId in body' });
+    if (!result || !result.modelEvalId || !result.jobId) {
+      return res.status(400).json({ error: 'Missing modelEvalId or jobId in body' });
     }
 
-    await Evaluation.findOneAndUpdate(
-      { evalId: result.evalId },
+    await ModelEvaluation.findOneAndUpdate(
+      { modelEvalId: result.modelEvalId },
       {
-        evalId: result.evalId,
+        modelEvalId: result.modelEvalId,
         jobId: result.jobId,
         status: result.status || 'COMPLETED',
         totalSamples: result.totalSamples ?? 0,
@@ -295,12 +322,15 @@ export const saveEvalResult = async (req: Request, res: Response) => {
       { upsert: true, new: true }
     );
 
-    await TrainingHistory.updateOne(
-      { jobId: result.jobId },
-      { status: 'evaluated' }
-    );
+    const history = await TrainingHistory.findOne({ jobId: result.jobId });
+    const updateFields: Record<string, any> = { status: 'COMPLETED' };
+    if (!history?.pinnedEvalId) {
+      updateFields.pinnedEvalId = result.modelEvalId;
+      console.log(`[Backend] 📌 Auto-pinned eval ${result.modelEvalId} for job ${result.jobId} (save endpoint)`);
+    }
+    await TrainingHistory.updateOne({ jobId: result.jobId }, updateFields);
 
-    console.log(`[Backend] ✅ Eval saved via /api/eval/save for job ${result.jobId}`);
+    console.log(`[Backend] ✅ Eval saved via /api/model-eval/save for job ${result.jobId}`);
     return res.status(200).json({ message: 'Eval saved successfully' });
   } catch (err: any) {
     console.error('[Backend] saveEvalResult error:', err);
@@ -309,37 +339,57 @@ export const saveEvalResult = async (req: Request, res: Response) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/eval/:evalId
-// Trả Evaluation record cho EvaluationResultsScreen
+// GET /api/model-eval/:evalId
+// Trả Evaluation record cho ModelEvalResultScreen
 // ---------------------------------------------------------------------------
 export const getEvaluation = async (req: Request, res: Response) => {
   try {
     const { evalId } = req.params;
-    const doc = await Evaluation.findOne({ evalId });
+    const doc = await ModelEvaluation.findOne({ modelEvalId: evalId }).lean();
     if (!doc) {
       return res.status(404).json({ error: 'Evaluation not found' });
     }
-    return res.json(doc);
+    // Kiểm tra xem eval này có đang được pin không
+    const history = await TrainingHistory.findOne({ jobId: doc.jobId })
+      .select('pinnedEvalId projectName')
+      .lean();
+    return res.json({
+      ...doc,
+      isPinned: history?.pinnedEvalId === evalId,
+      projectName: history?.projectName ?? '',
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get evaluation' });
   }
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/models
-// Trả danh sách model có status = 'evaluated' (cho ModelListScreen mới)
-// Join TrainingHistory với Evaluation mới nhất của mỗi job
+// GET /api/model-eval/leaderboard
+// Chỉ job đã có eval được chọn (pinned) — ít nhất 1 lần eval xong có pinnedEvalId
 // ---------------------------------------------------------------------------
 export const getEvaluatedModels = async (_req: Request, res: Response) => {
   try {
-    const histories = await TrainingHistory.find({ status: 'evaluated' }).lean();
+    const histories = await TrainingHistory.find({
+      pinnedEvalId: { $exists: true, $ne: null },
+    }).lean();
 
     const result = await Promise.all(
       histories.map(async (h) => {
-        // Lấy eval mới nhất theo completedAt
-        const latestEval = await Evaluation.findOne({ jobId: h.jobId, status: 'COMPLETED' })
+        const latestEval = await ModelEvaluation.findOne({ jobId: h.jobId, status: 'COMPLETED' })
           .sort({ completedAt: -1 })
           .lean();
+
+        let displayEval = latestEval;
+        if (h.pinnedEvalId) {
+          const pinned = await ModelEvaluation.findOne({
+            jobId: h.jobId,
+            modelEvalId: h.pinnedEvalId,
+            status: 'COMPLETED',
+          }).lean();
+          if (pinned) displayEval = pinned;
+        }
+
+        const modelEvalId = displayEval?.modelEvalId ?? null;
 
         return {
           jobId: h.jobId,
@@ -347,13 +397,16 @@ export const getEvaluatedModels = async (_req: Request, res: Response) => {
           baseModel: h.baseModel,
           completedAt: h.completedAt,
           trainingDuration: h.trainingDuration,
-          evalId: latestEval?.evalId ?? null,
-          totalSamples: latestEval?.totalSamples ?? 0,
+          /** ID eval dùng cho điểm + nút View — ưu tiên eval Official (pinned), không có thì mới nhất */
+          modelEvalId,
+          pinnedEvalId: h.pinnedEvalId ?? null,
+          judgeModel: displayEval?.judgeModel ?? null,
+          totalSamples: displayEval?.totalSamples ?? 0,
           scores: {
-            overall: latestEval?.summary?.overall ?? null,
-            quality: latestEval?.summary?.quality ?? null,
-            hallucination: latestEval?.summary?.hallucination ?? null,
-            speed: latestEval?.summary?.speed ?? null,
+            overall: displayEval?.summary?.overall ?? null,
+            quality: displayEval?.summary?.quality ?? null,
+            hallucination: displayEval?.summary?.hallucination ?? null,
+            speed: displayEval?.summary?.speed ?? null,
           },
         };
       })
@@ -366,18 +419,263 @@ export const getEvaluatedModels = async (_req: Request, res: Response) => {
 };
 
 // ---------------------------------------------------------------------------
-// GET /api/eval/history/:jobId
+// GET /api/model-eval/history/:jobId
 // Trả tất cả Evaluation của 1 job (để xem lịch sử eval nhiều lần)
 // ---------------------------------------------------------------------------
 export const getEvalHistory = async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;
-    const evals = await Evaluation.find({ jobId, status: 'COMPLETED' })
+
+    // Lấy pinnedEvalId từ TrainingHistory
+    const history = await TrainingHistory.findOne({ jobId }).select('pinnedEvalId projectName baseModel').lean();
+
+    const evals = await ModelEvaluation.find({ jobId, status: 'COMPLETED' })
       .sort({ completedAt: -1 })
-      .select('evalId jobId status totalSamples summary startedAt completedAt')
+      .select('modelEvalId jobId status totalSamples judgeModel summary startedAt completedAt')
       .lean();
-    return res.json(evals);
+
+    // Gắn isPinned vào từng eval
+    const evalsWithPin = evals.map((e) => ({
+      ...e,
+      isPinned: e.modelEvalId === history?.pinnedEvalId,
+    }));
+
+    return res.json({
+      jobId,
+      projectName: history?.projectName ?? '',
+      baseModel: history?.baseModel ?? '',
+      pinnedEvalId: history?.pinnedEvalId ?? null,
+      evals: evalsWithPin,
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get eval history' });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/model-eval/pin/:evalId
+// Pin 1 eval làm "official" cho leaderboard — cập nhật TrainingHistory.pinnedEvalId
+// Eval cũ được unpin tự động (chỉ 1 eval được pin tại 1 thời điểm)
+// ---------------------------------------------------------------------------
+export const pinEvaluation = async (req: Request, res: Response) => {
+  try {
+    const { evalId } = req.params;
+
+    // Tìm eval để lấy jobId
+    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId, status: 'COMPLETED' });
+    if (!evalDoc) {
+      return res.status(404).json({ error: 'Evaluation not found or not completed' });
+    }
+
+    // Update pinnedEvalId trên TrainingHistory (ghi đè eval cũ)
+    const result = await TrainingHistory.findOneAndUpdate(
+      { jobId: evalDoc.jobId },
+      { pinnedEvalId: evalId },
+      { new: true }
+    );
+
+    if (!result) {
+      return res.status(404).json({ error: 'Training job not found' });
+    }
+
+    console.log(`[Backend] 📌 Pinned eval ${evalId} as official for job ${evalDoc.jobId}`);
+    return res.status(200).json({
+      message: 'Eval pinned successfully',
+      jobId: evalDoc.jobId,
+      pinnedEvalId: evalId,
+    });
+  } catch (err: any) {
+    console.error('[Backend] pinEvaluation error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to pin evaluation' });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// DELETE /api/model-eval/:evalId
+// Xóa eval; nếu đang pin → auto-pin eval COMPLETED mới nhất còn lại (hoặc null)
+// ---------------------------------------------------------------------------
+export const deleteEvaluation = async (req: Request, res: Response) => {
+  try {
+    const { evalId } = req.params;
+    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId });
+    if (!evalDoc) {
+      return res.status(404).json({ error: 'Evaluation not found' });
+    }
+
+    const { jobId } = evalDoc;
+    const history = await TrainingHistory.findOne({ jobId }).select('pinnedEvalId').lean();
+    const wasPinned = history?.pinnedEvalId === evalId;
+
+    await ModelEvaluation.deleteOne({ modelEvalId: evalId });
+
+    let newPinnedEvalId: string | null = null;
+    if (wasPinned) {
+      const newest = await ModelEvaluation.findOne({ jobId, status: 'COMPLETED' })
+        .sort({ completedAt: -1 })
+        .select('modelEvalId')
+        .lean();
+      newPinnedEvalId = newest?.modelEvalId ?? null;
+      await TrainingHistory.updateOne({ jobId }, { $set: { pinnedEvalId: newPinnedEvalId } });
+      console.log(`[Backend] After delete, repinned job ${jobId} → ${newPinnedEvalId ?? 'null'}`);
+    }
+
+    return res.json({
+      message: 'Evaluation deleted',
+      newPinnedEvalId: wasPinned ? newPinnedEvalId : history?.pinnedEvalId ?? null,
+    });
+  } catch (err: any) {
+    console.error('[Backend] deleteEvaluation error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to delete evaluation' });
+  }
+};
+
+type CompareWinner = 'a' | 'b' | 'tie';
+
+function scoreWinner(va: number | null | undefined, vb: number | null | undefined, higherIsBetter = true): CompareWinner {
+  if (va == null && vb == null) return 'tie';
+  if (va == null) return 'b';
+  if (vb == null) return 'a';
+  const eps = 1e-6;
+  if (Math.abs(va - vb) < eps) return 'tie';
+  if (higherIsBetter) return va > vb ? 'a' : 'b';
+  return va < vb ? 'a' : 'b';
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/model-eval/compare?a=&b=
+// So sánh 2 eval: metadata + điểm + mẫu trùng instruction (inner join)
+// ---------------------------------------------------------------------------
+export const compareEvaluations = async (req: Request, res: Response) => {
+  try {
+    const aId = typeof req.query.a === 'string' ? req.query.a : '';
+    const bId = typeof req.query.b === 'string' ? req.query.b : '';
+    if (!aId || !bId) {
+      return res.status(400).json({ error: 'Thiếu query a hoặc b' });
+    }
+    if (aId === bId) {
+      return res.status(400).json({ error: 'Hai eval phải khác nhau' });
+    }
+
+    const [evalA, evalB] = await Promise.all([
+      ModelEvaluation.findOne({ modelEvalId: aId }).lean(),
+      ModelEvaluation.findOne({ modelEvalId: bId }).lean(),
+    ]);
+    if (!evalA || !evalB) {
+      return res.status(404).json({ error: 'Không tìm thấy một hoặc cả hai bản đánh giá' });
+    }
+
+    const [histA, histB] = await Promise.all([
+      TrainingHistory.findOne({ jobId: evalA.jobId }).select('projectName').lean(),
+      TrainingHistory.findOne({ jobId: evalB.jobId }).select('projectName').lean(),
+    ]);
+
+    const mapA = new Map<string, (typeof evalA.results)[0]>();
+    for (const r of evalA.results || []) {
+      if (!mapA.has(r.instruction)) mapA.set(r.instruction, r);
+    }
+
+    const matchedSamples: {
+      instruction: string;
+      subject: string;
+      expected: string;
+      ft_answer_a: string;
+      ft_answer_b: string;
+      ft_score_a: number;
+      ft_score_b: number;
+      delta_ft: number;
+    }[] = [];
+
+    for (const rowB of evalB.results || []) {
+      const rowA = mapA.get(rowB.instruction);
+      if (!rowA) continue;
+      matchedSamples.push({
+        instruction: rowB.instruction,
+        subject: rowB.subject,
+        expected: rowB.expected,
+        ft_answer_a: rowA.ft_answer,
+        ft_answer_b: rowB.ft_answer,
+        ft_score_a: rowA.ft_score,
+        ft_score_b: rowB.ft_score,
+        delta_ft: rowB.ft_score - rowA.ft_score,
+      });
+    }
+
+    const lenA = evalA.results?.length ?? 0;
+    const lenB = evalB.results?.length ?? 0;
+    const differentTestSets =
+      evalA.totalSamples !== evalB.totalSamples ||
+      lenA !== lenB ||
+      matchedSamples.length < lenA ||
+      matchedSamples.length < lenB;
+
+    const sA = evalA.summary;
+    const sB = evalB.summary;
+
+    const bleuA = sA?.reference_metrics?.bleu?.ft ?? null;
+    const bleuB = sB?.reference_metrics?.bleu?.ft ?? null;
+    const rougeA = sA?.reference_metrics?.rouge_l?.ft ?? null;
+    const rougeB = sB?.reference_metrics?.rouge_l?.ft ?? null;
+
+    const scoreSummary = {
+      overall: {
+        a: sA?.overall?.ft_avg ?? null,
+        b: sB?.overall?.ft_avg ?? null,
+        winner: scoreWinner(sA?.overall?.ft_avg, sB?.overall?.ft_avg),
+      },
+      quality: {
+        a: sA?.quality?.ft_avg ?? null,
+        b: sB?.quality?.ft_avg ?? null,
+        winner: scoreWinner(sA?.quality?.ft_avg, sB?.quality?.ft_avg),
+      },
+      hallucination: {
+        a: sA?.hallucination?.ft_avg ?? null,
+        b: sB?.hallucination?.ft_avg ?? null,
+        winner: scoreWinner(sA?.hallucination?.ft_avg, sB?.hallucination?.ft_avg),
+      },
+      speed: {
+        a: sA?.speed?.ft_score ?? null,
+        b: sB?.speed?.ft_score ?? null,
+        winner: scoreWinner(sA?.speed?.ft_score, sB?.speed?.ft_score),
+      },
+      bleu: {
+        a: bleuA,
+        b: bleuB,
+        winner: scoreWinner(bleuA, bleuB),
+      },
+      rouge_l: {
+        a: rougeA,
+        b: rougeB,
+        winner: scoreWinner(rougeA, rougeB),
+      },
+    };
+
+    const runA = {
+      modelEvalId: evalA.modelEvalId,
+      jobId: evalA.jobId,
+      projectName: histA?.projectName ?? '',
+      judgeModel: evalA.judgeModel ?? '',
+      completedAt: evalA.completedAt,
+      totalSamples: evalA.totalSamples,
+    };
+    const runB = {
+      modelEvalId: evalB.modelEvalId,
+      jobId: evalB.jobId,
+      projectName: histB?.projectName ?? '',
+      judgeModel: evalB.judgeModel ?? '',
+      completedAt: evalB.completedAt,
+      totalSamples: evalB.totalSamples,
+    };
+
+    return res.json({
+      runA,
+      runB,
+      scoreSummary,
+      matchedSamples,
+      matchedCount: matchedSamples.length,
+      differentTestSetsNote: differentTestSets,
+    });
+  } catch (err: any) {
+    console.error('[Backend] compareEvaluations error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to compare evaluations' });
   }
 };

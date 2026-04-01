@@ -41,7 +41,7 @@ const tools = [
   {
     title: 'Model Evaluation',
     description: 'Evaluate fine-tuned models and compare against baseline performance',
-    path: '/models',
+    path: '/model-eval/leaderboard',
     tag: 'Evaluation',
     icon: (
       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

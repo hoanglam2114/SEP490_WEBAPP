@@ -28,6 +28,9 @@ import {
   getEvaluation,
   getEvaluatedModels,
   getEvalHistory,
+  pinEvaluation,
+  deleteEvaluation,
+  compareEvaluations,
 } from '../controllers/evalModelController';
 
 
@@ -94,13 +97,16 @@ router.get('/train/history', getTrainingHistoryList);
 router.get('/train/history/:jobId', getTrainingHistoryDetail);
 router.delete('/train/history/:jobId', deleteTrainingHistory);
 
-// Eval Model Routes
-router.get('/models', getEvaluatedModels);
-router.post('/eval/run/:jobId', upload.single('eval_file'), runEvaluation);
-router.get('/eval/stream/:evalJobId', streamEvalStatus);
-router.post('/eval/save', saveEvalResult);
-router.get('/eval/history/:jobId', getEvalHistory);
-router.get('/eval/:evalId', getEvaluation); // ⚠️ phải đứng sau /eval/stream và /eval/history
+// Model Eval Routes
+router.get('/model-eval/leaderboard', getEvaluatedModels);
+router.post('/model-eval/run/:jobId', upload.single('eval_file'), runEvaluation);
+router.get('/model-eval/stream/:evalJobId', streamEvalStatus);
+router.post('/model-eval/save', saveEvalResult);
+router.get('/model-eval/history/:jobId', getEvalHistory);
+router.post('/model-eval/pin/:evalId', pinEvaluation);         // ⚠️ phải đứng trước /:evalId
+router.get('/model-eval/compare', compareEvaluations);         // ⚠️ trước GET /:evalId
+router.delete('/model-eval/:evalId', deleteEvaluation);        // ⚠️ trước GET /:evalId
+router.get('/model-eval/:evalId', getEvaluation);              // ⚠️ wildcard — đứng cuối cùng
 
 
 export default router;

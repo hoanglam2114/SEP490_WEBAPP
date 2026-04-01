@@ -18,9 +18,18 @@ interface ModelItem {
   baseModel: string;
   completedAt: string;
   trainingDuration: number;
-  evalId: string;
+  /** Eval hiển thị trên leaderboard + mục tiêu của View (official nếu có pin) */
+  modelEvalId: string | null;
+  /** Tương thích API cũ trả `evalId` thay vì `modelEvalId` */
+  evalId?: string | null;
+  pinnedEvalId: string | null;
+  judgeModel: string | null;
   totalSamples: number;
   scores: ModelScores;
+}
+
+function resolveEvalId(m: ModelItem): string | null {
+  return m.modelEvalId ?? m.evalId ?? m.pinnedEvalId ?? null;
 }
 
 type SortField = 'date' | 'overall' | 'quality' | 'hallucination' | 'speed';
@@ -48,23 +57,6 @@ function ScorePill({ value, max = 5 }: { value: number; max?: number }) {
   );
 }
 
-const BASE_MODEL_OPTIONS = [
-  'Qwen/Qwen3-0.6B',
-  'meta-llama/Llama-3.1-8B-Instruct',
-  'unsloth/gpt-oss-20b',
-  'unsloth/gpt-oss-20b-unsloth-bnb-4bit',
-  'zai-org/GLM-4.7-Flash',
-  'unsloth/GLM-4.7-Flash-GGUF',
-  'stepfun-ai/Step-3.5-Flash',
-  'unsloth/Qwen3-Coder-Next-GGUF',
-  'lightonai/LightOnOCR-2-1B',
-  'unsloth/gpt-oss-20b-GGUF',
-  'Qwen/Qwen3-Coder-Next',
-  'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4',
-  'zai-org/GLM-4.7',
-  'MiniMaxAI/MiniMax-M2.1',
-  'sshleifer/tiny-gpt2',
-];
 
 const MEDAL: Record<number, string> = { 0: '1st', 1: '2nd', 2: '3rd' };
 
@@ -86,7 +78,7 @@ function getSortValue(m: ModelItem, field: SortField): number {
   }
 }
 
-export const ModelListScreen: React.FC = () => {
+export const ModelEvalLeaderboardScreen: React.FC = () => {
   const navigate = useNavigate();
   const [models, setModels] = useState<ModelItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,11 +89,18 @@ export const ModelListScreen: React.FC = () => {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const PAGE_SIZE = 10;
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const [baseModelOptions, setBaseModelOptions] = useState<string[]>([]);
 
   useEffect(() => {
-    fetch('/api/models')
+    fetch('/api/model-eval/leaderboard')
       .then(r => r.json())
-      .then(data => { setModels(data); setLoading(false); })
+      .then((data: ModelItem[]) => {
+        setModels(data);
+        // ✅ Lấy unique base models từ data thực tế
+        const unique = Array.from(new Set(data.map((m: ModelItem) => m.baseModel))).filter(Boolean);
+        setBaseModelOptions(unique);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   }, []);
 
@@ -118,7 +117,7 @@ export const ModelListScreen: React.FC = () => {
   const totalPages = Math.ceil(filteredModels.length / PAGE_SIZE);
   const paginatedModels = filteredModels.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const chartData = models.map((m, i) => ({
+  const chartData = filteredModels.map((m, i) => ({
     jobId: m.jobId,
     name: m.projectName.length > 14 ? m.projectName.slice(0, 13) + '…' : m.projectName,
     score: parseFloat(((m.scores.overall?.ft_avg ?? 0) / 5 * 100).toFixed(1)),
@@ -189,7 +188,7 @@ export const ModelListScreen: React.FC = () => {
 
           {/* Nút đánh giá model mới */}
           <button
-            onClick={() => navigate('/eval/run')}
+            onClick={() => navigate('/model-eval/run')}
             className="flex items-center gap-2 bg-slate-800 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-slate-700 transition"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -210,7 +209,7 @@ export const ModelListScreen: React.FC = () => {
             <p className="font-medium">Chưa có model nào được đánh giá</p>
             <p className="text-sm mt-1">Bấm "Đánh giá model" để bắt đầu.</p>
             <button
-              onClick={() => navigate('/eval/run')}
+              onClick={() => navigate('/model-eval/run')}
               className="mt-6 flex items-center gap-2 bg-slate-800 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-slate-700 transition"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -266,7 +265,7 @@ export const ModelListScreen: React.FC = () => {
                     className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-600 focus:outline-none focus:border-slate-400 transition"
                   >
                     <option value="">Tất cả base model</option>
-                    {BASE_MODEL_OPTIONS.map(m => (
+                    {baseModelOptions.map(m => (
                       <option key={m} value={m}>{m.split('/').pop()}</option>
                     ))}
                   </select>
@@ -275,9 +274,8 @@ export const ModelListScreen: React.FC = () => {
                       <button
                         key={opt.field}
                         onClick={() => toggleSort(opt.field)}
-                        className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-md transition font-medium ${
-                          sortField === opt.field ? 'bg-white text-slate-800 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'
-                        }`}
+                        className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-md transition font-medium ${sortField === opt.field ? 'bg-white text-slate-800 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'
+                          }`}
                       >
                         {opt.label}
                         {sortField === opt.field && (
@@ -344,10 +342,13 @@ export const ModelListScreen: React.FC = () => {
                             <tr
                               key={m.jobId}
                               ref={el => { rowRefs.current[m.jobId] = el; }}
-                              onClick={() => navigate(`/eval/${m.evalId}`)}
-                              className={`cursor-pointer transition-colors duration-300 ${
-                                isHighlighted ? 'bg-amber-50 ring-1 ring-inset ring-amber-300' : 'hover:bg-slate-50'
-                              }`}
+                              onClick={() => {
+                                const id = resolveEvalId(m);
+                                if (id) navigate(`/model-eval/${id}`);
+                                else navigate(`/model-eval/history/${m.jobId}`);
+                              }}
+                              className={`cursor-pointer transition-colors duration-300 ${isHighlighted ? 'bg-amber-50 ring-1 ring-inset ring-amber-300' : 'hover:bg-slate-50'
+                                }`}
                             >
                               <td className="px-6 py-4">
                                 {globalIndex < 3
@@ -356,7 +357,20 @@ export const ModelListScreen: React.FC = () => {
                               </td>
                               <td className="px-6 py-4">
                                 <div className="font-medium text-slate-800 truncate max-w-[180px]">{m.projectName}</div>
-                                <div className="text-xs text-slate-400 mt-0.5">{m.totalSamples} samples</div>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <div className="text-xs text-slate-400">{m.totalSamples} samples</div>
+                                  {m.judgeModel && (
+                                    <span className="text-[9px] font-mono text-slate-400">
+                                      {m.judgeModel.includes('haiku') ? 'Haiku' : m.judgeModel.includes('sonnet') ? 'Sonnet' : m.judgeModel.includes('opus') ? 'Opus' : m.judgeModel.split('-')[0]}
+                                    </span>
+                                  )}
+                                  <button
+                                    onClick={e => { e.stopPropagation(); navigate(`/model-eval/history/${m.jobId}`); }}
+                                    className="text-[10px] font-semibold text-blue-500 hover:text-blue-700 hover:underline"
+                                  >
+                                    runs ▾
+                                  </button>
+                                </div>
                               </td>
                               <td className="px-6 py-4">
                                 <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded truncate block max-w-[160px]">
@@ -397,7 +411,12 @@ export const ModelListScreen: React.FC = () => {
                               </td>
                               <td className="px-6 py-4 text-right">
                                 <button
-                                  onClick={e => { e.stopPropagation(); navigate(`/eval/${m.evalId}`); }}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    const id = resolveEvalId(m);
+                                    if (id) navigate(`/model-eval/${id}`);
+                                    else navigate(`/model-eval/history/${m.jobId}`);
+                                  }}
                                   className="text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 hover:border-slate-400 px-3 py-1.5 rounded-lg transition"
                                 >
                                   View

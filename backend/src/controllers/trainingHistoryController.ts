@@ -1,5 +1,57 @@
 import { Request, Response } from 'express';
 import { TrainingHistory } from '../models/TrainingHistory';
+import { ModelEvaluation } from '../models/Evaluation';
+
+type EvalStats = { evalCount: number; pinnedOverallPct: number | null };
+
+/** Gắn thêm evalCount + pinnedOverallPct (%) cho danh sách job — dùng chung GET /api/train/history */
+async function enrichHistoriesWithEvalStats<T extends { jobId: string; pinnedEvalId?: string | null }>(
+  histories: T[]
+): Promise<Array<T & EvalStats>> {
+  if (!histories.length) return histories as Array<T & EvalStats>;
+
+  const jobIds = histories.map((h) => h.jobId);
+
+  const countAgg = await ModelEvaluation.aggregate<{ _id: string; evalCount: number }>([
+    { $match: { jobId: { $in: jobIds }, status: 'COMPLETED' } },
+    { $group: { _id: '$jobId', evalCount: { $sum: 1 } } },
+  ]);
+  const evalCountByJob = Object.fromEntries(countAgg.map((x) => [x._id, x.evalCount]));
+
+  const pinnedIds = [
+    ...new Set(
+      histories
+        .map((h) => h.pinnedEvalId)
+        .filter((id): id is string => !!id)
+    ),
+  ];
+
+  const pinnedPctByEvalId = new Map<string, number>();
+  if (pinnedIds.length) {
+    const pinnedEvals = await ModelEvaluation.find({
+      modelEvalId: { $in: pinnedIds },
+      status: 'COMPLETED',
+    })
+      .select('modelEvalId summary')
+      .lean();
+
+    for (const e of pinnedEvals) {
+      const max = e.summary?.max_possible ?? 5;
+      const ft = e.summary?.overall?.ft_avg ?? 0;
+      if (max > 0) pinnedPctByEvalId.set(e.modelEvalId, (ft / max) * 100);
+    }
+  }
+
+  return histories.map((h) => {
+    const jobId = h.jobId;
+    const evalCount = evalCountByJob[jobId] ?? 0;
+    const pinId = h.pinnedEvalId;
+    const pinnedOverallPct =
+      pinId && pinnedPctByEvalId.has(pinId) ? pinnedPctByEvalId.get(pinId)! : null;
+
+    return { ...h, evalCount, pinnedOverallPct };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/train/history
@@ -103,7 +155,8 @@ export const getTrainingHistoryList = async (req: Request, res: Response) => {
       .sort({ completedAt: -1 })
       .lean();
 
-    return res.status(200).json(histories);
+    const enriched = await enrichHistoriesWithEvalStats(histories);
+    return res.status(200).json(enriched);
   } catch (err: any) {
     console.error('[Backend] getTrainingHistoryList error:', err);
     return res.status(500).json({ error: err.message || 'Failed to get training history' });

@@ -7,9 +7,11 @@ import { ConversionPage } from '../pages/ConversionPage';
 import { HomePage } from '../pages/HomePage';
 import { MainLayout } from '../layout/MainLayout';
 import { TrainingHistoryScreen } from '../pages/TrainingHistoryScreen';
-import { ModelListScreen } from '../pages/ModelListScreen';
-import { EvaluationResultsScreen } from '../pages/EvaluationResultsScreen';
-import { RunEvaluationScreen } from '../pages/RunEvaluationScreen';
+import { ModelEvalLeaderboardScreen } from '../pages/ModelEvalLeaderboardScreen';
+import { ModelEvalResultScreen } from '../pages/ModelEvalResultScreen';
+import { ModelEvalRunScreen } from '../pages/ModelEvalRunScreen';
+import { ModelEvalHistoryScreen } from '../pages/ModelEvalHistoryScreen';
+import { ModelEvalCompareScreen } from '../pages/ModelEvalCompareScreen';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,10 +44,12 @@ export default function AppRouter() {
           <Route path="/chat" element={<ChatPage />} />
 
           {/* Model evaluation flow */}
-          <Route path="/models" element={<ModelListScreen />} />
-          <Route path="/eval/run" element={<RunEvaluationScreen />} />
-          {/* /eval/:evalId phải đứng SAU /eval/run để không bị shadow */}
-          <Route path="/eval/:evalId" element={<EvaluationResultsScreen />} />
+          <Route path="/model-eval/leaderboard" element={<ModelEvalLeaderboardScreen />} />
+          <Route path="/model-eval/run" element={<ModelEvalRunScreen />} />
+          <Route path="/model-eval/history/:jobId" element={<ModelEvalHistoryScreen />} />
+          <Route path="/model-eval/compare" element={<ModelEvalCompareScreen />} />
+          {/* /model-eval/:evalId phải đứng SAU /model-eval/run, /history, /compare để không bị shadow */}
+          <Route path="/model-eval/:evalId" element={<ModelEvalResultScreen />} />
         </Routes>
       </Router>
     </QueryClientProvider>

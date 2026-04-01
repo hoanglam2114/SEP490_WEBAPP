@@ -41,6 +41,9 @@ export interface ITrainingHistory extends Document {
   createdAt: Date;
   updatedAt: Date;
 
+  // Model Evaluation
+  pinnedEvalId?: string;       // modelEvalId của eval được chọn làm official (hiển thị trên leaderboard)
+
   // Added for Resume Checkpoint
   latest_checkpoint_file_id?: string;
   drive_folder_id?: string;
@@ -87,6 +90,9 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     trainingDuration: { type: Number, default: 0 },  // ms
     startedAt: { type: Date, required: true },
     completedAt: { type: Date },
+
+    // Model Evaluation
+    pinnedEvalId: { type: String, default: null },
 
     // Added for Resume Checkpoint
     latest_checkpoint_file_id: { type: String },

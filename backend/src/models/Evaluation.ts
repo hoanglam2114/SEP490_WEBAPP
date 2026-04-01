@@ -26,7 +26,7 @@ export interface ISubjectSummary {
 }
 
 export interface IEvaluation extends Document {
-  evalId: string;
+  modelEvalId: string;
   jobId: string;
   status: string; // 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
   totalSamples: number;
@@ -40,7 +40,12 @@ export interface IEvaluation extends Document {
     speed?: { base_avg_ms: number; ft_avg_ms: number; base_score: number; ft_score: number; weight: number };
     by_subject: Record<string, ISubjectSummary>;
     max_possible: number;
+    reference_metrics?: {
+      bleu: { base: number; ft: number };
+      rouge_l: { base: number; ft: number };
+    };
   };
+  judgeModel?: string;
   startedAt: Date;
   completedAt: Date;
   createdAt: Date;
@@ -82,7 +87,7 @@ const SubjectSummarySchema = new Schema<ISubjectSummary>(
 
 const EvaluationSchema = new Schema<IEvaluation>(
   {
-    evalId: { type: String, required: true, unique: true, index: true },
+    modelEvalId: { type: String, required: true, unique: true, index: true },
     jobId: { type: String, required: true, index: true },
     status: { type: String, required: true },
     totalSamples: { type: Number, default: 0 },
@@ -116,13 +121,18 @@ const EvaluationSchema = new Schema<IEvaluation>(
       },
       by_subject: { type: Map, of: SubjectSummarySchema, default: {} },
       max_possible: { type: Number, default: 5 },
+      reference_metrics: {
+        bleu: { base: { type: Number }, ft: { type: Number } },
+        rouge_l: { base: { type: Number }, ft: { type: Number } },
+      },
     },
     startedAt: { type: Date, required: true },
     completedAt: { type: Date, required: true },
+    judgeModel: { type: String, default: 'claude-haiku-4-5-20251001' },
   },
   {
     timestamps: true,
   }
 );
 
-export const Evaluation = mongoose.model<IEvaluation>('Evaluation', EvaluationSchema);
+export const ModelEvaluation = mongoose.model<IEvaluation>('ModelEvaluation', EvaluationSchema);
