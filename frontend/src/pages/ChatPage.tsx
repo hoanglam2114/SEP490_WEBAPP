@@ -400,7 +400,6 @@ export default function ChatPage() {
                             }}
                             disabled={loading}
                         />
-
                         <button
                             onClick={handleConfirmModel}
                             disabled={!hfHubId.trim() || loading || modelLoaded}
