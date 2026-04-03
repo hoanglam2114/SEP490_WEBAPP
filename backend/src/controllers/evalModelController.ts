@@ -9,16 +9,29 @@ import { TrainingHistory } from '../models/TrainingHistory';
 dotenv.config();
 
 const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
-const GPU_WORKERS = process.env.GPU_WORKERS
-  ? process.env.GPU_WORKERS.split(',').map((w) => w.trim())
-  : [GPU_SERVICE_URL];
 
-// evalJobId -> worker URL mapping
-const workerRegistry = new Map<string, string>();
-
-function pickAvailableWorker(): string {
-  // simple random selection
-  return GPU_WORKERS[Math.floor(Math.random() * GPU_WORKERS.length)];
+// ---------------------------------------------------------------------------
+// Helper: lấy GPU status — kiểm tra trước khi dispatch eval
+// ---------------------------------------------------------------------------
+async function getGpuStatus(): Promise<{
+  can_create_eval: boolean;
+  active_evals: number;
+  max_evals: number;
+  vram_free_mb: number;
+  vram_total_mb: number;
+  vram_used_mb: number;
+  gpu_util: number;
+} | null> {
+  try {
+    const resp = await fetch(`${GPU_SERVICE_URL}/api/system/resources`, {
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return null;
+    return (await resp.json()) as any;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,15 +130,34 @@ export const runEvaluation = async (req: Request, res: Response) => {
       knownLength: evalFile.size,
     });
 
-    // 6. Forward sang GPU service
-    const workerUrl = pickAvailableWorker();
-    console.log(`[Backend] Forwarding eval to GPU worker (${workerUrl}): /api/eval/start`);
-    const gpuResponse = await fetchWithForm(`${workerUrl}/api/eval/start`, form);
+    // 6. Kiểm tra GPU trước khi dispatch
+    const gpuStatus = await getGpuStatus();
+    if (!gpuStatus) {
+      fs.unlink(evalFile.path, () => {});
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      return res.status(503).json({ error: 'gpu_offline', message: 'GPU service không phản hồi' });
+    }
+    if (!gpuStatus.can_create_eval) {
+      fs.unlink(evalFile.path, () => {});
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      return res.status(503).json({
+        error: 'worker_busy',
+        message: `GPU đang bận (${gpuStatus.active_evals}/${gpuStatus.max_evals} slots, VRAM free: ${Math.round(gpuStatus.vram_free_mb / 1024)}GB)`,
+        active_evals: gpuStatus.active_evals,
+        max_evals: gpuStatus.max_evals,
+        vram_free_mb: gpuStatus.vram_free_mb,
+      });
+    }
+
+    // 7. Forward sang GPU service
+    console.log(`[Backend] Forwarding eval to GPU: /api/eval/start (slots: ${gpuStatus.active_evals}/${gpuStatus.max_evals})`);
+    const gpuResponse = await fetchWithForm(`${GPU_SERVICE_URL}/api/eval/start`, form);
 
     if (gpuResponse.status === 409) {
-      fs.unlink(evalFile.path, () => { });
+      // Race condition: GPU vừa nhận job khác trong khoảng thời gian ngắn
+      fs.unlink(evalFile.path, () => {});
       await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
-      return res.status(503).json({ error: 'worker_busy' });
+      return res.status(503).json({ error: 'worker_busy', message: 'GPU vừa nhận job khác, vui lòng thử lại' });
     }
 
     const responseText = await gpuResponse.text();
@@ -149,15 +181,12 @@ export const runEvaluation = async (req: Request, res: Response) => {
       return res.status(gpuResponse.status).json(gpuData);
     }
 
-    // Save evalJobId to worker mapped in registry
-    workerRegistry.set(eval_job_id, workerUrl);
-
-    // 7. Xóa file tạm (GPU đã lưu bản của nó rồi)
+    // 8. Xóa file tạm (GPU đã lưu bản của nó rồi)
     fs.unlink(evalFile.path, (err) => {
       if (err) console.warn(`[Backend] Could not delete eval temp file: ${evalFile.path}`);
     });
 
-    // 8. Update TrainingHistory status → EVALUATING
+    // 9. Update TrainingHistory status → EVALUATING
     await TrainingHistory.updateOne({ jobId }, { status: 'EVALUATING' });
 
     return res.status(201).json({
@@ -193,8 +222,7 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 
   const intervalId = setInterval(async () => {
     try {
-      const workerUrl = workerRegistry.get(evalJobId) || GPU_WORKERS[0];
-      const response = await fetch(`${workerUrl}/api/eval/status/${evalJobId}`, {
+      const response = await fetch(`${GPU_SERVICE_URL}/api/eval/status/${evalJobId}`, {
         headers: { 'ngrok-skip-browser-warning': 'true' },
       });
       const text = await response.text();
@@ -245,8 +273,7 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
   try {
-    const workerUrl = workerRegistry.get(evalJobId) || GPU_WORKERS[0];
-    const resp = await fetch(`${workerUrl}/api/eval/result/${evalJobId}`, {
+    const resp = await fetch(`${GPU_SERVICE_URL}/api/eval/result/${evalJobId}`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
     });
 
@@ -292,6 +319,18 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
     console.error(`[Backend] _fetchAndSaveResult error for ${evalJobId}:`, err.message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/model-eval/gpu-status
+// FE gọi để hiển thị GPU status widget và quyết định có cho tạo eval mới không
+// ---------------------------------------------------------------------------
+export const getGpuStatusEndpoint = async (_req: Request, res: Response) => {
+  const status = await getGpuStatus();
+  if (!status) {
+    return res.status(503).json({ error: 'gpu_offline', message: 'GPU service không phản hồi' });
+  }
+  return res.json(status);
+};
 
 // ---------------------------------------------------------------------------
 // POST /api/model-eval/save

@@ -33,6 +33,16 @@ interface EvalRun {
 
 type EvalPhase = 'idle' | 'uploading' | 'running' | 'done' | 'error';
 
+interface GpuStatus {
+  can_create_eval: boolean;
+  active_evals: number;
+  max_evals: number;
+  vram_free_mb: number;
+  vram_total_mb: number;
+  vram_used_mb: number;
+  gpu_util: number;
+}
+
 // Judge models cố định — thêm vào đây khi có model mới
 const JUDGE_MODELS = [
   {
@@ -191,10 +201,10 @@ const RunCard: React.FC<{
 
   const badgeClass = {
     uploading: 'bg-amber-50 text-amber-700 border border-amber-200',
-    running: 'bg-blue-50 text-blue-700 border border-blue-200',
-    done: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
-    error: 'bg-red-50 text-red-700 border border-red-200',
-    idle: '',
+    running:   'bg-blue-50 text-blue-700 border border-blue-200',
+    done:      'bg-emerald-50 text-emerald-700 border border-emerald-200',
+    error:     'bg-red-50 text-red-700 border border-red-200',
+    idle:      '',
   }[run.phase];
 
   const badgeLabel = {
@@ -298,9 +308,9 @@ const RunCard: React.FC<{
                 : run.logs.map((log, i) => (
                   <p key={i} className={
                     log.includes('✅') || log.includes('🎉') ? 'text-emerald-400' :
-                      log.includes('❌') || log.includes('LỖI') ? 'text-red-400' :
-                        log.includes('⚡') || log.includes('📊') || log.includes('📐') ? 'text-blue-400' :
-                          log.includes('⚙️') ? 'text-amber-400' : 'text-slate-300'
+                    log.includes('❌') || log.includes('LỖI') ? 'text-red-400' :
+                    log.includes('⚡') || log.includes('📊') || log.includes('📐') ? 'text-blue-400' :
+                    log.includes('⚙️') ? 'text-amber-400' : 'text-slate-300'
                   }>{log}</p>
                 ))}
               <div ref={logEndRef} />
@@ -366,6 +376,8 @@ export const ModelEvalRunScreen: React.FC = () => {
 
   // ── Modal tạo eval mới ────────────────────────────────────────────────
   const [showModal, setShowModal] = useState(false);
+  const [gpuStatus, setGpuStatus] = useState<GpuStatus | null>(null);
+  const [gpuLoading, setGpuLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string>('');
   const [judgeModel, setJudgeModel] = useState<string>(JUDGE_MODELS[0].id);
   const [jobSearch, setJobSearch] = useState<string>('');
@@ -381,6 +393,24 @@ export const ModelEvalRunScreen: React.FC = () => {
   const sseMapRef = useRef<Map<string, EventSource>>(new Map());
   // ETA refs: evalJobId → { seconds, lastStage }
   const etaMapRef = useRef<Map<string, { seconds: number | null; lastStage: EvalStageKey }>>(new Map());
+
+  // ── Fetch GPU status ─────────────────────────────────────────────────
+  const fetchGpuStatus = async () => {
+    setGpuLoading(true);
+    try {
+      const r = await fetch('/api/model-eval/gpu-status');
+      if (r.ok) setGpuStatus(await r.json());
+      else setGpuStatus(null);
+    } catch { setGpuStatus(null); }
+    finally { setGpuLoading(false); }
+  };
+
+  useEffect(() => {
+    fetchGpuStatus();
+    // Poll mỗi 10s để cập nhật live
+    const id = setInterval(fetchGpuStatus, 10000);
+    return () => clearInterval(id);
+  }, []);
 
   // ── Fetch jobs list ───────────────────────────────────────────────────
   useEffect(() => {
@@ -535,13 +565,11 @@ export const ModelEvalRunScreen: React.FC = () => {
           updateRun(evalJobId, {
             phase: 'done',
             doneEvalId: evalJobId,
-            logs: (() => { let l: string[] = []; setRuns(prev => { l = [...(prev.find(r => r.evalJobId === evalJobId)?.logs ?? []), '[🎉] Đánh giá hoàn tất!']; return prev; }); return l; })(),
+            logs: (() => { let l: string[] = []; setRuns(prev => { l = [...(prev.find(r=>r.evalJobId===evalJobId)?.logs??[]), '[🎉] Đánh giá hoàn tất!']; return prev; }); return l; })(),
           });
           setRuns(prev => prev.map(r => r.evalJobId === evalJobId
-            ? {
-              ...r, phase: 'done', doneEvalId: evalJobId, logs: [...r.logs, '[🎉] Đánh giá hoàn tất!'],
-              completedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-            }
+            ? { ...r, phase: 'done', doneEvalId: evalJobId, logs: [...r.logs, '[🎉] Đánh giá hoàn tất!'],
+                completedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
             : r
           ));
         } else {
@@ -639,6 +667,9 @@ export const ModelEvalRunScreen: React.FC = () => {
   const canSubmit = !!selectedJobId && !!evalFile && !!judgeModel && submitPhase === 'idle';
   const workerCount = Math.min(activeRuns.length, 3);
   const maxEta = activeRuns.reduce((max, r) => Math.max(max, r.etaSeconds ?? 0), 0);
+  // can_create_eval từ GPU (VRAM + slots), fallback về slot count nếu GPU offline
+  const canCreateEval = gpuStatus ? gpuStatus.can_create_eval : activeRuns.length < 3;
+  const vramUsedPct = gpuStatus ? Math.round(gpuStatus.vram_used_mb / gpuStatus.vram_total_mb * 100) : null;
 
   return (
     <div className="min-h-screen bg-slate-50 pb-16">
@@ -655,15 +686,19 @@ export const ModelEvalRunScreen: React.FC = () => {
             <div>
               <h1 className="text-xl font-bold text-slate-800">Đánh giá model</h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                {activeRuns.length > 0
+                {gpuStatus === null && !gpuLoading
+                  ? <span className="text-red-400">GPU offline</span>
+                  : activeRuns.length > 0
                   ? `${activeRuns.length} đang chạy · ${3 - activeRuns.length} slot trống`
                   : 'Chưa có eval nào đang chạy'}
               </p>
             </div>
           </div>
           <button
-            onClick={() => { setShowModal(true); setSubmitPhase('idle'); setSubmitError(''); }}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-white hover:bg-slate-700 transition shrink-0"
+            onClick={() => { if (canCreateEval) { setShowModal(true); setSubmitPhase('idle'); setSubmitError(''); } }}
+            disabled={!canCreateEval}
+            title={!canCreateEval && gpuStatus ? `GPU bận (${gpuStatus.active_evals}/${gpuStatus.max_evals} slots, VRAM free: ${Math.round(gpuStatus.vram_free_mb/1024)}GB)` : undefined}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -678,13 +713,24 @@ export const ModelEvalRunScreen: React.FC = () => {
         {/* Summary bar */}
         <div className="grid grid-cols-3 gap-3">
           <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Workers</p>
-            <p className="text-2xl font-bold text-slate-800">{workerCount} <span className="text-slate-300 font-normal text-base">/ 3</span></p>
-            <div className="flex gap-1.5 mt-2">
-              {[0, 1, 2].map(i => (
-                <span key={i} className={`w-2.5 h-2.5 rounded-full ${i < activeRuns.length ? 'bg-emerald-400' : 'bg-slate-200'}`} />
-              ))}
-            </div>
+            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">GPU</p>
+            {gpuStatus ? (
+              <>
+                <p className="text-2xl font-bold text-slate-800">
+                  {Math.round(gpuStatus.vram_used_mb / 1024)}
+                  <span className="text-slate-300 font-normal text-base"> / {Math.round(gpuStatus.vram_total_mb / 1024)}GB</span>
+                </p>
+                <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${(vramUsedPct ?? 0) > 85 ? 'bg-red-400' : (vramUsedPct ?? 0) > 60 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                    style={{ width: `${vramUsedPct ?? 0}%` }}
+                  />
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">Util {gpuStatus.gpu_util}%</p>
+              </>
+            ) : (
+              <p className="text-sm text-slate-300 mt-1">{gpuLoading ? 'Đang tải...' : 'Offline'}</p>
+            )}
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-4">
             <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Đang chạy</p>
@@ -912,15 +958,21 @@ export const ModelEvalRunScreen: React.FC = () => {
               {/* Submit row */}
               <div className="flex items-center justify-between gap-4 pt-1">
                 <div className="text-xs text-slate-400">
-                  {activeRuns.length >= 3
-                    ? <span className="text-amber-600 font-medium">Đã đạt giới hạn 3 workers đồng thời</span>
+                  {gpuStatus && !gpuStatus.can_create_eval
+                    ? <span className="text-amber-600 font-medium">
+                        {gpuStatus.active_evals >= gpuStatus.max_evals
+                          ? `Đã đạt giới hạn ${gpuStatus.max_evals} eval đồng thời`
+                          : `VRAM không đủ (free: ${Math.round(gpuStatus.vram_free_mb/1024)}GB)`}
+                      </span>
+                    : gpuStatus
+                    ? `${gpuStatus.max_evals - gpuStatus.active_evals} slot còn trống · VRAM free ${Math.round(gpuStatus.vram_free_mb/1024)}GB`
                     : `${3 - activeRuns.length} slot còn trống`}
                 </div>
                 <div className="flex items-center gap-3">
                   <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition">Huỷ</button>
                   <button
                     onClick={handleSubmit}
-                    disabled={!canSubmit || activeRuns.length >= 3}
+                    disabled={!canSubmit || !canCreateEval}
                     className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                   >
                     {submitPhase === 'uploading' && <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
