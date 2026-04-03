@@ -43,10 +43,11 @@ export const apiService = {
       top_p?: number;
       repetition_penalty?: number;
       signal?: AbortSignal;
+      onFinalInfo?: (info: any) => void;
     } = {},
     onChunk: (text: string) => void
   ) => {
-    const { signal, ...restOptions } = options;
+    const { signal, onFinalInfo, ...restOptions } = options;
     const response = await fetch(`${API_BASE_URL}/infer/stream`, {
       method: "POST",
       headers: {
@@ -58,7 +59,12 @@ export const apiService = {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      let errMsg = `HTTP error! status: ${response.status}`;
+      try {
+        const errJson = await response.json();
+        if (errJson.error) errMsg = errJson.error;
+      } catch (e) {}
+      throw new Error(errMsg);
     }
 
     if (!response.body) {
@@ -84,7 +90,7 @@ export const apiService = {
           const dataText = line.trim().substring(5).trim();
 
           if (dataText === '[DONE]') {
-            return;
+            continue;
           }
 
           if (dataText) {
@@ -93,7 +99,9 @@ export const apiService = {
               if (dataObj.error) {
                 throw new Error(dataObj.error);
               }
-              if (dataObj.text) {
+              if (dataObj.is_final && onFinalInfo) {
+                onFinalInfo(dataObj);
+              } else if (dataObj.text) {
                 onChunk(dataObj.text);
               }
             } catch (e) {
@@ -103,6 +111,11 @@ export const apiService = {
         }
       }
     }
+  },
+
+  loadModel: async (hf_model_id: string, options?: any) => {
+    const response = await api.post("/model/load", { hf_model_id, ...options });
+    return response.data;
   },
 
   uploadFile: async (file: File): Promise<FileUploadResult> => {
@@ -161,14 +174,11 @@ export const apiService = {
 
   saveEvaluationResults: async (payload: {
     fileId: string;
-    format: string;
-    dataGroup: 'all' | number;
-    results: Array<{
-      rowId: string;
-      groupId?: number;
-      instruction: string;
-      output: string;
-      scores: {
+    items: Array<{
+      format: string;
+      data: Record<string, any>;
+      evaluatedBy: 'manual' | 'gemini';
+      results: {
         accuracy?: number;
         clarity?: number;
         completeness?: number;
@@ -176,13 +186,132 @@ export const apiService = {
         alignment?: number;
         factuality?: number;
         overall: number;
+        reason: string;
       };
-      reason: string;
+      createdAt: string;
     }>;
-  }): Promise<{ message: string; id: string }> => {
-    const response = await api.post<{ message: string; id: string }>('/evaluate/save', payload);
+  }): Promise<{ message: string; insertedCount: number }> => {
+    const response = await api.post<{ message: string; insertedCount: number }>('/evaluate/save', payload);
     return response.data;
   },
 
+  getEvaluationHistory: async (params: {
+    page: number;
+    limit: number;
+    format?: 'openai' | 'alpaca';
+  }): Promise<{
+    items: Array<{
+      _id: string;
+      fileId: string;
+      format: 'openai' | 'alpaca';
+      data: Record<string, any>;
+      evaluatedBy: 'manual' | 'gemini';
+      results: {
+        accuracy?: number;
+        clarity?: number;
+        completeness?: number;
+        socratic?: number;
+        alignment?: number;
+        factuality?: number;
+        overall: number;
+        reason: string;
+      };
+      createdAt: string;
+      updatedAt?: string;
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> => {
+    const response = await api.get('/evaluate/history', {
+      params: {
+        page: params.page,
+        limit: params.limit,
+        ...(params.format ? { format: params.format } : {}),
+      },
+    });
+    return response.data;
+  },
 
+  updateEvaluationHistory: async (
+    id: string,
+    payload: {
+      results: {
+        accuracy?: number;
+        clarity?: number;
+        completeness?: number;
+        socratic?: number;
+        alignment?: number;
+        factuality?: number;
+        overall: number;
+        reason: string;
+      };
+      evaluatedBy: 'manual' | 'gemini';
+    }
+  ): Promise<{ message: string; item: any }> => {
+    const response = await api.patch(`/evaluate/history/${id}`, payload);
+    return response.data;
+  },
+
+  clusterData: (data: any[]): Promise<{
+    data: any[];
+    groups: any[];
+    assignments: number[];
+  }> =>
+    api
+      .post('/cluster', { data })
+      .then((res) => res.data),
+
+  clusterFilter: (
+    data: any[],
+    threshold?: number
+  ): Promise<{
+    data: any[];
+    groups: any[];
+    assignments: number[];
+  }> =>
+    api
+      .post('/cluster/filter', { data, threshold })
+      .then((res) => res.data),
+
+  deleteClusterCache: (): Promise<any> =>
+    api
+      .delete('/cluster/cache')
+      .then((res) => res.data),
+
+  getChatSessions: async (limit = 30): Promise<any[]> => {
+    const response = await api.get('/chat/sessions', { params: { limit } });
+    return response.data;
+  },
+
+  getChatSessionById: async (id: string): Promise<any> => {
+    const response = await api.get(`/chat/sessions/${id}`);
+    return response.data;
+  },
+
+  createChatSession: async (payload: {
+    userMessage: string;
+    aiMessage: string;
+    model: string;
+    responseTime: number;
+  }): Promise<any> => {
+    const response = await api.post('/chat/sessions', payload);
+    return response.data;
+  },
+
+  appendMessageToSession: async (id: string, payload: {
+    userMessage: string;
+    aiMessage: string;
+    model: string;
+    responseTime: number;
+  }): Promise<any> => {
+    const response = await api.put(`/chat/sessions/${id}`, payload);
+    return response.data;
+  },
+
+  deleteChatSession: async (id: string): Promise<any> => {
+    const response = await api.delete(`/chat/sessions/${id}`);
+    return response.data;
+  },
 };

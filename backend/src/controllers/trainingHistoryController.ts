@@ -17,7 +17,6 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
       parameters,
       pushToHub,
       hfRepoId,
-      hfToken,
       status,
       finalMetrics,
       lastLogLine,
@@ -41,9 +40,8 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
       existing.datasetName = datasetName;
       existing.columnMapping = columnMapping;
       existing.parameters = parameters;
-      existing.pushToHub = pushToHub ?? true;
+      existing.pushToHub = pushToHub ?? false;
       existing.hfRepoId = hfRepoId ?? '';
-      existing.hfToken = hfToken ?? '';
       existing.status = status;
       existing.finalMetrics = finalMetrics;
       existing.lastLogLine = lastLogLine;
@@ -65,9 +63,8 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
       datasetName,
       columnMapping,
       parameters,
-      pushToHub: pushToHub ?? true,
+      pushToHub: pushToHub ?? false,
       hfRepoId: hfRepoId ?? '',
-      hfToken: hfToken ?? '',
       status,
       finalMetrics,
       lastLogLine,

@@ -12,16 +12,22 @@
   "dependencies": {
     "@tanstack/react-query": "^5.17.9",
     "axios": "^1.6.5",
+    "katex": "^0.16.9",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-dropzone": "^14.2.3",
     "react-hot-toast": "^2.4.1",
+    "react-markdown": "^9.0.1",
     "react-router-dom": "^7.13.0",
     "recharts": "^3.8.0",
+    "rehype-katex": "^7.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@types/katex": "^0.16.7",
     "@types/node": "^25.0.10",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",

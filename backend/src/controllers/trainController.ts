@@ -9,10 +9,43 @@ import path from 'path';
 dotenv.config();
 
 /**
- * GPU Service URL — set GPU_SERVICE_URL in backend/.env
- * Default stays at localhost:5000 so the mock server still works without any .env change.
+ * GPU Service URLs — set GPU_SERVICE_URL in backend/.env (comma-separated for multiple workers)
  */
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
+const GPU_SERVICE_URLS = (process.env.GPU_SERVICE_URL || 'http://localhost:5000').split(',').map(url => url.trim());
+
+class WorkerManager {
+  private workers: { url: string; activeJobs: number }[];
+
+  constructor(urls: string[]) {
+    this.workers = urls.map(url => ({ url, activeJobs: 0 }));
+  }
+
+  // Pick the worker with the fewest active jobs
+  getNextWorker(): string {
+    if (this.workers.length === 0) return 'http://localhost:5000';
+    
+    // Sort by active jobs and pick the first one
+    this.workers.sort((a, b) => a.activeJobs - b.activeJobs);
+    return this.workers[0].url;
+  }
+
+  incrementJobs(url: string) {
+    const worker = this.workers.find(w => w.url === url);
+    if (worker) worker.activeJobs++;
+  }
+
+  decrementJobs(url: string) {
+    const worker = this.workers.find(w => w.url === url);
+    if (worker && worker.activeJobs > 0) worker.activeJobs--;
+  }
+
+  getUrls() {
+    return this.workers.map(w => w.url);
+  }
+}
+
+const workerManager = new WorkerManager(GPU_SERVICE_URLS);
+
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '';
 const GOOGLE_DRIVE_CREDENTIALS = process.env.GOOGLE_DRIVE_CREDENTIALS || '';
 
@@ -168,9 +201,11 @@ export const startTraining = async (req: Request, res: Response) => {
     }
 
     // ── Forward to GPU Service (with explicit Content-Length) ───────────────
-    console.log(`[Backend] Forwarding to GPU service: ${GPU_SERVICE_URL}/api/train/start`);
+    const workerUrl = workerManager.getNextWorker();
+    console.log(`[Backend] Forwarding to GPU service: ${workerUrl}/api/train/start`);
+    workerManager.incrementJobs(workerUrl);
 
-    const gpuResponse = await fetchWithForm(`${GPU_SERVICE_URL}/api/train/start`, form);
+    const gpuResponse = await fetchWithForm(`${workerUrl}/api/train/start`, form);
 
     // Log raw response text first — helps debug if GPU service returns HTML/error pages
     const responseText = await gpuResponse.text();
@@ -236,14 +271,15 @@ export const startTraining = async (req: Request, res: Response) => {
           optim: (optim as string) || 'adamw_8bit',
           lr_scheduler_type: (lr_scheduler_type as string) || 'linear',
         },
-        pushToHub: true, // Always true as requested
+        pushToHub: true,
         hfRepoId: hf_repo_id || '',
         hfToken: hf_token || '',
-        status: 'RUNNING',
+        status: 'QUEUED', // <--- CHANGE: Set initial status to QUEUED
         trainingDuration: 0,
         startedAt: new Date(),
-        config_snapshot: config, // Save the PARSED config object, not req.body (to preserve numeric types)
+        config_snapshot: req.body,
         datasetPath: savedDatasetPath,
+        workerUrl: workerUrl,
       });
       console.log(`[Backend] Initial TrainingHistory created for job ${job_id}`);
     } catch (dbErr) {
@@ -270,7 +306,11 @@ export const getTrainingStatus = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid jobId' });
     }
 
-    const response = await fetch(`${GPU_SERVICE_URL}/api/train/status/${jobId}`, {
+    // Get worker URL from DB
+    const history = await TrainingHistory.findOne({ jobId });
+    const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
+
+    const response = await fetch(`${workerUrl}/api/train/status/${jobId}`, {
       headers: { 'ngrok-skip-browser-warning': 'true' }
     });
     const data = await response.json();
@@ -301,9 +341,13 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  // Get worker URL from DB
+  const history = await TrainingHistory.findOne({ jobId });
+  const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
+
   const intervalId = setInterval(async () => {
     try {
-      const response = await fetch(`${GPU_SERVICE_URL}/api/train/status/${jobId}`, {
+      const response = await fetch(`${workerUrl}/api/train/status/${jobId}`, {
         headers: { 'ngrok-skip-browser-warning': 'true' }
       });
       const data: any = await response.json();
@@ -318,7 +362,9 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
 
       res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-      if (['COMPLETED', 'STOPPED', 'FAILED', 'UNKNOWN', 'ERROR'].includes(data.status)) {
+      // Do not close the stream on UNKNOWN, as it might be a transient state
+      // (e.g., job not yet registered by the GPU service). Only close on definitive end-states.
+      if (['COMPLETED', 'STOPPED', 'FAILED', 'ERROR'].includes(data.status)) {
         // Auto-update MongoDB so History screen shows correct status
         TrainingHistory.updateOne(
           { jobId },
@@ -329,18 +375,22 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
           }
         ).catch(err => console.error('[Backend] Failed to update final status in DB:', err));
 
+        workerManager.decrementJobs(workerUrl);
         clearInterval(intervalId);
         res.write(`event: end\ndata: ${JSON.stringify(data)}\n\n`);
         res.end();
       }
     } catch (err: any) {
       res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+      workerManager.decrementJobs(workerUrl);
       clearInterval(intervalId);
       res.end();
     }
   }, 1000);
 
-  req.on('close', () => clearInterval(intervalId));
+  req.on('close', () => {
+    clearInterval(intervalId);
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -349,7 +399,12 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
 export const stopTraining = async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;
-    const response = await fetch(`${GPU_SERVICE_URL}/api/train/stop/${jobId}`, { 
+
+    // Get worker URL from DB
+    const history = await TrainingHistory.findOne({ jobId });
+    const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
+
+    const response = await fetch(`${workerUrl}/api/train/stop/${jobId}`, { 
       method: 'POST',
       headers: { 'ngrok-skip-browser-warning': 'true' }
     });
@@ -365,11 +420,30 @@ export const stopTraining = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getSystemResources = async (_req: Request, res: Response) => {
   try {
-    const response = await fetch(`${GPU_SERVICE_URL}/api/system/resources`, {
-      headers: { 'ngrok-skip-browser-warning': 'true' }
+    const urls = workerManager.getUrls();
+    const resourcePromises = urls.map(async (url) => {
+      try {
+        const response = await fetch(`${url}/api/system/resources`, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        const data: any = await response.json();
+        return { url, ...data };
+      } catch (err) {
+        return { url, error: 'Worker unreachable' };
+      }
     });
-    const data = await response.json();
-    return res.json(data);
+
+    const results: any[] = await Promise.all(resourcePromises);
+    
+    // Aggregated resources for backward compatibility if needed, 
+    // or just return the list of workers
+    return res.json({
+      workers: results,
+      // Aggregated for old UI
+      vram_used_mb: results.reduce((acc, curr) => acc + (curr.vram_used_mb || 0), 0),
+      vram_total_mb: results.reduce((acc, curr) => acc + (curr.vram_total_mb || 0), 0),
+      gpu_util: results.length > 0 ? results.reduce((acc, curr) => acc + (curr.gpu_util || 0), 0) / results.length : 0
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get system resources' });
   }
@@ -416,6 +490,7 @@ export const resumeTraining = async (req: Request, res: Response) => {
       checkpoint_file_id: checkpointSource === 'drive' ? checkpointId : undefined,
       checkpoint_hf_repo: checkpointSource === 'hf' ? checkpointId : undefined,
       checkpoint_source: checkpointSource,
+      hf_token: history.hfToken || '', // Pass stored token for resume
       // Drive credentials (still included even if not used, for future saves)
       drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
       service_account: parsedGoogleCredentials,
@@ -450,13 +525,13 @@ export const resumeTraining = async (req: Request, res: Response) => {
     }
 
     // 4. Forward to GPU Service
-    console.log(`[Backend] Forwarding to GPU service: ${GPU_SERVICE_URL}/api/train/start`);
+    const workerUrl = workerManager.getNextWorker();
+    console.log(`[Backend] Forwarding to GPU service: ${workerUrl}/api/train/start`);
+    workerManager.incrementJobs(workerUrl);
 
-    const gpuResponse = await fetchWithForm(`${GPU_SERVICE_URL}/api/train/start`, form);
+    const gpuResponse = await fetchWithForm(`${workerUrl}/api/train/start`, form);
 
     const responseText = await gpuResponse.text();
-    console.log(`[Backend] GPU response (${gpuResponse.status}): ${responseText.slice(0, 300)}`);
-
     let data: any;
     try {
       data = JSON.parse(responseText);
@@ -468,7 +543,10 @@ export const resumeTraining = async (req: Request, res: Response) => {
     }
 
     if (gpuResponse.ok) {
-      await TrainingHistory.updateOne({ jobId }, { status: 'RUNNING' });
+      await TrainingHistory.updateOne({ jobId }, { 
+        status: 'RUNNING',
+        workerUrl: workerUrl
+      });
     }
 
     return res.status(gpuResponse.status).json(data);

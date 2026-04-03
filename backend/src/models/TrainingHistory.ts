@@ -26,7 +26,7 @@ export interface ITrainingHistory extends Document {
   };
   pushToHub: boolean;
   hfRepoId: string;
-  hfToken?: string;
+  hfToken: string;
   status: string;              // 'COMPLETED' | 'STOPPED' | 'FAILED'
   finalMetrics?: {
     loss: number;
@@ -46,6 +46,7 @@ export interface ITrainingHistory extends Document {
   drive_folder_id?: string;
   config_snapshot?: any;
   datasetPath?: string;
+  workerUrl?: string;
 }
 
 const TrainingHistorySchema = new Schema<ITrainingHistory>(
@@ -93,6 +94,7 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     drive_folder_id: { type: String },
     config_snapshot: { type: Schema.Types.Mixed }, // Store arbitrary JSON config
     datasetPath: { type: String },
+    workerUrl: { type: String },
   },
   {
     timestamps: true, // tự tạo createdAt, updatedAt

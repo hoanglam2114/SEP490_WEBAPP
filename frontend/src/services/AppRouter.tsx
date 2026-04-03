@@ -10,6 +10,7 @@ import { TrainingHistoryScreen } from '../pages/TrainingHistoryScreen';
 import { ModelListScreen } from '../pages/ModelListScreen';
 import { EvaluationResultsScreen } from '../pages/EvaluationResultsScreen';
 import { RunEvaluationScreen } from '../pages/RunEvaluationScreen';
+import { EvaluationHistory } from '../pages/EvaluationHistory';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +40,7 @@ export default function AppRouter() {
             element={<AutoTrainScreen />}
           />
           <Route path="/training-history" element={<TrainingHistoryScreen />} />
+          <Route path="/evaluation-history" element={<EvaluationHistory />} />
           <Route path="/chat" element={<ChatPage />} />
 
           {/* Model evaluation flow */}
