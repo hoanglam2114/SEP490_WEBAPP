@@ -41,6 +41,7 @@ interface TrainingHistoryItem {
   completedAt: string;
   createdAt: string;
   latest_checkpoint_file_id?: string;
+  workerUrl?: string;
 }
 
 function formatDuration(ms: number): string {
@@ -160,21 +161,9 @@ export const TrainingHistoryScreen: React.FC = () => {
       case 'COMPLETED':
         return 'bg-emerald-50 text-emerald-700 border-emerald-200';
       case 'STOPPED':
-      case 'INCOMPLETED':
-      case 'INCOMPLETE':
-        return 'bg-orange-50 text-orange-700 border-orange-200';
-      case 'FAILED':
-      case 'ERROR':
         return 'bg-red-50 text-red-700 border-red-200';
-      case 'PENDING':
-        return 'bg-amber-50 text-amber-700 border-amber-200';
-      case 'RUNNING':
-      case 'TRAINING':
-        return 'bg-blue-50 text-blue-700 border-blue-200';
-      case 'EVALUATING':
-        return 'bg-violet-50 text-violet-700 border-violet-200';
-      case 'evaluated':
-        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      case 'FAILED':
+        return 'bg-red-50 text-red-700 border-red-200';
       default:
         return 'bg-gray-50 text-gray-700 border-gray-200';
     }
@@ -183,16 +172,8 @@ export const TrainingHistoryScreen: React.FC = () => {
   const statusDot = (status: string) => {
     switch (status) {
       case 'COMPLETED': return 'bg-emerald-500';
-      case 'STOPPED':
-      case 'INCOMPLETED':
-      case 'INCOMPLETE': return 'bg-orange-400';
-      case 'FAILED':
-      case 'ERROR': return 'bg-red-500';
-      case 'PENDING': return 'bg-amber-400';
-      case 'RUNNING':
-      case 'TRAINING': return 'bg-blue-500 animate-pulse';
-      case 'EVALUATING': return 'bg-violet-500 animate-pulse';
-      case 'evaluated': return 'bg-emerald-500';
+      case 'STOPPED': return 'bg-red-400';
+      case 'FAILED': return 'bg-red-500';
       default: return 'bg-gray-400';
     }
   };
@@ -459,14 +440,15 @@ export const TrainingHistoryScreen: React.FC = () => {
 
                       {/* Action Buttons */}
                       <div className="flex justify-end pt-2 gap-3">
-                        {(['STOPPED', 'FAILED', 'ERROR', 'COMPLETED', 'evaluated', 'RUNNING', 'PENDING', 'INCOMPLETED', 'INCOMPLETE', 'TRAINING'].includes(item.status)) && (
+                        {(item.status === 'STOPPED' || item.status === 'FAILED' || item.status === 'RUNNING') && (
                           <button
                             onClick={(e) => handleResume(e, item.jobId)}
                             disabled={!(item.latest_checkpoint_file_id || (item.pushToHub && item.hfRepoId)) || resumeLoading === item.jobId}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${!(item.latest_checkpoint_file_id || (item.pushToHub && item.hfRepoId))
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                              !(item.latest_checkpoint_file_id || (item.pushToHub && item.hfRepoId))
                                 ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                                 : 'text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200'
-                              }`}
+                            }`}
                             title={
                               item.latest_checkpoint_file_id
                                 ? 'Resume from Drive checkpoint'

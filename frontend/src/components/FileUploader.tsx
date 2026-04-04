@@ -13,6 +13,9 @@ export const FileUploader: React.FC = () => {
     mutationFn: apiService.uploadFile,
     onSuccess: (data) => {
       setUploadedFile(data);
+      apiService.deleteClusterCache().catch((err) => {
+        console.error('Failed to clear cluster cache:', err);
+      });
       toast.success('File uploaded successfully!');
     },
     onError: (error: any) => {

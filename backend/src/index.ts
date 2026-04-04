@@ -44,6 +44,13 @@ if (!fs.existsSync(uploadsDir)) {
 // Routes
 app.use('/api', routes);
 
+app.get('/api/debug-env', (_req, res) => {
+  res.json({
+    GPU_SERVICE_URL: process.env.GPU_SERVICE_URL || 'undefined',
+    MONGO_URI: process.env.MONGO_URI || 'undefined'
+  });
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({

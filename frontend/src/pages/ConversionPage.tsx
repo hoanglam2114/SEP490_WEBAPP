@@ -32,6 +32,13 @@ type EvaluationScores = {
   reason: string;
 };
 
+type EvaluatedBy = 'manual' | 'gemini';
+
+type RowEvaluationEntry = {
+  scores: EvaluationScores;
+  evaluatedBy: EvaluatedBy;
+};
+
 type DisplayRow = {
   id: string;
   blockId: string;
@@ -43,13 +50,41 @@ type DisplayRow = {
   userText: string;
   thinkText: string;
   assistantText: string;
+  conversationPairs?: Array<{ user: string; think?: string; assistant: string }>;
   groupId?: number;
 };
 
 type ClusterGroup = {
   groupId: number;
   count: number;
+  label: string;
 };
+
+function clampScore(value: string | number): number {
+  if (typeof value === 'string' && value.trim() === '') {
+    return 0;
+  }
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+  return Math.min(10, Math.max(0, n));
+}
+
+function parseOptionalScore(value: string): number | undefined {
+  if (value.trim() === '') {
+    return undefined;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return undefined;
+  }
+  return Math.min(10, Math.max(0, n));
+}
+
+function calculateOverallFromThree(a: number, b: number, c: number): number {
+  return Math.round(((a + b + c) / 3) * 10) / 10;
+}
 
 const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 1, label: 'Upload & Convert' },
@@ -58,6 +93,21 @@ const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 4, label: 'Evaluation' },
   { id: 5, label: 'Finish' },
 ];
+
+const METRIC_TOOLTIPS: Record<string, string> = {
+  socratic:
+    'TÍNH SƯ PHẠM: Điểm tối đa nếu AI không đưa ra đáp án trực tiếp xuyên suốt hội thoại, chỉ dùng câu hỏi gợi mở hoặc ví dụ tương tự. Điểm 0 nếu AI đưa đáp án quá sớm hoặc giải hộ bài ở bất kỳ lượt nào.',
+  alignment:
+    'HIỂU NGỮ CẢNH & Ý ĐỊNH: Điểm tối đa nếu AI xác định đúng ý định của User qua toàn cuộc hội thoại. Điểm 0 nếu AI hiểu sai ý định ở bất kỳ lượt nào.',
+  factuality:
+    'ĐỘ CHÍNH XÁC KIẾN THỨC: Điểm tối đa nếu kiến thức, công thức và logic đều đúng trong toàn bộ hội thoại. Điểm 0 nếu có thông tin sai lệch hoặc tính toán sai.',
+  accuracy:
+    'CHÍNH XÁC: Câu trả lời có đúng về mặt nội dung không?',
+  clarity:
+    'RÕ RÀNG: Câu trả lời có dễ hiểu, văn phong rõ ràng không?',
+  completeness:
+    'ĐỦ Ý: Câu trả lời có bao phủ đầy đủ nội dung câu hỏi không?',
+};
 
 function parseThinkContent(content: string): { thinkText: string; assistantText: string } {
   const thinkMatches = [...content.matchAll(/<think>([\s\S]*?)<\/think>/gi)];
@@ -142,20 +192,19 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
         return;
       }
 
-      pairs.forEach((pair, pairIndex) => {
-        const rowId = `${conv.conversation_id}-${pairIndex}`;
-        rows.push({
-          id: rowId,
-          blockId: String(conv.conversation_id),
-          blockLabel: `Conversation ${convIndex + 1}`,
-          isBlockLast: pairIndex === pairs.length - 1,
-          instruction: pair.user,
-          input: pair.think,
-          output: pair.assistant,
-          userText: pair.user,
-          thinkText: pair.think,
-          assistantText: pair.assistant,
-        });
+      rows.push({
+        id: String(conv.conversation_id),
+        blockId: String(conv.conversation_id),
+        blockLabel: `Conversation ${convIndex + 1}`,
+        isBlockLast: true,
+        instruction: pairs[0].user,
+        input: pairs[0].think,
+        output: pairs[0].assistant,
+        userText: pairs[0].user,
+        thinkText: pairs[0].think,
+        assistantText: pairs[0].assistant,
+        conversationPairs: pairs,
+        groupId: (conv as any).cluster,
       });
     });
 
@@ -178,6 +227,7 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
       userText: instruction,
       thinkText: input,
       assistantText: output,
+      groupId: (item as any).cluster,
     };
   });
 }
@@ -193,13 +243,12 @@ function StepperHeader({ currentStep }: { currentStep: Step }) {
           return (
             <div key={step.id} className="flex items-center gap-3">
               <div
-                className={`w-9 h-9 rounded-full border flex items-center justify-center text-sm font-semibold ${
-                  isCompleted
-                    ? 'bg-green-600 border-green-600 text-white'
-                    : isActive
-                      ? 'bg-primary-600 border-primary-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-600'
-                }`}
+                className={`w-9 h-9 rounded-full border flex items-center justify-center text-sm font-semibold ${isCompleted
+                  ? 'bg-green-600 border-green-600 text-white'
+                  : isActive
+                    ? 'bg-primary-600 border-primary-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-600'
+                  }`}
               >
                 {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : step.id}
               </div>
@@ -221,16 +270,42 @@ function ConvertedDatasetTable({
   rows,
   mode,
   showEvaluationColumns,
+  showEvaluationActions = true,
   evaluationMap,
+  selectedManualRows,
+  clusterGroups,
+  evaluationGroupFilter,
+  onEvaluationGroupFilterChange,
+  onEvaluate,
+  onAccept,
+  onReset,
+  onToggleManualRow,
+  onManualFieldChange,
+  isEvaluating,
+  disableEvaluate,
+  isAccepting,
   onVisibleRowsChange,
 }: {
   rows: DisplayRow[];
   mode: PreviewMode;
   showEvaluationColumns?: boolean;
-  evaluationMap?: Record<string, EvaluationScores>;
+  showEvaluationActions?: boolean;
+  evaluationMap?: Record<string, RowEvaluationEntry>;
+  selectedManualRows?: Set<string>;
+  clusterGroups?: ClusterGroup[];
+  evaluationGroupFilter?: 'all' | number;
+  onEvaluationGroupFilterChange?: (value: 'all' | number) => void;
+  onEvaluate?: () => void;
+  onAccept?: () => void;
+  onReset?: () => void;
+  onToggleManualRow?: (row: DisplayRow, checked: boolean) => void;
+  onManualFieldChange?: (row: DisplayRow, field: string, value: string) => void;
+  isEvaluating?: boolean;
+  disableEvaluate?: boolean;
+  isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
 }) {
-  const PAGE_SIZE_STEPS = [100, 250, 500, 1000, 2000];
+  const PAGE_SIZE_STEPS = [10, 20, 100, 250, 500];
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_STEPS[0]);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState<boolean>(false);
@@ -261,6 +336,20 @@ function ConvertedDatasetTable({
     setPageSize(PAGE_SIZE_STEPS[currentStepIndex + 1]);
   };
 
+  const hasRows = totalRows > 0;
+  const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
+  const metricB = mode === 'openai' ? 'alignment' : 'clarity';
+  const metricC = mode === 'openai' ? 'factuality' : 'completeness';
+
+  const renderMetricHeader = (metric: 'socratic' | 'alignment' | 'factuality' | 'accuracy' | 'clarity' | 'completeness') => (
+    <span className="relative inline-flex items-center group cursor-help" title={METRIC_TOOLTIPS[metric]}>
+      {metric}
+      <span className="absolute left-0 top-full z-20 mt-2 hidden w-72 rounded-md border border-gray-200 bg-white p-2 text-xs font-normal text-gray-700 shadow-lg group-hover:block">
+        {METRIC_TOOLTIPS[metric]}
+      </span>
+    </span>
+  );
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 space-y-3">
@@ -273,33 +362,82 @@ function ConvertedDatasetTable({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setShowAll((prev) => !prev)}
-            disabled={totalRows === 0}
-            className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-          >
-            {showAll ? 'Use Pagination' : 'Show All'}
-          </button>
-          <button
-            onClick={handleIncreaseLimit}
-            disabled={totalRows === 0 || showAll || !canIncreaseLimit}
-            className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-          >
-            Increase Limit ({pageSize})
-          </button>
-          <select
-            value={pageSize}
-            onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
-            disabled={totalRows === 0 || showAll}
-            className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white disabled:opacity-60 text-xs font-semibold text-gray-700"
-          >
-            {PAGE_SIZE_STEPS.map((size) => (
-              <option key={size} value={size}>
-                {size} / page
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowAll((prev) => !prev)}
+              disabled={!hasRows}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+            >
+              {showAll ? 'Use Pagination' : 'Show All'}
+            </button>
+            <button
+              onClick={handleIncreaseLimit}
+              disabled={!hasRows || showAll || !canIncreaseLimit}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+            >
+              Increase Limit ({pageSize})
+            </button>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              disabled={!hasRows || showAll}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white disabled:opacity-60 text-xs font-semibold text-gray-700"
+            >
+              {PAGE_SIZE_STEPS.map((size) => (
+                <option key={size} value={size}>
+                  {size} / page
+                </option>
+              ))}
+            </select>
+
+            {showEvaluationColumns && (
+              <select
+                value={evaluationGroupFilter === 'all' ? 'all' : String(evaluationGroupFilter)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  onEvaluationGroupFilterChange?.(value === 'all' ? 'all' : Number(value));
+                }}
+                className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700"
+              >
+                <option value="all">All groups</option>
+                {(clusterGroups || []).map((group) => (
+                  <option key={group.groupId} value={group.groupId}>
+                    Group {group.groupId} - {group.label} ({group.count})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {showEvaluationColumns && showEvaluationActions && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={onEvaluate}
+                disabled={!hasRows || disableEvaluate || isEvaluating}
+                className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white text-xs font-semibold"
+              >
+                {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>Evaluate with Gemini</span>
+              </button>
+
+              <button
+                onClick={onAccept}
+                disabled={!hasRows || isAccepting}
+                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+              >
+                Accept
+              </button>
+
+              <button
+                onClick={onReset}
+                disabled={!hasRows}
+                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+              >
+                Reset
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -307,6 +445,7 @@ function ConvertedDatasetTable({
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
+              {showEvaluationColumns && <th className="px-4 py-3 w-[48px]" />}
               <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[26%]">
                 {mode === 'openai' ? 'User' : 'Instruction'}
               </th>
@@ -318,15 +457,9 @@ function ConvertedDatasetTable({
               </th>
               {showEvaluationColumns && (
                 <>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
-                    {mode === 'openai' ? 'socratic' : 'accuracy'}
-                  </th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
-                    {mode === 'openai' ? 'alignment' : 'clarity'}
-                  </th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">
-                    {mode === 'openai' ? 'factuality' : 'completeness'}
-                  </th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricA)}</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricB)}</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">overall</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700 min-w-[280px]">reason</th>
                 </>
@@ -335,39 +468,223 @@ function ConvertedDatasetTable({
           </thead>
           <tbody>
             {visibleRows.length > 0 ? (
-              visibleRows.map((row, index) => {
-                const score = evaluationMap?.[row.id];
-                return (
-                  <tr
-                    key={row.id}
-                    className={`align-top ${
-                      row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
-                    } ${index === 0 ? 'border-t border-t-gray-100' : ''}`}
-                  >
-                    <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.userText || '-'}</td>
-                    <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
-                    <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
-                    {showEvaluationColumns && (
-                      <>
-                        <td className="px-4 py-3 text-gray-700">
-                          {mode === 'openai' ? (score?.socratic ?? '') : (score?.accuracy ?? '')}
+              showEvaluationColumns && mode === 'openai'
+                ? visibleRows.flatMap((row, index) => {
+                  const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
+                  const score = entry?.scores;
+                  const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
+                  const metricInputClass =
+                    'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                  const reasonInputClass =
+                    'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+
+                  const pairs = row.conversationPairs && row.conversationPairs.length > 0
+                    ? row.conversationPairs
+                    : [{ user: row.userText || '-', assistant: row.assistantText || '-' }];
+
+                  return pairs.map((pair, pairIndex) => (
+                    <tr
+                      key={`${row.id}-${pairIndex}`}
+                      className={`align-top ${pairIndex === pairs.length - 1
+                        ? 'border-b-4 border-b-gray-200'
+                        : 'border-b border-b-gray-100'
+                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''
+                        }`}
+                    >
+                      {pairIndex === 0 && (
+                        <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
+                          <input
+                            type="checkbox"
+                            checked={isManual}
+                            onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
+                          />
                         </td>
-                        <td className="px-4 py-3 text-gray-700">
-                          {mode === 'openai' ? (score?.alignment ?? '') : (score?.clarity ?? '')}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700">
-                          {mode === 'openai' ? (score?.factuality ?? '') : (score?.completeness ?? '')}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
-                        <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">{score?.reason ?? ''}</td>
-                      </>
-                    )}
-                  </tr>
-                );
-              })
+                      )}
+
+                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                      <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+
+                      {pairIndex === 0 && (
+                        <>
+                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                            {isManual ? (
+                              <input
+                                type="number"
+                                min={0}
+                                max={10}
+                                step="any"
+                                value={score?.socratic ?? ''}
+                                onChange={(e) => onManualFieldChange?.(row, 'socratic', e.target.value)}
+                                className={metricInputClass}
+                              />
+                            ) : (
+                              score?.socratic ?? ''
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                            {isManual ? (
+                              <input
+                                type="number"
+                                min={0}
+                                max={10}
+                                step="any"
+                                value={score?.alignment ?? ''}
+                                onChange={(e) => onManualFieldChange?.(row, 'alignment', e.target.value)}
+                                className={metricInputClass}
+                              />
+                            ) : (
+                              score?.alignment ?? ''
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                            {isManual ? (
+                              <input
+                                type="number"
+                                min={0}
+                                max={10}
+                                step="any"
+                                value={score?.factuality ?? ''}
+                                onChange={(e) => onManualFieldChange?.(row, 'factuality', e.target.value)}
+                                className={metricInputClass}
+                              />
+                            ) : (
+                              score?.factuality ?? ''
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{score?.overall ?? ''}</td>
+                          <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
+                            {isManual ? (
+                              <input
+                                type="text"
+                                value={score?.reason ?? ''}
+                                onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
+                                className={reasonInputClass}
+                              />
+                            ) : (
+                              score?.reason ?? ''
+                            )}
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ));
+                })
+                : mode === 'openai'
+                  ? visibleRows.flatMap((row, index) => {
+                    const pairs = row.conversationPairs && row.conversationPairs.length > 0
+                      ? row.conversationPairs
+                      : [{ user: row.userText || '-', think: row.thinkText || '-', assistant: row.assistantText || '-' }];
+
+                    return pairs.map((pair, pairIndex) => (
+                      <tr
+                        key={`${row.id}-${pairIndex}`}
+                        className={`align-top ${pairIndex === pairs.length - 1
+                          ? 'border-b-4 border-b-gray-200'
+                          : 'border-b border-b-gray-100'
+                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
+                      >
+                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                        <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+                      </tr>
+                    ));
+                  })
+                  : visibleRows.map((row, index) => {
+                    const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
+                    const score = entry?.scores;
+                    const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
+                    const metricInputClass =
+                      'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                    const reasonInputClass =
+                      'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`align-top ${row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
+                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''}`}
+                      >
+                        {showEvaluationColumns && (
+                          <td className="px-4 py-3">
+                            <input
+                              type="checkbox"
+                              checked={isManual}
+                              onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
+                            />
+                          </td>
+                        )}
+                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.userText || '-'}</td>
+                        <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
+                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
+                        {showEvaluationColumns && (
+                          <>
+                            <td className="px-4 py-3 text-gray-700">
+                              {isManual ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={10}
+                                  step="any"
+                                  value={score?.accuracy ?? ''}
+                                  onChange={(e) => onManualFieldChange?.(row, 'accuracy', e.target.value)}
+                                  className={metricInputClass}
+                                />
+                              ) : (
+                                score?.accuracy ?? ''
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">
+                              {isManual ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={10}
+                                  step="any"
+                                  value={score?.clarity ?? ''}
+                                  onChange={(e) => onManualFieldChange?.(row, 'clarity', e.target.value)}
+                                  className={metricInputClass}
+                                />
+                              ) : (
+                                score?.clarity ?? ''
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">
+                              {isManual ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={10}
+                                  step="any"
+                                  value={score?.completeness ?? ''}
+                                  onChange={(e) => onManualFieldChange?.(row, 'completeness', e.target.value)}
+                                  className={metricInputClass}
+                                />
+                              ) : (
+                                score?.completeness ?? ''
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
+                            <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
+                              {isManual ? (
+                                <input
+                                  type="text"
+                                  value={score?.reason ?? ''}
+                                  onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
+                                  className={reasonInputClass}
+                                />
+                              ) : (
+                                score?.reason ?? ''
+                              )}
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    );
+                  })
             ) : (
               <tr>
-                <td colSpan={showEvaluationColumns ? 8 : 3} className="px-4 py-10 text-center text-gray-500">
+                <td colSpan={showEvaluationColumns ? 9 : 3} className="px-4 py-10 text-center text-gray-500">
                   No converted records to preview.
                 </td>
               </tr>
@@ -755,11 +1072,14 @@ export function ConversionPage() {
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
-  const [evaluationMap, setEvaluationMap] = useState<Record<string, EvaluationScores>>({});
+  const [minOverallScore, setMinOverallScore] = useState<number>(0);
+  const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
+  const [manualRowIds, setManualRowIds] = useState<Set<string>>(new Set());
   const [clusterGroups, setClusterGroups] = useState<ClusterGroup[]>([]);
   const [rowClusterMap, setRowClusterMap] = useState<Record<string, number>>({});
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
   const [evaluationGroupFilter, setEvaluationGroupFilter] = useState<'all' | number>('all');
+  const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
 
   const { data: stats } = useQuery({
@@ -782,7 +1102,7 @@ export function ConversionPage() {
 
   const clusteredRows = useMemo(() => {
     if (currentStep === 3 && selectedClusterIds.length > 0) {
-      return rowsWithGroups.filter((row) => row.groupId && selectedClusterIds.includes(row.groupId));
+      return rowsWithGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
     }
 
     if (currentStep >= 4 && evaluationGroupFilter !== 'all') {
@@ -792,8 +1112,75 @@ export function ConversionPage() {
     return rowsWithGroups;
   }, [currentStep, rowsWithGroups, selectedClusterIds, evaluationGroupFilter]);
 
+  const evaluationRows = useMemo(() => {
+    if (currentStep !== 4 || previewMode !== 'openai') {
+      return clusteredRows;
+    }
+
+    const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
+    const groupByConversation = new Map<string, number | undefined>();
+
+    rowsWithGroups.forEach((row) => {
+      if (!groupByConversation.has(row.blockId)) {
+        groupByConversation.set(row.blockId, row.groupId);
+      }
+    });
+
+    const filteredConversations = conversations.filter((conv) => {
+      if (evaluationGroupFilter === 'all') {
+        return true;
+      }
+      return groupByConversation.get(String(conv.conversation_id)) === evaluationGroupFilter;
+    });
+
+    return filteredConversations.map((conv, index) => {
+      const pairs: Array<{ user: string; assistant: string }> = [];
+
+      for (let i = 0; i < conv.messages.length; i += 1) {
+        const current = conv.messages[i];
+        if (current.role !== 'user') {
+          continue;
+        }
+
+        const nextAssistant = conv.messages.slice(i + 1).find((msg) => msg.role === 'assistant');
+        pairs.push({
+          user: String(current.content || '').trim(),
+          assistant: String(nextAssistant?.content || '').trim(),
+        });
+      }
+
+      const users = pairs.map((pair) => pair.user).filter(Boolean).join('\n\n');
+      const assistants = pairs.map((pair) => pair.assistant || '-').join('\n\n');
+
+      const firstUser = conv.messages.find((msg) => msg.role === 'user')?.content || '';
+      const lastAssistant = [...conv.messages].reverse().find((msg) => msg.role === 'assistant')?.content || '';
+
+      return {
+        id: String(conv.conversation_id),
+        blockId: String(conv.conversation_id),
+        blockLabel: `Conversation ${index + 1}`,
+        isBlockLast: true,
+        instruction: firstUser,
+        input: '',
+        output: lastAssistant,
+        userText: users || firstUser || '-',
+        thinkText: '-',
+        assistantText: assistants || lastAssistant || '-',
+        conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
+        groupId: groupByConversation.get(String(conv.conversation_id)),
+      } as DisplayRow;
+    });
+  }, [
+    clusteredRows,
+    conversionResult?.data,
+    currentStep,
+    evaluationGroupFilter,
+    previewMode,
+    rowsWithGroups,
+  ]);
+
   const averagedEvaluation = useMemo(() => {
-    const values = Object.values(evaluationMap);
+    const values = Object.values(evaluationMap).map((entry) => entry.scores);
     if (values.length === 0) {
       return null;
     }
@@ -836,6 +1223,7 @@ export function ConversionPage() {
     onSuccess: (data, mode) => {
       setConversionResult(data);
       setEvaluationMap({});
+      setManualRowIds(new Set());
       setClusterGroups([]);
       setRowClusterMap({});
       setSelectedClusterIds([]);
@@ -857,25 +1245,136 @@ export function ConversionPage() {
 
   const evaluateMutation = useMutation({
     mutationFn: async () => {
-      const rowsToEvaluate = visibleRowsInEvaluation;
+      const rowsToEvaluate = visibleRowsInEvaluation.filter((row) => !manualRowIds.has(row.id));
       if (!rowsToEvaluate.length) {
         throw new Error('No visible rows to evaluate.');
       }
 
-      const payload = rowsToEvaluate.map((row) => ({
-        instruction: row.instruction,
-        input: row.input,
-        output: row.output,
-      }));
+      const newMap: Record<string, RowEvaluationEntry> = {};
 
-      const evaluation = await apiService.evaluateData(payload, previewMode);
+      if (previewMode === 'openai') {
+        const convOrderedIds: string[] = [];
+        const rowsByConv = new Map<string, DisplayRow[]>();
+        for (const row of rowsToEvaluate) {
+          if (!rowsByConv.has(row.blockId)) {
+            rowsByConv.set(row.blockId, []);
+            convOrderedIds.push(row.blockId);
+          }
+          rowsByConv.get(row.blockId)!.push(row);
+        }
 
-      const successfulRows: Array<{
-        rowId: string;
-        groupId?: number;
-        instruction: string;
-        output: string;
-        scores: {
+        // Look up the full messages array from conversionResult.data for each conv
+        const normalizedConvs = normalizeOpenAIConversations(conversionResult?.data || []);
+        const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
+        normalizedConvs.forEach((conv) => {
+          convMessagesMap.set(String(conv.conversation_id), conv.messages);
+        });
+
+        const conversationPayload = convOrderedIds.map((convId) => ({
+          conversation_id: convId,
+          messages: convMessagesMap.get(convId) || [],
+        }));
+
+        const evaluation = await apiService.evaluateData(conversationPayload, previewMode);
+
+        evaluation.samples.forEach((sample, idx) => {
+          const convId = convOrderedIds[idx];
+          if (!convId) return;
+
+          const isSuccess =
+            Number.isFinite(sample.scores.overall) &&
+            sample.scores.overall > 0;
+
+          if (!isSuccess) return;
+
+          const score: EvaluationScores = {
+            socratic: sample.scores.socratic,
+            alignment: sample.scores.alignment,
+            factuality: sample.scores.factuality,
+            overall: sample.scores.overall,
+            reason: sample.reason,
+          };
+
+          const convRows = rowsByConv.get(convId) || [];
+          for (const row of convRows) {
+            newMap[row.id] = {
+              scores: score,
+              evaluatedBy: 'gemini',
+            };
+          }
+        });
+
+      } else {
+        const payload = rowsToEvaluate.map((row) => ({
+          instruction: row.instruction,
+          input: row.input,
+          output: row.output,
+        }));
+
+        const evaluation = await apiService.evaluateData(payload, previewMode);
+
+        evaluation.samples.forEach((sample, idx) => {
+          const row = rowsToEvaluate[idx];
+          if (!row) return;
+
+          const isSuccess =
+            Number.isFinite(sample.scores.overall) &&
+            sample.scores.overall > 0;
+
+          if (!isSuccess) return;
+
+          newMap[row.id] = {
+            scores: {
+              accuracy: sample.scores.accuracy,
+              clarity: sample.scores.clarity,
+              completeness: sample.scores.completeness,
+              overall: sample.scores.overall,
+              reason: sample.reason,
+            },
+            evaluatedBy: 'gemini',
+          };
+        });
+      }
+
+      setEvaluationMap((prev) => ({ ...prev, ...newMap }));
+      return Object.keys(newMap).length;
+    },
+    onSuccess: (evaluatedCount) => {
+      toast.success(`Evaluation completed. ${evaluatedCount} rows scored by Gemini.`);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || error.message || 'Evaluation failed');
+    },
+  });
+
+  const acceptMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadedFile) {
+        throw new Error('No uploaded file found.');
+      }
+
+      if (!conversionResult) {
+        throw new Error('No converted data available to save.');
+      }
+
+      const createdAt = new Date().toISOString();
+
+      const toResultPayload = (entry: RowEvaluationEntry) => ({
+        accuracy: entry.scores.accuracy,
+        clarity: entry.scores.clarity,
+        completeness: entry.scores.completeness,
+        socratic: entry.scores.socratic,
+        alignment: entry.scores.alignment,
+        factuality: entry.scores.factuality,
+        overall: entry.scores.overall,
+        reason: entry.scores.reason,
+      });
+
+      let records: Array<{
+        format: string;
+        data: Record<string, any>;
+        evaluatedBy: EvaluatedBy;
+        results: {
           accuracy?: number;
           clarity?: number;
           completeness?: number;
@@ -883,74 +1382,214 @@ export function ConversionPage() {
           alignment?: number;
           factuality?: number;
           overall: number;
+          reason: string;
         };
-        reason: string;
+        createdAt: string;
       }> = [];
 
-      const newMap: Record<string, EvaluationScores> = {};
-      evaluation.samples.forEach((sample, idx) => {
-        const row = rowsToEvaluate[idx];
-        if (!row) {
-          return;
-        }
-
-        const isSuccess =
-          Number.isFinite(sample.scores.overall) &&
-          sample.scores.overall > 0;
-
-        if (!isSuccess) {
-          return;
-        }
-
-        newMap[row.id] = {
-          accuracy: sample.scores.accuracy,
-          clarity: sample.scores.clarity,
-          completeness: sample.scores.completeness,
-          socratic: sample.scores.socratic,
-          alignment: sample.scores.alignment,
-          factuality: sample.scores.factuality,
-          overall: sample.scores.overall,
-          reason: sample.reason,
-        };
-
-        successfulRows.push({
-          rowId: row.id,
-          groupId: row.groupId,
-          instruction: row.instruction,
-          output: row.output,
-          scores: sample.scores,
-          reason: sample.reason,
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(conversionResult.data || []);
+        const messagesByConversation = new Map<string, Array<{ role: string; content: string }>>();
+        conversations.forEach((conv) => {
+          messagesByConversation.set(String(conv.conversation_id), conv.messages);
         });
-      });
 
-      setEvaluationMap((prev) => ({ ...prev, ...newMap }));
-
-      if (successfulRows.length > 0 && uploadedFile) {
-        await apiService.saveEvaluationResults({
-          fileId: uploadedFile.fileId,
-          format: previewMode,
-          dataGroup: evaluationGroupFilter,
-          results: successfulRows,
+        const rowsByConversation = new Map<string, DisplayRow[]>();
+        rowsWithGroups.forEach((row) => {
+          if (!rowsByConversation.has(row.blockId)) {
+            rowsByConversation.set(row.blockId, []);
+          }
+          rowsByConversation.get(row.blockId)!.push(row);
         });
+
+        records = Array.from(rowsByConversation.entries())
+          .map(([conversationId, rows]) => {
+            const conversationEntry = evaluationMap[conversationId];
+            const evaluatedRows = rows.filter((row) => !!evaluationMap[row.id] || !!evaluationMap[row.blockId]);
+            if (!conversationEntry && evaluatedRows.length === 0) {
+              return null;
+            }
+
+            const preferredRow =
+              evaluatedRows.find((row) => {
+                const rowEntry = evaluationMap[row.id] || evaluationMap[row.blockId];
+                return rowEntry?.evaluatedBy === 'manual';
+              }) || evaluatedRows[0];
+
+            const entry = conversationEntry || (preferredRow
+              ? (evaluationMap[preferredRow.id] || evaluationMap[preferredRow.blockId])
+              : undefined);
+            if (!entry) {
+              return null;
+            }
+
+            const fallbackMessages = rows
+              .flatMap((row) => [
+                { role: 'user', content: row.userText || row.instruction || '' },
+                { role: 'assistant', content: row.assistantText || row.output || '' },
+              ])
+              .filter((msg) => msg.content.trim() !== '');
+
+            const messages = (messagesByConversation.get(conversationId) || fallbackMessages).map((msg) => ({
+              role: String(msg.role || ''),
+              content: String(msg.content || ''),
+            }));
+
+            return {
+              format: 'openai',
+              data: {
+                messages,
+              },
+              evaluatedBy: entry.evaluatedBy,
+              results: toResultPayload(entry),
+              createdAt,
+            };
+          })
+          .filter(Boolean) as typeof records;
+      } else {
+        records = rowsWithGroups
+          .map((row) => {
+            const entry = evaluationMap[row.id];
+            if (!entry) {
+              return null;
+            }
+
+            return {
+              format: 'alpaca',
+              data: {
+                instruction: row.instruction,
+                input: row.input,
+                output: row.output,
+              },
+              evaluatedBy: entry.evaluatedBy,
+              results: toResultPayload(entry),
+              createdAt,
+            };
+          })
+          .filter(Boolean) as typeof records;
       }
 
-      return successfulRows.length;
+      if (!records.length) {
+        throw new Error('No evaluated rows to save.');
+      }
+
+      await apiService.saveEvaluationResults({
+        fileId: uploadedFile.fileId,
+        items: records,
+      });
+
+      return records.length;
     },
     onSuccess: (savedCount) => {
-      toast.success(`Evaluation completed. ${savedCount} rows saved.`);
+      toast.success(`Accepted and saved ${savedCount} records to MongoDB.`);
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Evaluation failed');
+      toast.error(error.response?.data?.error || error.message || 'Accept failed');
     },
   });
+
+  const handleToggleManualRow = (row: DisplayRow, checked: boolean) => {
+    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const metric2 = previewMode === 'openai' ? 'alignment' : 'clarity';
+    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
+
+    if (checked) {
+      setManualRowIds((prev) => {
+        const next = new Set(prev);
+        next.add(row.id);
+        return next;
+      });
+
+      setEvaluationMap((prev) => {
+        const existing = prev[row.id]?.scores;
+
+        // Keep the latest visible score if it already exists; only initialize when missing.
+        if (existing) {
+          return {
+            ...prev,
+            [row.id]: {
+              ...prev[row.id],
+              evaluatedBy: 'manual',
+            },
+          };
+        }
+
+        const m1 = clampScore((existing as any)?.[metric1] ?? 0);
+        const m2 = clampScore((existing as any)?.[metric2] ?? 0);
+        const m3 = clampScore((existing as any)?.[metric3] ?? 0);
+        const overall = calculateOverallFromThree(m1, m2, m3);
+
+        return {
+          ...prev,
+          [row.id]: {
+            scores: {
+              [metric1]: m1,
+              [metric2]: m2,
+              [metric3]: m3,
+              overall,
+              reason: '',
+            },
+            evaluatedBy: 'manual',
+          },
+        };
+      });
+      return;
+    }
+
+    setManualRowIds((prev) => {
+      const next = new Set(prev);
+      next.delete(row.id);
+      return next;
+    });
+  };
+
+  const handleManualFieldChange = (row: DisplayRow, field: string, value: string) => {
+    if (!manualRowIds.has(row.id)) {
+      return;
+    }
+
+    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const metric2 = previewMode === 'openai' ? 'alignment' : 'clarity';
+    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
+
+    setEvaluationMap((prev) => {
+      const existing = prev[row.id]?.scores || { overall: 0, reason: '' };
+      const nextScores: EvaluationScores = { ...existing };
+
+      if (field === 'reason') {
+        nextScores.reason = value;
+      } else {
+        (nextScores as any)[field] = parseOptionalScore(value);
+      }
+
+      const v1 = clampScore((nextScores as any)[metric1] ?? 0);
+      const v2 = clampScore((nextScores as any)[metric2] ?? 0);
+      const v3 = clampScore((nextScores as any)[metric3] ?? 0);
+      nextScores.overall = calculateOverallFromThree(v1, v2, v3);
+
+      return {
+        ...prev,
+        [row.id]: {
+          scores: nextScores,
+          evaluatedBy: 'manual',
+        },
+      };
+    });
+  };
+
+  const handleResetEvaluation = () => {
+    setEvaluationMap({});
+    setManualRowIds(new Set());
+    toast.success('Evaluation results have been reset.');
+  };
 
   useEffect(() => {
     setCurrentStep(1);
     setConversionResult(null);
     setOriginalConvertedResult(null);
     setEvaluationMap({});
+    setManualRowIds(new Set());
     setClusterGroups([]);
-    setRowClusterMap({});
     setSelectedClusterIds([]);
     setEvaluationGroupFilter('all');
     setVisibleRowsInEvaluation([]);
@@ -983,6 +1622,70 @@ export function ConversionPage() {
     toast.success('File downloaded.');
   };
 
+  const handleDownloadFilteredByScore = () => {
+    if (!conversionResult) {
+      return;
+    }
+
+    const threshold = Math.round(minOverallScore * 10) / 10;
+    let filtered: any[] = [];
+
+    if (previewMode === 'openai') {
+      const conversations = normalizeOpenAIConversations(conversionResult.data || []);
+
+      filtered = conversations
+        .map((conv) => {
+          const conversationId = String(conv.conversation_id);
+          const fromConversation = evaluationMap[conversationId];
+          const fromRows = rowsWithGroups.find(
+            (row) => row.blockId === conversationId && !!evaluationMap[row.id]
+          );
+          const entry = fromConversation || (fromRows ? evaluationMap[fromRows.id] : undefined);
+
+          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
+            return null;
+          }
+
+          return {
+            messages: conv.messages,
+          };
+        })
+        .filter(Boolean) as any[];
+    } else {
+      filtered = rowsWithGroups
+        .map((row) => {
+          const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
+            return null;
+          }
+
+          return {
+            instruction: row.instruction,
+            input: row.input,
+            output: row.output,
+          };
+        })
+        .filter(Boolean) as any[];
+    }
+
+    if (filtered.length === 0) {
+      toast.error('No evaluated samples match the selected overall score.');
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `filtered_${previewMode}_overall_gte_${threshold.toFixed(1)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast.success(`Downloaded ${filtered.length} samples with overall >= ${threshold.toFixed(1)}.`);
+  };
+
   const handleResetCleaning = () => {
     if (!originalConvertedResult) {
       return;
@@ -990,38 +1693,87 @@ export function ConversionPage() {
 
     setConversionResult(originalConvertedResult);
     setEvaluationMap({});
+    setManualRowIds(new Set());
     setClusterGroups([]);
-    setRowClusterMap({});
     setSelectedClusterIds([]);
     setEvaluationGroupFilter('all');
     toast.success('Dataset reset to original converted state.');
   };
 
-  const handleMockCluster = () => {
-    if (!rowsWithGroups.length) {
-      toast.error('No records available to cluster.');
-      return;
-    }
+  const clusterMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversionResult?.data || conversionResult.data.length === 0) {
+        throw new Error('No converted data to cluster.');
+      }
+      return apiService.clusterData(conversionResult.data);
+    },
+    onSuccess: (result) => {
+      setConversionResult((prev) => prev ? { ...prev, data: result.data } : null);
+      setClusterGroups(result.groups);
 
-    const nextMap: Record<string, number> = {};
-    const statsMap = new Map<number, number>();
+      // Restore old mapping method for UI
+      const nextMap: Record<string, number> = {};
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(conversionResult!.data);
+        conversations.forEach((conv, idx) => {
+          const groupId = result.assignments[idx] ?? 0;
+          allRows.forEach((row) => {
+            if (row.blockId === String(conv.conversation_id)) {
+              nextMap[row.id] = groupId;
+            }
+          });
+        });
+      } else {
+        allRows.forEach((row, idx) => {
+          nextMap[row.id] = result.assignments[idx] ?? 0;
+        });
+      }
 
-    rowsWithGroups.forEach((row, index) => {
-      const groupId = Math.floor(index / 300) + 1;
-      nextMap[row.id] = groupId;
-      statsMap.set(groupId, (statsMap.get(groupId) || 0) + 1);
-    });
+      setRowClusterMap(nextMap);
+      setSelectedClusterIds([]);
+      setEvaluationGroupFilter('all');
 
-    const groups = Array.from(statsMap.entries())
-      .map(([groupId, count]) => ({ groupId, count }))
-      .sort((a, b) => a.groupId - b.groupId);
+      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
+      const itemsCount = result.assignments.length;
+      toast.success(`Clustered ${itemsCount} ${countLabel} into ${result.groups.length} groups.`);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || error.message || 'Clustering failed');
+    },
+  });
 
-    setRowClusterMap(nextMap);
-    setClusterGroups(groups);
-    setSelectedClusterIds([]);
-    setEvaluationGroupFilter('all');
-    toast.success(`Clustered ${rowsWithGroups.length} rows into ${groups.length} groups (300 rows/group).`);
-  };
+  const filterMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversionResult?.data || conversionResult.data.length === 0) {
+        throw new Error('No clustered data to filter.');
+      }
+      return apiService.clusterFilter(conversionResult.data, filterThreshold);
+    },
+    onSuccess: (result) => {
+      setConversionResult((prev) => prev ? { ...prev, data: result.data } : null);
+      setClusterGroups(result.groups);
+
+      // Synchronize mapping for filtered data
+      const nextMap: Record<string, number> = {};
+
+      // To keep it simple and consistent with the 'old method' (assignments based),
+      // we'll populate the map for the new rows.
+      result.data.forEach((item, idx) => {
+        const id = previewMode === 'openai' ? (item as any).conversation_id : `alpaca-${idx}`;
+        nextMap[id] = result.assignments[idx] ?? 0;
+      });
+
+      setRowClusterMap(nextMap);
+      setSelectedClusterIds([]);
+      setEvaluationGroupFilter('all');
+
+      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
+      toast.success(`Filtered dataset down to ${result.data.length} ${countLabel}.`);
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || error.message || 'Filtering failed');
+    },
+  });
 
   const toggleClusterSelection = (groupId: number) => {
     setSelectedClusterIds((prev) =>
@@ -1074,9 +1826,9 @@ export function ConversionPage() {
 
             <div className="space-y-4 lg:col-span-1">
               <PostConversionSummary result={conversionResult} />
-              <CleaningPipelineOptions 
-                onAccept={() => convertMutation.mutate('clean')} 
-                isLoading={convertMutation.isPending} 
+              <CleaningPipelineOptions
+                onAccept={() => convertMutation.mutate('clean')}
+                isLoading={convertMutation.isPending}
               />
 
               <div className="flex justify-end mt-2">
@@ -1110,12 +1862,59 @@ export function ConversionPage() {
 
             <div className="space-y-4 lg:col-span-1">
               <button
-                onClick={handleMockCluster}
-                disabled={!conversionResult}
-                className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold"
+                onClick={() => clusterMutation.mutate()}
+                disabled={!conversionResult || clusterMutation.isPending}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
               >
-                Cluster
+                {clusterMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Clustering...</span>
+                  </>
+                ) : (
+                  <span>Cluster</span>
+                )}
               </button>
+
+              {clusterGroups.length > 0 && (
+                <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-semibold text-gray-700">Similarity Threshold</label>
+                    <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={filterThreshold}
+                    onChange={(e) => setFilterThreshold(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-green-600"
+                  />
+                  <p className="text-[10px] text-gray-500 leading-tight">
+                    Higher threshold (e.g. 0.95) keeps more samples. Lower threshold filters more aggressively.
+                  </p>
+                  <button
+                    onClick={() => filterMutation.mutate()}
+                    disabled={filterMutation.isPending}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
+                  >
+                    {filterMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Filtering Noise...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        <span>Filter Noise</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Removed restrictive OpenAI-only message */}
 
               {clusterGroups.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -1129,6 +1928,7 @@ export function ConversionPage() {
                         <tr>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Select</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Group</th>
+                          <th className="px-4 py-2 text-left font-semibold text-gray-700">Label</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Count</th>
                         </tr>
                       </thead>
@@ -1143,6 +1943,14 @@ export function ConversionPage() {
                               />
                             </td>
                             <td className="px-4 py-2 font-medium text-gray-800">Group {group.groupId}</td>
+                            <td className="px-4 py-2 text-gray-700">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${group.label === 'Chuyên môn'
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-green-100 text-green-800'
+                                }`}>
+                                {group.label === 'Chuyên môn' ? '📘' : '💬'} {group.label}
+                              </span>
+                            </td>
                             <td className="px-4 py-2 text-gray-700">{group.count}</td>
                           </tr>
                         ))}
@@ -1166,74 +1974,36 @@ export function ConversionPage() {
 
       {currentStep === 4 && (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <ConvertedDatasetTable
-                rows={clusteredRows}
-                mode={previewMode}
-                showEvaluationColumns
-                evaluationMap={evaluationMap}
-                onVisibleRowsChange={setVisibleRowsInEvaluation}
-              />
+          <ConvertedDatasetTable
+            rows={evaluationRows}
+            mode={previewMode}
+            showEvaluationColumns
+            evaluationMap={evaluationMap}
+            selectedManualRows={manualRowIds}
+            clusterGroups={clusterGroups}
+            evaluationGroupFilter={evaluationGroupFilter}
+            onEvaluationGroupFilterChange={setEvaluationGroupFilter}
+            onEvaluate={() => evaluateMutation.mutate()}
+            onAccept={() => acceptMutation.mutate()}
+            onReset={handleResetEvaluation}
+            onToggleManualRow={handleToggleManualRow}
+            onManualFieldChange={handleManualFieldChange}
+            isEvaluating={evaluateMutation.isPending}
+            disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
+            isAccepting={acceptMutation.isPending}
+            onVisibleRowsChange={setVisibleRowsInEvaluation}
+          />
+
+          {averagedEvaluation && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-900">
+              <p className="font-semibold">Average scores ({averagedEvaluation.count} rows)</p>
+              <p className="mt-1">
+                {previewMode === 'openai'
+                  ? `socratic: ${averagedEvaluation.socratic} | alignment: ${averagedEvaluation.alignment} | factuality: ${averagedEvaluation.factuality} | overall: ${averagedEvaluation.overall}`
+                  : `accuracy: ${averagedEvaluation.accuracy} | clarity: ${averagedEvaluation.clarity} | completeness: ${averagedEvaluation.completeness} | overall: ${averagedEvaluation.overall}`}
+              </p>
             </div>
-
-            <div className="space-y-4 lg:col-span-1">
-              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-                <label className="block text-sm font-medium text-gray-800">Data group</label>
-                <select
-                  value={evaluationGroupFilter === 'all' ? 'all' : String(evaluationGroupFilter)}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setEvaluationGroupFilter(value === 'all' ? 'all' : Number(value));
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="all">All groups</option>
-                  {clusterGroups.map((group) => (
-                    <option key={group.groupId} value={group.groupId}>
-                      Group {group.groupId} ({group.count})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-                <button
-                  onClick={() => evaluateMutation.mutate()}
-                  disabled={!conversionResult || evaluateMutation.isPending || visibleRowsInEvaluation.length === 0}
-                  className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-xl shadow-md transition-all active:scale-[0.98]"
-                >
-                  {evaluateMutation.isPending ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Evaluating visible rows...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="w-5 h-5" />
-                      <span>Evaluate with Gemini</span>
-                    </>
-                  )}
-                </button>
-
-                <p className="text-xs text-gray-600">
-                  Current request will evaluate only rows shown in preview after filters and pagination.
-                </p>
-
-                {averagedEvaluation && (
-                  <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-900">
-                    <p className="font-semibold">Average scores ({averagedEvaluation.count} rows)</p>
-                    <p className="mt-1">
-                      {previewMode === 'openai' 
-                        ? `socratic: ${averagedEvaluation.socratic} | alignment: ${averagedEvaluation.alignment} | factuality: ${averagedEvaluation.factuality} | overall: ${averagedEvaluation.overall}`
-                        : `accuracy: ${averagedEvaluation.accuracy} | clarity: ${averagedEvaluation.clarity} | completeness: ${averagedEvaluation.completeness} | overall: ${averagedEvaluation.overall}`
-                      }
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          )}
 
           <StepNavigation
             showBack
@@ -1249,7 +2019,13 @@ export function ConversionPage() {
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} showEvaluationColumns evaluationMap={evaluationMap} />
+              <ConvertedDatasetTable
+                rows={clusteredRows}
+                mode={previewMode}
+                showEvaluationColumns
+                showEvaluationActions={false}
+                evaluationMap={evaluationMap}
+              />
             </div>
 
             <div className="space-y-4 lg:col-span-1">
@@ -1270,6 +2046,42 @@ export function ConversionPage() {
               </div>
 
               {uploadedFile && <HuggingFaceUpload />}
+
+              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-900">Filter by overall score</h3>
+                <p className="text-xs text-gray-600">
+                  Download only evaluated samples with overall score greater than or equal to the selected value.
+                </p>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-gray-600">
+                    <span>Threshold</span>
+                    <span className="font-semibold text-gray-900">{minOverallScore.toFixed(1)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.1}
+                    value={minOverallScore}
+                    onChange={(e) => setMinOverallScore(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span>0.0</span>
+                    <span>10.0</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleDownloadFilteredByScore}
+                  disabled={!conversionResult}
+                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-2.5 px-4 rounded-lg"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download filtered file</span>
+                </button>
+              </div>
             </div>
           </div>
 

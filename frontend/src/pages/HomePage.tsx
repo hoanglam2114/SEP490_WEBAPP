@@ -51,6 +51,18 @@ const tools = [
     ),
   },
   {
+    title: 'Evaluation History',
+    description: 'View past evaluations, manually re-evaluate records, and manage dataset quality.',
+    path: '/evaluation-history',
+    tag: 'History',
+    icon: (
+      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M9 17v-2m3 2v-4m3 4V9m3 10H6a2 2 0 01-2-2V7a2 2 0 012-2h3l2-2h2l2 2h3a2 2 0 012 2v10a2 2 0 01-2 2z" />
+      </svg>
+    ),
+  },
+  {
     title: 'AI Chatbot',
     description: 'Chat with fine-tuned models and test inference',
     path: '/chat',
