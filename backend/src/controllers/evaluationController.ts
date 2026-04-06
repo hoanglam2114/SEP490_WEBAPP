@@ -4,6 +4,19 @@ import { EvaluationHistory } from '../models/EvaluationHistory';
 
 type EvalFormat = 'openai' | 'alpaca';
 
+function normalizeProjectName(input?: string): string {
+    const value = String(input || '').trim();
+    if (!value) {
+        const now = new Date();
+        const dd = String(now.getDate()).padStart(2, '0');
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const hh = String(now.getHours()).padStart(2, '0');
+        const min = String(now.getMinutes()).padStart(2, '0');
+        return `Project_${dd}/${mm}_${hh}:${min}`;
+    }
+    return value;
+}
+
 function normalizeEvaluationData(format: EvalFormat, rawData: Record<string, any>): Record<string, any> | null {
     if (!rawData || typeof rawData !== 'object') {
         return null;
@@ -85,12 +98,13 @@ export class EvaluationController {
 
     /**
      * POST /api/evaluate/save
-     * Body: { fileId, items[] }
+     * Body: { fileId, projectName, items[] }
      */
     async saveEvaluation(req: Request, res: Response): Promise<void> {
         try {
-            const { fileId, items } = req.body as {
+            const { fileId, projectName, items } = req.body as {
                 fileId: string;
+                projectName?: string;
                 items: Array<{
                     format: string;
                     data: Record<string, any>;
@@ -100,7 +114,7 @@ export class EvaluationController {
                         clarity?: number;
                         completeness?: number;
                         socratic?: number;
-                        alignment?: number;
+                        encouragement?: number;
                         factuality?: number;
                         overall: number;
                         reason: string;
@@ -114,14 +128,16 @@ export class EvaluationController {
                 return;
             }
 
+            const normalizedProjectName = normalizeProjectName(projectName);
+
             const docs = items
                 .filter((item) =>
-                item &&
-                (item.format === 'openai' || item.format === 'alpaca') &&
-                item.data &&
-                (item.evaluatedBy === 'manual' || item.evaluatedBy === 'gemini') &&
-                item.results &&
-                Number.isFinite(item.results.overall)
+                    item &&
+                    (item.format === 'openai' || item.format === 'alpaca') &&
+                    item.data &&
+                    (item.evaluatedBy === 'manual' || item.evaluatedBy === 'gemini') &&
+                    item.results &&
+                    Number.isFinite(item.results.overall)
                 )
                 .map((item) => {
                     const format = item.format as EvalFormat;
@@ -133,6 +149,7 @@ export class EvaluationController {
 
                     return {
                         fileId,
+                        projectName: normalizedProjectName,
                         format,
                         data: normalizedData,
                         evaluatedBy: item.evaluatedBy,
@@ -164,30 +181,78 @@ export class EvaluationController {
     }
 
     /**
-     * GET /api/evaluate/history?page=1&limit=20&format=openai|alpaca
+     * GET /api/evaluate/history?page=1&limit=20&format=openai|alpaca&minOverall=0
      */
     async getEvaluationHistory(req: Request, res: Response): Promise<void> {
         try {
             const page = Math.max(1, Number(req.query.page) || 1);
             const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 20));
             const format = String(req.query.format || '').trim().toLowerCase();
+            const minOverallRaw = Number(req.query.minOverall);
+            const hasMinOverall = Number.isFinite(minOverallRaw);
 
             const filter: Record<string, any> = {};
             if (format === 'openai' || format === 'alpaca') {
                 filter.format = format;
             }
+            if (hasMinOverall) {
+                filter['results.overall'] = { $gte: minOverallRaw };
+            }
 
-            const [items, total] = await Promise.all([
-                EvaluationHistory.find(filter)
-                    .sort({ createdAt: -1 })
-                    .skip((page - 1) * limit)
-                    .limit(limit)
-                    .lean(),
-                EvaluationHistory.countDocuments(filter),
+            const [projectGroups, totalProjects] = await Promise.all([
+                EvaluationHistory.aggregate([
+                    { $match: filter },
+                    {
+                        $group: {
+                            _id: '$projectName',
+                            projectName: { $first: '$projectName' },
+                            totalItems: { $sum: 1 },
+                            latestCreatedAt: { $max: '$createdAt' },
+                            formats: { $addToSet: '$format' },
+                            avgOverall: { $avg: '$results.overall' },
+                        },
+                    },
+                    { $sort: { latestCreatedAt: -1 } },
+                    { $skip: (page - 1) * limit },
+                    { $limit: limit },
+                ]),
+                EvaluationHistory.aggregate([
+                    { $match: filter },
+                    { $group: { _id: '$projectName' } },
+                    { $count: 'total' },
+                ]),
             ]);
 
+            const projectNames = projectGroups.map((group) => group.projectName);
+
+            const items = projectNames.length
+                ? await EvaluationHistory.find({ ...filter, projectName: { $in: projectNames } })
+                    .sort({ createdAt: -1 })
+                    .lean()
+                : [];
+
+            const itemMap = new Map<string, any[]>();
+            for (const item of items) {
+                const key = String((item as any).projectName || 'Untitled Project');
+                if (!itemMap.has(key)) {
+                    itemMap.set(key, []);
+                }
+                itemMap.get(key)!.push(item);
+            }
+
+            const projects = projectGroups.map((group) => ({
+                projectName: String(group.projectName || 'Untitled Project'),
+                totalItems: Number(group.totalItems || 0),
+                latestCreatedAt: group.latestCreatedAt,
+                formats: Array.isArray(group.formats) ? group.formats : [],
+                avgOverall: Number((group.avgOverall || 0).toFixed(2)),
+                items: itemMap.get(String(group.projectName || 'Untitled Project')) || [],
+            }));
+
+            const total = Number(totalProjects?.[0]?.total || 0);
+
             res.json({
-                items,
+                projects,
                 total,
                 page,
                 limit,
@@ -215,7 +280,7 @@ export class EvaluationController {
                     clarity?: number;
                     completeness?: number;
                     socratic?: number;
-                    alignment?: number;
+                    encouragement?: number;
                     factuality?: number;
                     overall: number;
                     reason: string;

@@ -127,6 +127,9 @@ export const startTraining = async (req: Request, res: Response) => {
       weight_decay,
       lr_scheduler_type,
       seed,
+      early_stopping_loss,
+      early_stopping_patience,
+      push_to_hub,
       hf_repo_id,
       hf_token,
       // Metadata from frontend to save initial TrainingHistory
@@ -156,6 +159,11 @@ export const startTraining = async (req: Request, res: Response) => {
     // ── Generate job ID ─────────────────────────────────────────────────────
     const job_id = `job_${uuidv4()}`;
     console.log(`[Backend] Starting job ${job_id} → model=${model_name} epochs=${epochsNum}`);
+    if (hf_token) {
+      console.log(`[Backend] HF Token detected: ${hf_token.substring(0, 4)}****`);
+    } else {
+      console.warn(`[Backend] No HF Token provided in request body`);
+    }
 
     // ── Build JSON config for GPU Service ─────────────────────────────────────
     const config: any = {
@@ -176,7 +184,9 @@ export const startTraining = async (req: Request, res: Response) => {
       weight_decay: parseFloat(weight_decay as string) || 0.01,
       lr_scheduler_type: (lr_scheduler_type as string) || 'linear',
       seed: parseInt(seed as string) || 3407,
-      push_to_hub: true, // Always true as requested
+      early_stopping_loss: parseFloat(early_stopping_loss as string) || 0.5,
+      early_stopping_patience: parseInt(early_stopping_patience as string) || 100,
+      push_to_hub: push_to_hub === 'true' || push_to_hub === true,
       hf_repo_id: hf_repo_id || '',
       hf_token: hf_token || '',
       // Google Drive for checkpoint saving
@@ -268,12 +278,13 @@ export const startTraining = async (req: Request, res: Response) => {
           warmup_steps: parseInt(warmup_steps as string) || 5,
           weight_decay: parseFloat(weight_decay as string) || 0.01,
           seed: parseInt(seed as string) || 3407,
+          early_stopping_loss: parseFloat(early_stopping_loss as string) || 0.5,
+          early_stopping_patience: parseInt(early_stopping_patience as string) || 100,
           optim: (optim as string) || 'adamw_8bit',
           lr_scheduler_type: (lr_scheduler_type as string) || 'linear',
         },
-        pushToHub: true,
+        pushToHub: String(push_to_hub === 'true' || push_to_hub === true) === 'true',
         hfRepoId: hf_repo_id || '',
-        hfToken: hf_token || '',
         status: 'QUEUED', // <--- CHANGE: Set initial status to QUEUED
         trainingDuration: 0,
         startedAt: new Date(),
@@ -490,7 +501,6 @@ export const resumeTraining = async (req: Request, res: Response) => {
       checkpoint_file_id: checkpointSource === 'drive' ? checkpointId : undefined,
       checkpoint_hf_repo: checkpointSource === 'hf' ? checkpointId : undefined,
       checkpoint_source: checkpointSource,
-      hf_token: history.hfToken || '', // Pass stored token for resume
       // Drive credentials (still included even if not used, for future saves)
       drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
       service_account: parsedGoogleCredentials,

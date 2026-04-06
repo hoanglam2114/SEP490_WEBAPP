@@ -38,6 +38,8 @@ const PARAM_LABELS: Record<string, { label: string; icon: string; description: s
   warmup_steps: { label: 'Warmup Steps', icon: '🔥', description: 'Steps for learning rate warmup' },
   weight_decay: { label: 'Weight Decay', icon: '📉', description: 'Weight decay for AdamW' },
   seed: { label: 'Seed', icon: '🌱', description: 'Random seed for training' },
+  early_stopping_loss: { label: 'ES Loss', icon: '🛑', description: 'Stop if loss < this value' },
+  early_stopping_patience: { label: 'ES Patience', icon: '⏳', description: 'Steps to wait for loss decrease' },
   optim: { label: 'Optimizer', icon: '🧠', description: 'Optimizer type', type: 'select', options: ['adamw_8bit', 'adamw_hf', 'sgd', 'adafactor'] },
   lr_scheduler_type: { label: 'LR Scheduler', icon: '⏱️', description: 'Learning rate schedule', type: 'select', options: ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup'] },
 };
@@ -111,6 +113,8 @@ export const AutoTrainScreen: React.FC = () => {
     warmup_steps: 5,
     weight_decay: 0.01,
     seed: 3407,
+    early_stopping_loss: 0.5,
+    early_stopping_patience: 100,
     optim: 'adamw_8bit',
     lr_scheduler_type: 'linear',
   };
@@ -122,7 +126,7 @@ export const AutoTrainScreen: React.FC = () => {
 
   // Parallel Training state
   const [activeJobs, setActiveJobs] = useState<Record<string, TrainingStatus>>({});
-  const [jobConfigs, setJobConfigs] = useState<Record<string, JobConfig>>({});
+  const [, setJobConfigs] = useState<Record<string, JobConfig>>({});
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
   const [showLog, setShowLog] = useState(false);
   const [systemResources, setSystemResources] = useState<SystemResources | null>(null);
@@ -369,7 +373,7 @@ export const AutoTrainScreen: React.FC = () => {
     try {
       const formData = new FormData();
       formData.append('model_name', baseModel);
-      formData.append('push_to_hub', 'true');
+      formData.append('push_to_hub', pushToHub ? 'true' : 'false');
       formData.append('hf_repo_id', hfRepoId);
       formData.append('hf_token', hfToken);
 
@@ -411,7 +415,7 @@ export const AutoTrainScreen: React.FC = () => {
         datasetName: datasetSource === 'local' && localFile ? localFile.name : hubPath,
         columnMapping,
         parameters,
-        pushToHub: true,
+        pushToHub,
         hfRepoId,
         hfToken,
       };
@@ -687,7 +691,21 @@ export const AutoTrainScreen: React.FC = () => {
                 )}
 
                 {/* Hugging Face Settings (Always Visible) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-slate-100">
+                <div className="pt-4 border-t border-slate-100 space-y-4">
+                  <div className="flex items-center gap-3 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        checked={pushToHub}
+                        onChange={e => setPushToHub(e.target.checked)}
+                      />
+                      <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      <span className="ml-3 text-sm font-medium text-slate-700">Push to Hugging Face Hub</span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="animate-in fade-in slide-in-from-top-2 duration-200">
                     <label className="block text-sm font-medium text-slate-700 mb-1.5">
                       HF Access Token <span className="text-red-400">*</span>
@@ -748,6 +766,7 @@ export const AutoTrainScreen: React.FC = () => {
                       </p>
                     )}
                   </div>
+                </div>
                 </div>
               </div>
             </div>

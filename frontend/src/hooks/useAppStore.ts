@@ -4,8 +4,10 @@ import type { FileUploadResult, ConversionOptions } from '../types';
 interface AppState {
   uploadedFile: FileUploadResult | null;
   conversionOptions: ConversionOptions;
+  projectName: string;
   setUploadedFile: (file: FileUploadResult | null) => void;
   updateConversionOptions: (options: Partial<ConversionOptions>) => void;
+  setProjectName: (name: string) => void;
   resetOptions: () => void;
 }
 
@@ -19,6 +21,7 @@ const defaultOptions: ConversionOptions = {
 export const useAppStore = create<AppState>((set) => ({
   uploadedFile: null,
   conversionOptions: defaultOptions,
+  projectName: '',
 
   setUploadedFile: (file) =>
     set((state) => ({
@@ -35,6 +38,9 @@ export const useAppStore = create<AppState>((set) => ({
       conversionOptions: { ...state.conversionOptions, ...options },
     })),
 
+  setProjectName: (name) =>
+    set({ projectName: name }),
+
   resetOptions: () =>
-    set({ conversionOptions: defaultOptions, uploadedFile: null }),
+    set({ conversionOptions: defaultOptions, uploadedFile: null, projectName: '' }),
 }));

@@ -23,6 +23,8 @@ interface TrainingHistoryItem {
     warmup_steps: number;
     weight_decay: number;
     seed: number;
+    early_stopping_loss: number;
+    early_stopping_patience: number;
     optim: string;
     lr_scheduler_type: string;
   };
