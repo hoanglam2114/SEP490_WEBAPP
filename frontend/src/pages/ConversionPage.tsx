@@ -907,16 +907,6 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
             <label className="flex items-center space-x-2">
               <input
                 type="checkbox"
-                checked={conversionOptions.deduplicate ?? true}
-                onChange={(e) => updateConversionOptions({ deduplicate: e.target.checked })}
-                className="rounded"
-              />
-              <span className="text-sm font-medium text-gray-700">Deduplicate records</span>
-            </label>
-
-            <label className="flex items-center space-x-2">
-              <input
-                type="checkbox"
                 checked={conversionOptions.removeEmptyOutput ?? true}
                 onChange={(e) => updateConversionOptions({ removeEmptyOutput: e.target.checked })}
                 className="rounded"
@@ -1629,16 +1619,28 @@ export function ConversionPage() {
       return;
     }
 
-    const blob = new Blob([conversionResult.output], {
-      type: conversionResult.filename.endsWith('.jsonl')
-        ? 'application/x-ndjson'
-        : 'application/json',
+    const { data, filename } = conversionResult;
+    const isJsonl = filename.endsWith('.jsonl');
+
+    let output: string;
+    const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
+
+    if (isJsonl) {
+      // JSONL format: mỗi dòng là một JSON object
+      output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
+    } else {
+      // JSON format: array of objects
+      output = JSON.stringify(cleanData, null, 2);
+    }
+
+    const blob = new Blob([output], {
+      type: isJsonl ? 'application/x-ndjson' : 'application/json',
     });
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = conversionResult.filename;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2155,7 +2157,9 @@ export function ConversionPage() {
                 </p>
               </div>
 
-              {uploadedFile && <HuggingFaceUpload />}
+              {uploadedFile && conversionResult && (
+                <HuggingFaceUpload conversionResult={conversionResult} />
+              )}
 
               <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
                 <h3 className="text-sm font-semibold text-gray-900">Filter by overall score</h3>
