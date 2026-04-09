@@ -63,7 +63,7 @@ export const apiService = {
       try {
         const errJson = await response.json();
         if (errJson.error) errMsg = errJson.error;
-      } catch (e) {}
+      } catch (e) { }
       throw new Error(errMsg);
     }
 
@@ -174,6 +174,7 @@ export const apiService = {
 
   saveEvaluationResults: async (payload: {
     fileId: string;
+    projectName: string;
     items: Array<{
       format: string;
       data: Record<string, any>;
@@ -183,7 +184,7 @@ export const apiService = {
         clarity?: number;
         completeness?: number;
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;
         reason: string;
@@ -199,25 +200,34 @@ export const apiService = {
     page: number;
     limit: number;
     format?: 'openai' | 'alpaca';
+    minOverall?: number;
   }): Promise<{
-    items: Array<{
-      _id: string;
-      fileId: string;
-      format: 'openai' | 'alpaca';
-      data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini';
-      results: {
-        accuracy?: number;
-        clarity?: number;
-        completeness?: number;
-        socratic?: number;
-        alignment?: number;
-        factuality?: number;
-        overall: number;
-        reason: string;
-      };
-      createdAt: string;
-      updatedAt?: string;
+    projects: Array<{
+      projectName: string;
+      totalItems: number;
+      latestCreatedAt: string;
+      formats: Array<'openai' | 'alpaca'>;
+      avgOverall: number;
+      items: Array<{
+        _id: string;
+        fileId: string;
+        projectName: string;
+        format: 'openai' | 'alpaca';
+        data: Record<string, any>;
+        evaluatedBy: 'manual' | 'gemini';
+        results: {
+          accuracy?: number;
+          clarity?: number;
+          completeness?: number;
+          socratic?: number;
+          encouragement?: number;
+          factuality?: number;
+          overall: number;
+          reason: string;
+        };
+        createdAt: string;
+        updatedAt?: string;
+      }>;
     }>;
     total: number;
     page: number;
@@ -229,6 +239,8 @@ export const apiService = {
         page: params.page,
         limit: params.limit,
         ...(params.format ? { format: params.format } : {}),
+        ...(Number.isFinite(params.minOverall) ? { minOverall: params.minOverall } : {}),
+
       },
     });
     return response.data;
@@ -242,7 +254,7 @@ export const apiService = {
         clarity?: number;
         completeness?: number;
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;
         reason: string;

@@ -21,6 +21,8 @@ export interface ITrainingHistory extends Document {
     warmup_steps: number;               // LR warmup steps
     weight_decay: number;               // Weight decay for AdamW
     seed: number;                       // Random seed
+    early_stopping_loss: number;        // Stop if loss < this
+    early_stopping_patience: number;    // Steps to wait for loss decrease
     optim: string;                      // Optimizer type
     lr_scheduler_type: string;          // LR scheduler type
   };
@@ -74,6 +76,8 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
       warmup_steps: { type: Number, default: 5 },
       weight_decay: { type: Number, default: 0.01 },
       seed: { type: Number, default: 3407 },
+      early_stopping_loss: { type: Number, default: 0.5 },
+      early_stopping_patience: { type: Number, default: 100 },
       optim: { type: String, default: 'adamw_8bit' },
       lr_scheduler_type: { type: String, default: 'linear' },
     },

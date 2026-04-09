@@ -12,7 +12,7 @@ export interface SampleEvaluation {
         clarity?: number;     // Rõ ràng (0–10)
         completeness?: number; // Đủ ý (0–10)
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;     // Trung bình
     };
@@ -26,7 +26,7 @@ export interface EvaluationResult {
         clarity?: number;
         completeness?: number;
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;
     };
@@ -51,29 +51,20 @@ function isConversationSample(s: EvaluationSample): s is OpenAIConversationSampl
 export class EvaluationService {
     constructor(private provider: ILlmProvider) { }
 
-    /**
-     * Helper to delay execution (rate limiting)
-     */
-    private sleep(ms: number) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-    }
+    private toInstructionOutput(sample: EvaluationSample): { instruction: string; output: string } {
+        if (isConversationSample(sample)) {
+            const firstUser = sample.messages.find((m) => m.role === 'user');
+            const lastAssistant = [...sample.messages].reverse().find((m) => m.role === 'assistant');
+            return {
+                instruction: firstUser?.content || '',
+                output: lastAssistant?.content?.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || '',
+            };
+        }
 
-    /**
-     * Format a single OpenAI conversation into a readable text block for the prompt.
-     * Renders all turns in order so the model can evaluate the full dialogue.
-     */
-    private formatConversationText(sample: OpenAIConversationSample, index: number): string {
-        const turns = sample.messages
-            .filter((m) => m.role === 'user' || m.role === 'assistant')
-            .map((m) => {
-                const roleLabel = m.role === 'user' ? 'User' : 'Assistant';
-                // Strip <think> tags from assistant messages for cleaner display
-                const cleanContent = m.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-                return `**${roleLabel}:** ${cleanContent}`;
-            })
-            .join('\n');
-
-        return `=== MẪU ${index + 1} ===\n${turns}\n`;
+        return {
+            instruction: sample.instruction,
+            output: sample.output,
+        };
     }
 
     /**
@@ -85,27 +76,41 @@ export class EvaluationService {
         if (samples.length === 0) return [];
 
         const isOpenAI = format === 'openai';
-        let prompt = '';
 
-        if (isOpenAI) {
-            const samplesText = samples.map((s, index) => {
+        const batchPayload = isOpenAI
+            ? samples.map((s, index) => {
                 if (isConversationSample(s)) {
-                    // Full conversation evaluation: render all turns
-                    return this.formatConversationText(s, index);
+                    return {
+                        index,
+                        messages: s.messages.map((m) => ({
+                            role: String(m.role || ''),
+                            content: String(m.content || ''),
+                        })),
+                    };
                 }
-                // Fallback: flat pair (should not happen when sending from frontend, but kept for safety)
-                return `=== MẪU ${index + 1} ===\n**User:**\n${s.instruction}\n**Input/<think>:**\n${s.input || 'N/A'}\n**Assistant:**\n${s.output}\n`;
-            }).join('\n');
 
-            prompt = OPENAI_SYSTEM_PROMPT.replace('${samplesSize}', String(samples.length)).replace('${samplesText}', samplesText);
-        } else {
-            const samplesText = samples.map((s, index) => {
+                return {
+                    index,
+                    messages: [
+                        { role: 'user', content: String((s as AlpacaFormat).instruction || '') },
+                        { role: 'assistant', content: String((s as AlpacaFormat).output || '') },
+                    ],
+                };
+            })
+            : samples.map((s, index) => {
                 const alpaca = s as AlpacaFormat;
-                return `=== MẪU ${index + 1} ===\n**Câu hỏi:**\n${alpaca.instruction}\n**Câu trả lời:**\n${alpaca.output}\n`;
-            }).join('\n');
+                return {
+                    index,
+                    instruction: String(alpaca.instruction || ''),
+                    input: String(alpaca.input || ''),
+                    output: String(alpaca.output || ''),
+                };
+            });
 
-            prompt = ALPACA_SYSTEM_PROMPT.replace('${samplesSize}', String(samples.length)).replace('${samplesText}', samplesText);
-        }
+        const samplesJson = JSON.stringify(batchPayload, null, 2);
+        const prompt = isOpenAI
+            ? OPENAI_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson)
+            : ALPACA_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson);
 
         try {
             const rawText = await this.provider.generateContent(prompt);
@@ -127,62 +132,52 @@ export class EvaluationService {
                 parsedArray = [];
             }
 
-            return samples.map((sample, idx) => {
-                const parsed = parsedArray[idx] || {};
-                const reason = String(parsed.reason || 'Không có lý do cụ thể');
-
-                // Derive a label for instruction/output fields based on sample type
-                let instruction = '';
-                let output = '';
-                if (isConversationSample(sample)) {
-                    const firstUser = sample.messages.find((m) => m.role === 'user');
-                    const lastAssistant = [...sample.messages].reverse().find((m) => m.role === 'assistant');
-                    instruction = firstUser?.content || '';
-                    output = lastAssistant?.content?.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || '';
+            const byIndex = new Map<number, any>();
+            parsedArray.forEach((item, idx) => {
+                const mappedIndex = Number(item?.index ?? item?.id);
+                if (Number.isFinite(mappedIndex)) {
+                    byIndex.set(mappedIndex, item);
                 } else {
-                    instruction = sample.instruction;
-                    output = sample.output;
+                    // Fallback by position if model omits index
+                    byIndex.set(idx, item);
                 }
+            });
+
+            return samples.map((sample, idx) => {
+                const parsed = byIndex.get(idx) || {};
+                const scoreSource = parsed?.scores && typeof parsed.scores === 'object' ? parsed.scores : parsed;
+                const reason = String(parsed.reason || 'Không có lý do cụ thể');
+                const { instruction, output } = this.toInstructionOutput(sample);
 
                 if (isOpenAI) {
-                    const socratic = Math.min(10, Math.max(0, Number(parsed.socratic) || 0));
-                    const alignment = Math.min(10, Math.max(0, Number(parsed.alignment) || 0));
-                    const factuality = Math.min(10, Math.max(0, Number(parsed.factuality) || 0));
-                    const overall = Math.round(((socratic + alignment + factuality) / 3) * 10) / 10;
+                    const socratic = Math.min(10, Math.max(0, Number(scoreSource.socratic) || 0));
+                    const encouragement = Math.min(10, Math.max(0, Number(scoreSource.encouragement) || 0));
+                    const factuality = Math.min(10, Math.max(0, Number(scoreSource.factuality) || 0));
+                    const overall = Math.round(((socratic + encouragement + factuality) / 3) * 10) / 10;
                     return {
                         instruction,
                         output,
                         reason,
-                        scores: { socratic, alignment, factuality, overall }
-                    };
-                } else {
-                    const accuracy = Math.min(10, Math.max(0, Number(parsed.accuracy) || 0));
-                    const clarity = Math.min(10, Math.max(0, Number(parsed.clarity) || 0));
-                    const completeness = Math.min(10, Math.max(0, Number(parsed.completeness) || 0));
-                    const overall = Math.round(((accuracy + clarity + completeness) / 3) * 10) / 10;
-                    return {
-                        instruction,
-                        output,
-                        reason,
-                        scores: { accuracy, clarity, completeness, overall }
+                        scores: { socratic, encouragement, factuality, overall },
                     };
                 }
+
+                const accuracy = Math.min(10, Math.max(0, Number(scoreSource.accuracy) || 0));
+                const clarity = Math.min(10, Math.max(0, Number(scoreSource.clarity) || 0));
+                const completeness = Math.min(10, Math.max(0, Number(scoreSource.completeness) || 0));
+                const overall = Math.round(((accuracy + clarity + completeness) / 3) * 10) / 10;
+                return {
+                    instruction,
+                    output,
+                    reason,
+                    scores: { accuracy, clarity, completeness, overall },
+                };
             });
 
         } catch (error: any) {
             console.error('Eval error for chunk:', error.message);
             return samples.map((sample) => {
-                let instruction = '';
-                let output = '';
-                if (isConversationSample(sample)) {
-                    const firstUser = sample.messages.find((m) => m.role === 'user');
-                    const lastAssistant = [...sample.messages].reverse().find((m) => m.role === 'assistant');
-                    instruction = firstUser?.content || '';
-                    output = lastAssistant?.content?.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || '';
-                } else {
-                    instruction = sample.instruction;
-                    output = sample.output;
-                }
+                const { instruction, output } = this.toInstructionOutput(sample);
                 return {
                     instruction,
                     output,
@@ -206,11 +201,10 @@ export class EvaluationService {
         const samples = data.slice(0, sampleSize);
         console.log(`[Evaluation] Lấy ${sampleSize} mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
 
-        const CHUNK_SIZE = 1;
-        const DELAY_MS = 6000; // 6 giây delay => tối đa 10 req/phút
+        const CHUNK_SIZE = 10;
         const results: SampleEvaluation[] = [];
 
-        console.log(`[Evaluation] Bắt đầu xử lý Queue: ${Math.ceil(samples.length / CHUNK_SIZE)} chunks`);
+        console.log(`[Evaluation] Bắt đầu xử lý batching: ${Math.ceil(samples.length / CHUNK_SIZE)} chunk(s)`);
 
         for (let i = 0; i < samples.length; i += CHUNK_SIZE) {
             const chunk = samples.slice(i, i + CHUNK_SIZE);
@@ -218,21 +212,27 @@ export class EvaluationService {
 
             const chunkResults = await this.evaluateChunk(chunk, format);
             results.push(...chunkResults);
-
-            if (i + CHUNK_SIZE < samples.length) {
-                console.log(`[Evaluation] Đang chờ ${DELAY_MS}ms...`);
-                await this.sleep(DELAY_MS);
-            }
         }
 
         const evaluated = results.length;
+        if (evaluated === 0) {
+            return {
+                sampleSize: samples.length,
+                evaluated: 0,
+                totalPopulation: populationSize,
+                avgScores: { overall: 0 },
+                passRate: 0,
+                samples: [],
+            };
+        }
+
         const avgOverall = Math.round((results.reduce((s, r) => s + r.scores.overall, 0) / evaluated) * 10) / 10;
 
         let avgScores: any = { overall: avgOverall };
 
         if (format === 'openai') {
             avgScores.socratic = Math.round((results.reduce((s, r) => s + (r.scores.socratic || 0), 0) / evaluated) * 10) / 10;
-            avgScores.alignment = Math.round((results.reduce((s, r) => s + (r.scores.alignment || 0), 0) / evaluated) * 10) / 10;
+            avgScores.encouragement = Math.round((results.reduce((s, r) => s + (r.scores.encouragement || 0), 0) / evaluated) * 10) / 10;
             avgScores.factuality = Math.round((results.reduce((s, r) => s + (r.scores.factuality || 0), 0) / evaluated) * 10) / 10;
         } else {
             avgScores.accuracy = Math.round((results.reduce((s, r) => s + (r.scores.accuracy || 0), 0) / evaluated) * 10) / 10;

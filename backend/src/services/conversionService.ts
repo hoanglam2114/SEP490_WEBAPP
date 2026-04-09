@@ -424,24 +424,14 @@ export class ConversionService {
     stats.removedTooShort = tooShort.length;
     stats.removedTooLong = tooLong.length;
 
-    // --- BƯỚC 4: DEDUPLICATION ---
-    if (options.deduplicate !== false) {
-      const before = cleaned.length;
-      const seen = new Set<string>();
-      cleaned = cleaned.filter((item) => {
-        // Dùng prefix 60 ký tự làm key để phát hiện bản ghi gần trùng
-        const key = item.instruction.slice(0, 60).toLowerCase().replace(/\s+/g, ' ').trim();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      stats.removedDuplicates = before - cleaned.length;
-    }
 
     // --- BƯỚC 5: REMOVE EMPTY OUTPUT ---
     if (options.removeEmptyOutput) {
       const before = cleaned.length;
-      cleaned = cleaned.filter((item) => item.output.trim().length > 0);
+      cleaned = cleaned.filter((item) => {
+        const assistantText = item.output.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        return assistantText.length > 0;
+      });
       stats.removedTooShort += before - cleaned.length;
     }
 
@@ -485,7 +475,7 @@ export class ConversionService {
 
     let cleaned = [...data];
 
-    // BƯỚC 1: Xóa bỏ mẫu lỗi có chứa keyword
+    // BƯỚC 1: Xóa bỏ mẫu lỗi có chứa keyword và AI boilerplate
     const ERROR_KEYWORDS = [
       "Unknown error",
       "LLM call failed",
@@ -496,13 +486,26 @@ export class ConversionService {
       "__CHUNK__"
     ];
 
+    const BOILERPLATE_PATTERNS = [
+      /^(xin lỗi|sorry)[,.]?\s*(tôi|i)\s*(không thể|cannot|can't|am unable)/i,
+      /^(là một|as an?)\s*(AI|mô hình|model|language model)/i,
+      /^(I|Tôi)\s*(don't|không)\s*(have|có)\s*(access|quyền truy cập)/i,
+      /^(I|Tôi)\s*(am|là)\s*(just|chỉ là)\s*(an?|một)\s*(AI|mô hình)/i,
+      /tôi không được huấn luyện để/i,
+      /i (was|have been) (not |)trained to/i,
+      /^(Okay|Được rồi|Sure|Chắc chắn)[!,.]?\s*$/i,
+      /^(I understand|Tôi hiểu)[.!]?\s*$/i,
+    ];
+
     if (options.removeBoilerplate !== false) {
       const before = cleaned.length;
       cleaned = cleaned.filter((item) => {
-        // Trả về false nếu có bất kỳ tin nhắn assistant nào chứa error keyword -> để filter out
+        // Trả về false nếu có bất kỳ tin nhắn assistant nào chứa error keyword hoặc boilerplate -> để filter out
         return !item.messages.some(msg => {
           if (msg.role !== 'assistant') return false;
-          return ERROR_KEYWORDS.some(keyword => msg.content.includes(keyword));
+          const hasError = ERROR_KEYWORDS.some(keyword => msg.content.includes(keyword));
+          const hasBoilerplate = BOILERPLATE_PATTERNS.some(regex => regex.test(msg.content.trim()));
+          return hasError || hasBoilerplate;
         });
       });
       stats.removedBoilerplate = before - cleaned.length;
@@ -554,26 +557,13 @@ export class ConversionService {
     stats.removedTooShort = tooShort.length;
     stats.removedTooLong = tooLong.length;
 
-    // BƯỚC 3: DEDUPLICATION
-    if (options.deduplicate !== false) {
-      const before = cleaned.length;
-      const seen = new Set<string>();
-      cleaned = cleaned.filter((item) => {
-        const userMessages = item.messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
-        const key = userMessages.slice(0, 60).toLowerCase().replace(/\s+/g, ' ').trim();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      stats.removedDuplicates = before - cleaned.length;
-    }
 
     // BƯỚC 4: REMOVE EMPTY ASSISTANT CONTENT
     if (options.removeEmptyOutput) {
       const before = cleaned.length;
       cleaned = cleaned.filter((item) => {
-        return item.messages.some(msg => {
-          if (msg.role !== 'assistant') return false;
+        return item.messages.every(msg => {
+          if (msg.role !== 'assistant') return true;
           const assistantText = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
           return assistantText.length > 0;
         });
@@ -588,7 +578,7 @@ export class ConversionService {
         // Đếm số cặp QA (User tiếp nối bởi Assistant)
         let pairs = 0;
         for (let i = 0; i < item.messages.length - 1; i++) {
-          if (item.messages[i].role === 'user' && item.messages[i+1].role === 'assistant') {
+          if (item.messages[i].role === 'user' && item.messages[i + 1].role === 'assistant') {
             pairs++;
           }
         }

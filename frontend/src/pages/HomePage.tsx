@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 
 const tools = [
   {
-    title: 'Data Converter',
-    description: 'Convert chatbot data to Instruction / Input / Output format for fine-tuning',
+    title: 'Data Preparation',
+    description: 'Convert chatbot data to Alpaca/OpenAI messages format, clean data, evaluate dataset quality',
     path: '/chatbotconverter',
-    tag: 'Preprocessing',
+    tag: 'Preparation',
     icon: (
       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -51,7 +51,7 @@ const tools = [
     ),
   },
   {
-    title: 'Evaluation History',
+    title: 'Dataset Evaluation History',
     description: 'View past evaluations, manually re-evaluate records, and manage dataset quality.',
     path: '/evaluation-history',
     tag: 'History',

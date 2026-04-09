@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Download,
   Loader2,
+  RotateCcw,
   ShieldCheck,
   Sparkles,
   Wand2,
@@ -26,7 +27,7 @@ type EvaluationScores = {
   clarity?: number;
   completeness?: number;
   socratic?: number;
-  alignment?: number;
+  encouragement?: number;
   factuality?: number;
   overall: number;
   reason: string;
@@ -85,6 +86,13 @@ function parseOptionalScore(value: string): number | undefined {
 function calculateOverallFromThree(a: number, b: number, c: number): number {
   return Math.round(((a + b + c) / 3) * 10) / 10;
 }
+function formatDefaultProjectName(date = new Date()): string {
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `Project_${dd}/${mm}_${hh}:${min}`;
+}
 
 const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 1, label: 'Upload & Convert' },
@@ -97,8 +105,8 @@ const STEP_CONFIG: Array<{ id: Step; label: string }> = [
 const METRIC_TOOLTIPS: Record<string, string> = {
   socratic:
     'TÍNH SƯ PHẠM: Điểm tối đa nếu AI không đưa ra đáp án trực tiếp xuyên suốt hội thoại, chỉ dùng câu hỏi gợi mở hoặc ví dụ tương tự. Điểm 0 nếu AI đưa đáp án quá sớm hoặc giải hộ bài ở bất kỳ lượt nào.',
-  alignment:
-    'HIỂU NGỮ CẢNH & Ý ĐỊNH: Điểm tối đa nếu AI xác định đúng ý định của User qua toàn cuộc hội thoại. Điểm 0 nếu AI hiểu sai ý định ở bất kỳ lượt nào.',
+  encouragement:
+    "TÍNH KHÍCH LỆ (encouragement):\n- Điểm tối đa (9-10): AI sử dụng ngôn ngữ tích cực, công nhận nỗ lực của người dùng. Tông giọng ấm áp, thân thiện và giàu năng lượng.\n- Điểm trung bình (5-8): Có khen ngợi nhưng còn rập khuôn hoặc khen không đúng lúc. Tông giọng trung tính.\n- ĐIỂM 0: AI phản hồi cụt lủn, máy móc, hoặc tệ hơn là có thái độ gây nản lòng (ví dụ: \"Sai rồi, làm lại đi\").",
   factuality:
     'ĐỘ CHÍNH XÁC KIẾN THỨC: Điểm tối đa nếu kiến thức, công thức và logic đều đúng trong toàn bộ hội thoại. Điểm 0 nếu có thông tin sai lệch hoặc tính toán sai.',
   accuracy:
@@ -338,10 +346,10 @@ function ConvertedDatasetTable({
 
   const hasRows = totalRows > 0;
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
-  const metricB = mode === 'openai' ? 'alignment' : 'clarity';
+  const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
 
-  const renderMetricHeader = (metric: 'socratic' | 'alignment' | 'factuality' | 'accuracy' | 'clarity' | 'completeness') => (
+  const renderMetricHeader = (metric: 'socratic' | 'encouragement' | 'factuality' | 'accuracy' | 'clarity' | 'completeness') => (
     <span className="relative inline-flex items-center group cursor-help" title={METRIC_TOOLTIPS[metric]}>
       {metric}
       <span className="absolute left-0 top-full z-20 mt-2 hidden w-72 rounded-md border border-gray-200 bg-white p-2 text-xs font-normal text-gray-700 shadow-lg group-hover:block">
@@ -529,12 +537,12 @@ function ConvertedDatasetTable({
                                 min={0}
                                 max={10}
                                 step="any"
-                                value={score?.alignment ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'alignment', e.target.value)}
+                                value={score?.encouragement ?? ''}
+                                onChange={(e) => onManualFieldChange?.(row, 'encouragement', e.target.value)}
                                 className={metricInputClass}
                               />
                             ) : (
-                              score?.alignment ?? ''
+                              score?.encouragement ?? ''
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
@@ -899,16 +907,6 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
             <label className="flex items-center space-x-2">
               <input
                 type="checkbox"
-                checked={conversionOptions.deduplicate ?? true}
-                onChange={(e) => updateConversionOptions({ deduplicate: e.target.checked })}
-                className="rounded"
-              />
-              <span className="text-sm font-medium text-gray-700">Deduplicate records</span>
-            </label>
-
-            <label className="flex items-center space-x-2">
-              <input
-                type="checkbox"
                 checked={conversionOptions.removeEmptyOutput ?? true}
                 onChange={(e) => updateConversionOptions({ removeEmptyOutput: e.target.checked })}
                 className="rounded"
@@ -1068,7 +1066,7 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
 }
 
 export function ConversionPage() {
-  const { uploadedFile, conversionOptions } = useAppStore();
+  const { uploadedFile, conversionOptions, projectName, setProjectName } = useAppStore();
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
@@ -1080,6 +1078,11 @@ export function ConversionPage() {
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
   const [evaluationGroupFilter, setEvaluationGroupFilter] = useState<'all' | number>('all');
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
+  const [clusteredResult, setClusteredResult] = useState<{
+    data: any[];
+    assignments: number[];
+    groups: ClusterGroup[];
+  } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
 
   const { data: stats } = useQuery({
@@ -1096,7 +1099,11 @@ export function ConversionPage() {
   );
 
   const rowsWithGroups = useMemo(
-    () => allRows.map((row) => ({ ...row, groupId: rowClusterMap[row.id] })),
+    () =>
+      allRows.map((row) => ({
+        ...row,
+        groupId: rowClusterMap[row.id] !== undefined ? rowClusterMap[row.id] : row.groupId,
+      })),
     [allRows, rowClusterMap]
   );
 
@@ -1191,12 +1198,12 @@ export function ConversionPage() {
         acc.clarity += item.clarity || 0;
         acc.completeness += item.completeness || 0;
         acc.socratic += item.socratic || 0;
-        acc.alignment += item.alignment || 0;
+        acc.encouragement += item.encouragement || 0;
         acc.factuality += item.factuality || 0;
         acc.overall += item.overall || 0;
         return acc;
       },
-      { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, alignment: 0, factuality: 0, overall: 0 }
+      { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, encouragement: 0, factuality: 0, overall: 0 }
     );
 
     const size = values.length;
@@ -1206,7 +1213,7 @@ export function ConversionPage() {
       clarity: Number((total.clarity / size).toFixed(2)),
       completeness: Number((total.completeness / size).toFixed(2)),
       socratic: Number((total.socratic / size).toFixed(2)),
-      alignment: Number((total.alignment / size).toFixed(2)),
+      encouragement: Number((total.encouragement / size).toFixed(2)),
       factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
@@ -1289,7 +1296,7 @@ export function ConversionPage() {
 
           const score: EvaluationScores = {
             socratic: sample.scores.socratic,
-            alignment: sample.scores.alignment,
+            encouragement: sample.scores.encouragement,
             factuality: sample.scores.factuality,
             overall: sample.scores.overall,
             reason: sample.reason,
@@ -1364,7 +1371,7 @@ export function ConversionPage() {
         clarity: entry.scores.clarity,
         completeness: entry.scores.completeness,
         socratic: entry.scores.socratic,
-        alignment: entry.scores.alignment,
+        encouragement: entry.scores.encouragement,
         factuality: entry.scores.factuality,
         overall: entry.scores.overall,
         reason: entry.scores.reason,
@@ -1379,7 +1386,7 @@ export function ConversionPage() {
           clarity?: number;
           completeness?: number;
           socratic?: number;
-          alignment?: number;
+          encouragement?: number;
           factuality?: number;
           overall: number;
           reason: string;
@@ -1475,6 +1482,7 @@ export function ConversionPage() {
 
       await apiService.saveEvaluationResults({
         fileId: uploadedFile.fileId,
+        projectName: projectName.trim() || formatDefaultProjectName(),
         items: records,
       });
 
@@ -1490,7 +1498,7 @@ export function ConversionPage() {
 
   const handleToggleManualRow = (row: DisplayRow, checked: boolean) => {
     const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'alignment' : 'clarity';
+    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
     const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
 
     if (checked) {
@@ -1549,7 +1557,7 @@ export function ConversionPage() {
     }
 
     const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'alignment' : 'clarity';
+    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
     const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
 
     setEvaluationMap((prev) => {
@@ -1590,9 +1598,16 @@ export function ConversionPage() {
     setEvaluationMap({});
     setManualRowIds(new Set());
     setClusterGroups([]);
+    setRowClusterMap({});
     setSelectedClusterIds([]);
+    setClusteredResult(null);
     setEvaluationGroupFilter('all');
     setVisibleRowsInEvaluation([]);
+    if (uploadedFile?.fileId) {
+      setProjectName(formatDefaultProjectName());
+    } else {
+      setProjectName('');
+    }
   }, [uploadedFile?.fileId]);
 
   const canMoveFromStep2 = !!conversionResult;
@@ -1604,16 +1619,28 @@ export function ConversionPage() {
       return;
     }
 
-    const blob = new Blob([conversionResult.output], {
-      type: conversionResult.filename.endsWith('.jsonl')
-        ? 'application/x-ndjson'
-        : 'application/json',
+    const { data, filename } = conversionResult;
+    const isJsonl = filename.endsWith('.jsonl');
+
+    let output: string;
+    const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
+
+    if (isJsonl) {
+      // JSONL format: mỗi dòng là một JSON object
+      output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
+    } else {
+      // JSON format: array of objects
+      output = JSON.stringify(cleanData, null, 2);
+    }
+
+    const blob = new Blob([output], {
+      type: isJsonl ? 'application/x-ndjson' : 'application/json',
     });
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = conversionResult.filename;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1695,8 +1722,10 @@ export function ConversionPage() {
     setEvaluationMap({});
     setManualRowIds(new Set());
     setClusterGroups([]);
+    setRowClusterMap({});
     setSelectedClusterIds([]);
     setEvaluationGroupFilter('all');
+    setClusteredResult(null);
     toast.success('Dataset reset to original converted state.');
   };
 
@@ -1708,33 +1737,53 @@ export function ConversionPage() {
       return apiService.clusterData(conversionResult.data);
     },
     onSuccess: (result) => {
-      setConversionResult((prev) => prev ? { ...prev, data: result.data } : null);
+      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
+      setClusteredResult(result);
       setClusterGroups(result.groups);
 
       // Restore old mapping method for UI
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
+        // Map assignments từ Python (theo index conversation) sang row IDs
         const conversations = normalizeOpenAIConversations(conversionResult!.data);
-        conversations.forEach((conv, idx) => {
-          const groupId = result.assignments[idx] ?? 0;
-          allRows.forEach((row) => {
+        let assignmentIdx = 0;
+        conversations.forEach((conv) => {
+          const groupId = result.assignments[assignmentIdx] ?? 0;
+          // Tìm tất cả rows thuộc conversation này
+          rowsWithGroups.forEach((row) => {
             if (row.blockId === String(conv.conversation_id)) {
               nextMap[row.id] = groupId;
             }
           });
+          assignmentIdx++;
         });
       } else {
-        allRows.forEach((row, idx) => {
-          nextMap[row.id] = result.assignments[idx] ?? 0;
+        // Alpaca mode: 1 dataset item = 1 row
+        allRows.forEach((row, index) => {
+          nextMap[row.id] = result.assignments[index] ?? 0;
         });
       }
 
+      // Recompute group counts dựa trên display rows (QA pairs) thay vì conversations
+      const rowCountByGroup = new Map<number, number>();
+      Object.values(nextMap).forEach((gId) => {
+        rowCountByGroup.set(gId, (rowCountByGroup.get(gId) || 0) + 1);
+      });
+
+      const groupsWithRowCounts = result.groups.map((g: any) => ({
+        ...g,
+        count: rowCountByGroup.get(g.groupId) ?? g.count,
+      }));
+
       setRowClusterMap(nextMap);
+      setClusterGroups(groupsWithRowCounts);
       setSelectedClusterIds([]);
       setEvaluationGroupFilter('all');
 
       const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
-      const itemsCount = result.assignments.length;
+      const itemsCount = previewMode === 'openai'
+        ? normalizeOpenAIConversations(conversionResult!.data).length
+        : conversionResult!.data.length;
       toast.success(`Clustered ${itemsCount} ${countLabel} into ${result.groups.length} groups.`);
     },
     onError: (error: any) => {
@@ -1750,18 +1799,25 @@ export function ConversionPage() {
       return apiService.clusterFilter(conversionResult.data, filterThreshold);
     },
     onSuccess: (result) => {
-      setConversionResult((prev) => prev ? { ...prev, data: result.data } : null);
+      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
       setClusterGroups(result.groups);
 
       // Synchronize mapping for filtered data
       const nextMap: Record<string, number> = {};
-
-      // To keep it simple and consistent with the 'old method' (assignments based),
-      // we'll populate the map for the new rows.
-      result.data.forEach((item, idx) => {
-        const id = previewMode === 'openai' ? (item as any).conversation_id : `alpaca-${idx}`;
-        nextMap[id] = result.assignments[idx] ?? 0;
-      });
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(result.data);
+        conversations.forEach((conv, idx) => {
+          const groupId = result.assignments[idx] ?? 0;
+          // Note: Since allRows will refresh after setConversionResult,
+          // we use nextMap keys that match the conversation IDs used as row IDs.
+          nextMap[String(conv.conversation_id)] = groupId;
+        });
+      } else {
+        // Alpaca uses indices directly
+        result.data.forEach((item, idx) => {
+          nextMap[`alpaca-${idx}`] = (item as any).cluster ?? result.assignments[idx] ?? 0;
+        });
+      }
 
       setRowClusterMap(nextMap);
       setSelectedClusterIds([]);
@@ -1774,6 +1830,35 @@ export function ConversionPage() {
       toast.error(error.response?.data?.error || error.message || 'Filtering failed');
     },
   });
+
+  const handleResetFiltering = () => {
+    if (!clusteredResult) return;
+
+    setConversionResult((prev) => prev ? { ...prev, data: clusteredResult.data } : null);
+    setClusterGroups(clusteredResult.groups);
+
+    const nextMap: Record<string, number> = {};
+    if (previewMode === 'openai') {
+      const conversations = normalizeOpenAIConversations(clusteredResult.data);
+      conversations.forEach((conv, idx) => {
+        const groupId = clusteredResult.assignments[idx] ?? 0;
+        allRows.forEach((row) => {
+          if (row.blockId === String(conv.conversation_id)) {
+            nextMap[row.id] = groupId;
+          }
+        });
+      });
+    } else {
+      allRows.forEach((row, idx) => {
+        nextMap[row.id] = clusteredResult.assignments[idx] ?? 0;
+      });
+    }
+
+    setRowClusterMap(nextMap);
+    setSelectedClusterIds([]);
+    setEvaluationGroupFilter('all');
+    toast.success('Reset to pre-filter clustered state.');
+  };
 
   const toggleClusterSelection = (groupId: number) => {
     setSelectedClusterIds((prev) =>
@@ -1791,6 +1876,22 @@ export function ConversionPage() {
 
           {uploadedFile && (
             <>
+              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
+                <label htmlFor="projectName" className="block text-sm font-semibold text-gray-800">
+                  Project Name
+                </label>
+                <input
+                  id="projectName"
+                  type="text"
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  placeholder={formatDefaultProjectName()}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                />
+                <p className="text-xs text-gray-500">
+                  Gợi ý: {formatDefaultProjectName()}.
+                </p>
+              </div>
               <FileStatisticsCard stats={stats} />
               <Preview />
               <ConversionOptions />
@@ -1894,23 +1995,34 @@ export function ConversionPage() {
                   <p className="text-[10px] text-gray-500 leading-tight">
                     Higher threshold (e.g. 0.95) keeps more samples. Lower threshold filters more aggressively.
                   </p>
-                  <button
-                    onClick={() => filterMutation.mutate()}
-                    disabled={filterMutation.isPending}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
-                  >
-                    {filterMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Filtering Noise...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4" />
-                        <span>Filter Noise</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => filterMutation.mutate()}
+                      disabled={filterMutation.isPending}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
+                    >
+                      {filterMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Filtering Noise...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          <span>Filter Noise</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleResetFiltering}
+                      disabled={filterMutation.isPending}
+                      className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold transition-colors flex items-center gap-2"
+                      title="Reset noise filter"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Reset Filter</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1999,7 +2111,7 @@ export function ConversionPage() {
               <p className="font-semibold">Average scores ({averagedEvaluation.count} rows)</p>
               <p className="mt-1">
                 {previewMode === 'openai'
-                  ? `socratic: ${averagedEvaluation.socratic} | alignment: ${averagedEvaluation.alignment} | factuality: ${averagedEvaluation.factuality} | overall: ${averagedEvaluation.overall}`
+                  ? `socratic: ${averagedEvaluation.socratic} | encouragement: ${averagedEvaluation.encouragement} | factuality: ${averagedEvaluation.factuality} | overall: ${averagedEvaluation.overall}`
                   : `accuracy: ${averagedEvaluation.accuracy} | clarity: ${averagedEvaluation.clarity} | completeness: ${averagedEvaluation.completeness} | overall: ${averagedEvaluation.overall}`}
               </p>
             </div>
@@ -2045,7 +2157,9 @@ export function ConversionPage() {
                 </p>
               </div>
 
-              {uploadedFile && <HuggingFaceUpload />}
+              {uploadedFile && conversionResult && (
+                <HuggingFaceUpload conversionResult={conversionResult} />
+              )}
 
               <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
                 <h3 className="text-sm font-semibold text-gray-900">Filter by overall score</h3>

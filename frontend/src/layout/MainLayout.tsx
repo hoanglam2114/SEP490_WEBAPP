@@ -36,10 +36,10 @@ export function MainLayout({ children }: MainLayoutProps) {
               <Bot className="w-8 h-8 text-primary-600" />
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">
-                  Chatbot Data Converter
+                  Data Preparation
                 </h1>
                 <p className="text-sm text-gray-500 mt-1">
-                  Convert MongoDB chat data to fine-tuning formats
+                  Convert chat data to fine-tuning formats
                 </p>
               </div>
             </div>

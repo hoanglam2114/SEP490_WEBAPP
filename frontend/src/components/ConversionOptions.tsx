@@ -44,24 +44,26 @@ export const ConversionOptions: React.FC = () => {
 
       </div>
 
-      <div>
-        <label className="flex items-center space-x-2">
-          <input
-            type="checkbox"
-            checked={conversionOptions.removeThinkTags}
-            onChange={(e) =>
-              updateConversionOptions({ removeThinkTags: e.target.checked })
-            }
-            className="rounded"
-          />
-          <span className="text-sm font-medium text-gray-700">
-            Remove &lt;think&gt; tags from content
-          </span>
-        </label>
-        <p className="text-xs text-gray-500 mt-1 ml-6">
-          Automatically strips thinking process tags from assistant responses
-        </p>
-      </div>
+      {conversionOptions.format === 'openai' && (
+        <div>
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={conversionOptions.removeThinkTags}
+              onChange={(e) =>
+                updateConversionOptions({ removeThinkTags: e.target.checked })
+              }
+              className="rounded"
+            />
+            <span className="text-sm font-medium text-gray-700">
+              Remove &lt;think&gt; tags from content
+            </span>
+          </label>
+          <p className="text-xs text-gray-500 mt-1 ml-6">
+            Automatically strips thinking process tags from assistant responses
+          </p>
+        </div>
+      )}
     </div>
   );
 };
