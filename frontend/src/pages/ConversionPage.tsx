@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 import {
   CheckCircle2,
   Download,
   Loader2,
-  RotateCcw,
   ShieldCheck,
   Sparkles,
   Wand2,
   Zap,
 } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import toast from 'react-hot-toast';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import { FileUploader } from '../components/FileUploader';
 import { ConversionOptions } from '../components/ConversionOptions';
 import { Preview } from '../components/Preview';
@@ -19,7 +22,7 @@ import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type PreviewMode = 'alpaca' | 'openai';
 
 type EvaluationScores = {
@@ -33,7 +36,7 @@ type EvaluationScores = {
   reason: string;
 };
 
-type EvaluatedBy = 'manual' | 'gemini';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'none';
 
 type RowEvaluationEntry = {
   scores: EvaluationScores;
@@ -59,6 +62,14 @@ type ClusterGroup = {
   groupId: number;
   count: number;
   label: string;
+};
+
+type LoadProjectPayload = {
+  fileId: string;
+  projectName: string;
+  format: 'openai' | 'alpaca';
+  data: any[];
+  evaluationMap: Record<string, RowEvaluationEntry>;
 };
 
 function clampScore(value: string | number): number {
@@ -97,10 +108,186 @@ function formatDefaultProjectName(date = new Date()): string {
 const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 1, label: 'Upload & Convert' },
   { id: 2, label: 'Clean Data' },
-  { id: 3, label: 'Clustering Data' },
-  { id: 4, label: 'Evaluation' },
-  { id: 5, label: 'Finish' },
+  { id: 3, label: 'Visualization' },
+  { id: 4, label: 'Clustering Data' },
+  { id: 5, label: 'Classification' },
+  { id: 6, label: 'Evaluation' },
+  { id: 7, label: 'Data Refinement' },
+  { id: 8, label: 'Finish' },
 ];
+
+type NumericPoint = number[];
+
+type VisualizationResult = {
+  elbow: Array<{ k: number; wcss: number }>;
+  kDistance: Array<{ rank: number; distance: number }>;
+  pointCount: number;
+};
+
+function euclideanDistance(a: NumericPoint, b: NumericPoint): number {
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+}
+
+function vectorMean(points: NumericPoint[]): NumericPoint {
+  if (!points.length) return [];
+  const dim = points[0].length;
+  const mean = new Array(dim).fill(0);
+  points.forEach((p) => {
+    for (let i = 0; i < dim; i += 1) {
+      mean[i] += p[i] || 0;
+    }
+  });
+  for (let i = 0; i < dim; i += 1) {
+    mean[i] /= points.length;
+  }
+  return mean;
+}
+
+function computeKMeansWcss(points: NumericPoint[], k: number, maxIterations = 15): number {
+  if (!points.length) return 0;
+  const safeK = Math.max(1, Math.min(k, points.length));
+
+  let centroids = points.slice(0, safeK).map((p) => [...p]);
+  let assignments = new Array(points.length).fill(0);
+
+  for (let iter = 0; iter < maxIterations; iter += 1) {
+    assignments = points.map((point) => {
+      let minDist = Number.POSITIVE_INFINITY;
+      let best = 0;
+      centroids.forEach((centroid, idx) => {
+        const d = euclideanDistance(point, centroid);
+        if (d < minDist) {
+          minDist = d;
+          best = idx;
+        }
+      });
+      return best;
+    });
+
+    const nextCentroids = new Array(safeK).fill(0).map(() => [] as NumericPoint[]);
+    points.forEach((point, idx) => {
+      nextCentroids[assignments[idx]].push(point);
+    });
+
+    centroids = nextCentroids.map((clusterPoints, idx) => {
+      if (!clusterPoints.length) {
+        return centroids[idx];
+      }
+      return vectorMean(clusterPoints);
+    });
+  }
+
+  let wcss = 0;
+  points.forEach((point, idx) => {
+    const centroid = centroids[assignments[idx]];
+    const d = euclideanDistance(point, centroid);
+    wcss += d * d;
+  });
+
+  return Number(wcss.toFixed(3));
+}
+
+function computeElbow(points: NumericPoint[]): Array<{ k: number; wcss: number }> {
+  if (points.length < 2) return [];
+  const maxK = Math.min(10, points.length);
+  const result: Array<{ k: number; wcss: number }> = [];
+  for (let k = 1; k <= maxK; k += 1) {
+    result.push({ k, wcss: computeKMeansWcss(points, k) });
+  }
+  return result;
+}
+
+function computeKDistance(points: NumericPoint[], minSamples = 3): Array<{ rank: number; distance: number }> {
+  if (points.length <= minSamples) return [];
+
+  const distances = points.map((point, idx) => {
+    const all = points
+      .map((candidate, j) => {
+        if (idx === j) return Number.POSITIVE_INFINITY;
+        return euclideanDistance(point, candidate);
+      })
+      .sort((a, b) => a - b);
+
+    return all[minSamples - 1];
+  });
+
+  const sorted = [...distances].sort((a, b) => b - a);
+  return sorted.map((distance, index) => ({
+    rank: index + 1,
+    distance: Number(distance.toFixed(4)),
+  }));
+}
+
+function buildFeatureVectors(data: any[], mode: PreviewMode): NumericPoint[] {
+  if (!data.length) return [];
+
+  if (mode === 'openai') {
+    const convs = normalizeOpenAIConversations(data);
+    return convs.map((conv) => {
+      const messages = conv.messages || [];
+      const userCount = messages.filter((m) => m.role === 'user').length;
+      const assistantCount = messages.filter((m) => m.role === 'assistant').length;
+      const avgUserLen = userCount
+        ? messages.filter((m) => m.role === 'user').reduce((s, m) => s + String(m.content || '').length, 0) / userCount
+        : 0;
+      const avgAssistantLen = assistantCount
+        ? messages.filter((m) => m.role === 'assistant').reduce((s, m) => s + String(m.content || '').length, 0) / assistantCount
+        : 0;
+      const totalLen = messages.reduce((s, m) => s + String(m.content || '').length, 0);
+      return [messages.length, userCount, assistantCount, avgUserLen, avgAssistantLen, totalLen];
+    });
+  }
+
+  return data.map((item) => {
+    const instruction = String(item?.instruction ?? item?.query ?? '').trim();
+    const input = String(item?.input ?? item?.context ?? '').trim();
+    const output = String(item?.output ?? item?.answer ?? item?.response ?? '').trim();
+    return [instruction.length, input.length, output.length, instruction.split(/\s+/).filter(Boolean).length, output.split(/\s+/).filter(Boolean).length, (instruction + input + output).length];
+  });
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const next = [...arr];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
+function buildBalancedGroupAssignments(size: number, groupCount = 8): number[] {
+  const assignments = new Array(size).fill(1);
+  const indices = shuffle(Array.from({ length: size }, (_, i) => i));
+
+  indices.forEach((originalIndex, position) => {
+    assignments[originalIndex] = (position % groupCount) + 1;
+  });
+
+  return assignments;
+}
+
+function sanitizeRecordForDownload(record: any, mode: PreviewMode): any {
+  if (mode === 'openai') {
+    const messages = Array.isArray(record?.messages) ? record.messages : [];
+    return {
+      messages: messages.map((msg: any) => ({
+        role: String(msg?.role || ''),
+        content: String(msg?.content || ''),
+      })),
+    };
+  }
+
+  return {
+    instruction: String(record?.instruction ?? record?.query ?? ''),
+    input: String(record?.input ?? record?.context ?? ''),
+    output: String(record?.output ?? record?.answer ?? record?.response ?? ''),
+  };
+}
 
 const METRIC_TOOLTIPS: Record<string, string> = {
   socratic:
@@ -243,15 +430,23 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
 function StepperHeader({ currentStep }: { currentStep: Step }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div className="grid grid-cols-8 gap-2 sm:gap-3">
         {STEP_CONFIG.map((step) => {
           const isActive = step.id === currentStep;
           const isCompleted = step.id < currentStep;
 
           return (
-            <div key={step.id} className="flex items-center gap-3">
+            <div
+              key={step.id}
+              className={`h-full min-h-[92px] rounded-xl border px-2 py-2 text-center ${isCompleted
+                ? 'border-green-200 bg-green-50'
+                : isActive
+                  ? 'border-primary-200 bg-primary-50'
+                  : 'border-gray-200 bg-white'
+                }`}
+            >
               <div
-                className={`w-9 h-9 rounded-full border flex items-center justify-center text-sm font-semibold ${isCompleted
+                className={`mx-auto w-7 h-7 sm:w-8 sm:h-8 rounded-full border flex items-center justify-center text-[11px] sm:text-xs font-semibold ${isCompleted
                   ? 'bg-green-600 border-green-600 text-white'
                   : isActive
                     ? 'bg-primary-600 border-primary-600 text-white'
@@ -260,12 +455,10 @@ function StepperHeader({ currentStep }: { currentStep: Step }) {
               >
                 {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : step.id}
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Step {step.id}</p>
-                <p className={`text-sm font-semibold ${isActive ? 'text-primary-700' : 'text-gray-800'}`}>
-                  {step.label}
-                </p>
-              </div>
+              <p className="mt-1 text-[10px] sm:text-[11px] text-gray-500">Step {step.id}</p>
+              <p className={`text-[11px] sm:text-xs font-semibold leading-tight ${isActive ? 'text-primary-700' : 'text-gray-800'}`}>
+                {step.label}
+              </p>
             </div>
           );
         })}
@@ -281,15 +474,21 @@ function ConvertedDatasetTable({
   showEvaluationActions = true,
   evaluationMap,
   selectedManualRows,
+  selectedRows,
+  rowHighlightMap,
+  editableSelectedRows = true,
   clusterGroups,
   evaluationGroupFilter,
   onEvaluationGroupFilterChange,
   onEvaluate,
+  onEvaluateOpenAI,
   onAccept,
   onReset,
-  onToggleManualRow,
+  onToggleRow,
   onManualFieldChange,
+  extraActions,
   isEvaluating,
+  isEvaluatingOpenAI,
   disableEvaluate,
   isAccepting,
   onVisibleRowsChange,
@@ -300,15 +499,21 @@ function ConvertedDatasetTable({
   showEvaluationActions?: boolean;
   evaluationMap?: Record<string, RowEvaluationEntry>;
   selectedManualRows?: Set<string>;
+  selectedRows?: Set<string>;
+  rowHighlightMap?: Record<string, 'refined'>;
+  editableSelectedRows?: boolean;
   clusterGroups?: ClusterGroup[];
   evaluationGroupFilter?: 'all' | number;
   onEvaluationGroupFilterChange?: (value: 'all' | number) => void;
   onEvaluate?: () => void;
+  onEvaluateOpenAI?: () => void;
   onAccept?: () => void;
   onReset?: () => void;
-  onToggleManualRow?: (row: DisplayRow, checked: boolean) => void;
+  onToggleRow?: (row: DisplayRow, checked: boolean) => void;
   onManualFieldChange?: (row: DisplayRow, field: string, value: string) => void;
+  extraActions?: any;
   isEvaluating?: boolean;
+  isEvaluatingOpenAI?: boolean;
   disableEvaluate?: boolean;
   isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
@@ -317,6 +522,7 @@ function ConvertedDatasetTable({
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_STEPS[0]);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState<boolean>(false);
+  const lastVisibleSignatureRef = useRef<string>('');
 
   useEffect(() => {
     setCurrentPage(1);
@@ -331,7 +537,17 @@ function ConvertedDatasetTable({
   const visibleRows = rows.slice(startIndex, endIndexExclusive);
 
   useEffect(() => {
-    onVisibleRowsChange?.(visibleRows);
+    if (!onVisibleRowsChange) {
+      return;
+    }
+
+    const signature = `${startIndex}:${endIndexExclusive}:${visibleRows.map((row) => row.id).join('|')}`;
+    if (signature === lastVisibleSignatureRef.current) {
+      return;
+    }
+
+    lastVisibleSignatureRef.current = signature;
+    onVisibleRowsChange(visibleRows);
   }, [onVisibleRowsChange, visibleRows]);
 
   const currentStepIndex = PAGE_SIZE_STEPS.indexOf(pageSize);
@@ -429,6 +645,19 @@ function ConvertedDatasetTable({
                 <span>Evaluate with Gemini</span>
               </button>
 
+              {onEvaluateOpenAI && (
+                <button
+                  onClick={onEvaluateOpenAI}
+                  disabled={!hasRows || disableEvaluate || isEvaluatingOpenAI}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:bg-gray-400 text-white text-xs font-semibold"
+                >
+                  {isEvaluatingOpenAI ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span>Evaluate witn OpenAI</span>
+                </button>
+              )}
+
+              {extraActions}
+
               <button
                 onClick={onAccept}
                 disabled={!hasRows || isAccepting}
@@ -480,7 +709,8 @@ function ConvertedDatasetTable({
                 ? visibleRows.flatMap((row, index) => {
                   const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
                   const score = entry?.scores;
-                  const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
+                  const activeSelection = selectedRows || selectedManualRows;
+                  const isManual = activeSelection?.has(row.id) || activeSelection?.has(row.blockId) || false;
                   const metricInputClass =
                     'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
                   const reasonInputClass =
@@ -497,6 +727,7 @@ function ConvertedDatasetTable({
                         ? 'border-b-4 border-b-gray-200'
                         : 'border-b border-b-gray-100'
                         } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''
+                        } ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''
                         }`}
                     >
                       {pairIndex === 0 && (
@@ -504,7 +735,7 @@ function ConvertedDatasetTable({
                           <input
                             type="checkbox"
                             checked={isManual}
-                            onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
+                            onChange={(e) => onToggleRow?.(row, e.target.checked)}
                           />
                         </td>
                       )}
@@ -516,7 +747,7 @@ function ConvertedDatasetTable({
                       {pairIndex === 0 && (
                         <>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
+                            {isManual && editableSelectedRows ? (
                               <input
                                 type="number"
                                 min={0}
@@ -531,7 +762,7 @@ function ConvertedDatasetTable({
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
+                            {isManual && editableSelectedRows ? (
                               <input
                                 type="number"
                                 min={0}
@@ -546,7 +777,7 @@ function ConvertedDatasetTable({
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
+                            {isManual && editableSelectedRows ? (
                               <input
                                 type="number"
                                 min={0}
@@ -562,7 +793,7 @@ function ConvertedDatasetTable({
                           </td>
                           <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{score?.overall ?? ''}</td>
                           <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
-                            {isManual ? (
+                            {isManual && editableSelectedRows ? (
                               <input
                                 type="text"
                                 value={score?.reason ?? ''}
@@ -601,7 +832,8 @@ function ConvertedDatasetTable({
                   : visibleRows.map((row, index) => {
                     const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
                     const score = entry?.scores;
-                    const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
+                    const activeSelection = selectedRows || selectedManualRows;
+                    const isManual = activeSelection?.has(row.id) || activeSelection?.has(row.blockId) || false;
                     const metricInputClass =
                       'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
                     const reasonInputClass =
@@ -611,14 +843,14 @@ function ConvertedDatasetTable({
                       <tr
                         key={row.id}
                         className={`align-top ${row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
-                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''}`}
+                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''} ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''}`}
                       >
                         {showEvaluationColumns && (
                           <td className="px-4 py-3">
                             <input
                               type="checkbox"
                               checked={isManual}
-                              onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
+                              onChange={(e) => onToggleRow?.(row, e.target.checked)}
                             />
                           </td>
                         )}
@@ -628,7 +860,7 @@ function ConvertedDatasetTable({
                         {showEvaluationColumns && (
                           <>
                             <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
+                              {isManual && editableSelectedRows ? (
                                 <input
                                   type="number"
                                   min={0}
@@ -643,7 +875,7 @@ function ConvertedDatasetTable({
                               )}
                             </td>
                             <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
+                              {isManual && editableSelectedRows ? (
                                 <input
                                   type="number"
                                   min={0}
@@ -658,7 +890,7 @@ function ConvertedDatasetTable({
                               )}
                             </td>
                             <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
+                              {isManual && editableSelectedRows ? (
                                 <input
                                   type="number"
                                   min={0}
@@ -674,7 +906,7 @@ function ConvertedDatasetTable({
                             </td>
                             <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
                             <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
-                              {isManual ? (
+                              {isManual && editableSelectedRows ? (
                                 <input
                                   type="text"
                                   value={score?.reason ?? ''}
@@ -1066,24 +1298,29 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
 }
 
 export function ConversionPage() {
-  const { uploadedFile, conversionOptions, projectName, setProjectName } = useAppStore();
+  const { uploadedFile, conversionOptions, projectName, setProjectName, updateConversionOptions } = useAppStore();
+  const location = useLocation();
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
-  const [minOverallScore, setMinOverallScore] = useState<number>(0);
+  const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null);
   const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
   const [manualRowIds, setManualRowIds] = useState<Set<string>>(new Set());
+  const [refinementSelectedRowIds, setRefinementSelectedRowIds] = useState<Set<string>>(new Set());
+  const [refinedRowIds, setRefinedRowIds] = useState<Set<string>>(new Set());
   const [clusterGroups, setClusterGroups] = useState<ClusterGroup[]>([]);
   const [rowClusterMap, setRowClusterMap] = useState<Record<string, number>>({});
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
+  const [classificationGroups, setClassificationGroups] = useState<ClusterGroup[]>([]);
+  const [rowClassificationMap, setRowClassificationMap] = useState<Record<string, number>>({});
+  const [recordGroupAssignments, setRecordGroupAssignments] = useState<number[]>([]);
   const [evaluationGroupFilter, setEvaluationGroupFilter] = useState<'all' | number>('all');
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
-  const [clusteredResult, setClusteredResult] = useState<{
-    data: any[];
-    assignments: number[];
-    groups: ClusterGroup[];
-  } | null>(null);
+  const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
+  const [loadedProjectFileId, setLoadedProjectFileId] = useState<string | null>(null);
+  const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[] } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
+  const loadHandledRef = useRef<boolean>(false);
 
   const { data: stats } = useQuery({
     queryKey: ['stats', uploadedFile?.fileId],
@@ -1098,114 +1335,82 @@ export function ConversionPage() {
     [conversionResult?.data, conversionOptions.removeThinkTags, previewMode]
   );
 
-  const rowsWithGroups = useMemo(
-    () =>
-      allRows.map((row) => ({
-        ...row,
-        groupId: rowClusterMap[row.id] !== undefined ? rowClusterMap[row.id] : row.groupId,
-      })),
+  const rowsWithClusterGroups = useMemo(
+    () => allRows.map((row) => ({ ...row, groupId: rowClusterMap[row.id] ?? row.groupId })),
     [allRows, rowClusterMap]
   );
 
+  const rowsWithClassificationGroups = useMemo(
+    () => allRows.map((row) => ({ ...row, groupId: rowClassificationMap[row.id] ?? row.groupId })),
+    [allRows, rowClassificationMap]
+  );
+
   const clusteredRows = useMemo(() => {
-    if (currentStep === 3 && selectedClusterIds.length > 0) {
-      return rowsWithGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
-    }
+    if (!selectedClusterIds.length) return rowsWithClusterGroups;
+    return rowsWithClusterGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
+  }, [rowsWithClusterGroups, selectedClusterIds]);
 
-    if (currentStep >= 4 && evaluationGroupFilter !== 'all') {
-      return rowsWithGroups.filter((row) => row.groupId === evaluationGroupFilter);
-    }
-
-    return rowsWithGroups;
-  }, [currentStep, rowsWithGroups, selectedClusterIds, evaluationGroupFilter]);
+  const classifiedRows = useMemo(() => {
+    if (evaluationGroupFilter === 'all') return rowsWithClassificationGroups;
+    return rowsWithClassificationGroups.filter((row) => row.groupId === evaluationGroupFilter);
+  }, [rowsWithClassificationGroups, evaluationGroupFilter]);
 
   const evaluationRows = useMemo(() => {
-    if (currentStep !== 4 || previewMode !== 'openai') {
-      return clusteredRows;
+    if (previewMode !== 'openai') {
+      return classifiedRows;
     }
 
     const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
     const groupByConversation = new Map<string, number | undefined>();
-
-    rowsWithGroups.forEach((row) => {
+    rowsWithClassificationGroups.forEach((row) => {
       if (!groupByConversation.has(row.blockId)) {
         groupByConversation.set(row.blockId, row.groupId);
       }
     });
 
-    const filteredConversations = conversations.filter((conv) => {
-      if (evaluationGroupFilter === 'all') {
-        return true;
-      }
-      return groupByConversation.get(String(conv.conversation_id)) === evaluationGroupFilter;
-    });
-
-    return filteredConversations.map((conv, index) => {
-      const pairs: Array<{ user: string; assistant: string }> = [];
-
-      for (let i = 0; i < conv.messages.length; i += 1) {
-        const current = conv.messages[i];
-        if (current.role !== 'user') {
-          continue;
+    return conversations
+      .filter((conv) => evaluationGroupFilter === 'all' || groupByConversation.get(String(conv.conversation_id)) === evaluationGroupFilter)
+      .map((conv, index) => {
+        const pairs: Array<{ user: string; assistant: string }> = [];
+        for (let i = 0; i < conv.messages.length; i += 1) {
+          if (conv.messages[i].role !== 'user') continue;
+          const nextAssistant = conv.messages.slice(i + 1).find((msg) => msg.role === 'assistant');
+          pairs.push({ user: String(conv.messages[i].content || '').trim(), assistant: String(nextAssistant?.content || '').trim() });
         }
-
-        const nextAssistant = conv.messages.slice(i + 1).find((msg) => msg.role === 'assistant');
-        pairs.push({
-          user: String(current.content || '').trim(),
-          assistant: String(nextAssistant?.content || '').trim(),
-        });
-      }
-
-      const users = pairs.map((pair) => pair.user).filter(Boolean).join('\n\n');
-      const assistants = pairs.map((pair) => pair.assistant || '-').join('\n\n');
-
-      const firstUser = conv.messages.find((msg) => msg.role === 'user')?.content || '';
-      const lastAssistant = [...conv.messages].reverse().find((msg) => msg.role === 'assistant')?.content || '';
-
-      return {
-        id: String(conv.conversation_id),
-        blockId: String(conv.conversation_id),
-        blockLabel: `Conversation ${index + 1}`,
-        isBlockLast: true,
-        instruction: firstUser,
-        input: '',
-        output: lastAssistant,
-        userText: users || firstUser || '-',
-        thinkText: '-',
-        assistantText: assistants || lastAssistant || '-',
-        conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
-        groupId: groupByConversation.get(String(conv.conversation_id)),
-      } as DisplayRow;
-    });
-  }, [
-    clusteredRows,
-    conversionResult?.data,
-    currentStep,
-    evaluationGroupFilter,
-    previewMode,
-    rowsWithGroups,
-  ]);
+        const firstUser = conv.messages.find((msg) => msg.role === 'user')?.content || '';
+        const lastAssistant = [...conv.messages].reverse().find((msg) => msg.role === 'assistant')?.content || '';
+        return {
+          id: String(conv.conversation_id),
+          blockId: String(conv.conversation_id),
+          blockLabel: `Conversation ${index + 1}`,
+          isBlockLast: true,
+          instruction: firstUser,
+          input: '',
+          output: lastAssistant,
+          userText: pairs.map((p) => p.user).join('\n\n') || firstUser || '-',
+          thinkText: '-',
+          assistantText: pairs.map((p) => p.assistant).join('\n\n') || lastAssistant || '-',
+          conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
+          groupId: groupByConversation.get(String(conv.conversation_id)),
+        } as DisplayRow;
+      });
+  }, [classifiedRows, conversionResult?.data, evaluationGroupFilter, previewMode, rowsWithClassificationGroups]);
 
   const averagedEvaluation = useMemo(() => {
     const values = Object.values(evaluationMap).map((entry) => entry.scores);
-    if (values.length === 0) {
-      return null;
-    }
-
+    if (!values.length) return null;
     const total = values.reduce(
-      (acc, item) => {
-        acc.accuracy += item.accuracy || 0;
-        acc.clarity += item.clarity || 0;
-        acc.completeness += item.completeness || 0;
-        acc.socratic += item.socratic || 0;
-        acc.encouragement += item.encouragement || 0;
-        acc.factuality += item.factuality || 0;
-        acc.overall += item.overall || 0;
-        return acc;
-      },
+      (acc, item) => ({
+        accuracy: acc.accuracy + (item.accuracy || 0),
+        clarity: acc.clarity + (item.clarity || 0),
+        completeness: acc.completeness + (item.completeness || 0),
+        socratic: acc.socratic + (item.socratic || 0),
+        encouragement: acc.encouragement + (item.encouragement || 0),
+        factuality: acc.factuality + (item.factuality || 0),
+        overall: acc.overall + (item.overall || 0),
+      }),
       { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, encouragement: 0, factuality: 0, overall: 0 }
     );
-
     const size = values.length;
     return {
       count: size,
@@ -1221,79 +1426,55 @@ export function ConversionPage() {
 
   const convertMutation = useMutation({
     mutationFn: (mode: 'initial' | 'clean') => {
-      const options =
-        mode === 'initial'
-          ? { ...conversionOptions, enableCleaning: false }
-          : conversionOptions;
+      const options = mode === 'initial' ? { ...conversionOptions, enableCleaning: false } : conversionOptions;
       return apiService.convertData(uploadedFile!.fileId, options);
     },
     onSuccess: (data, mode) => {
       setConversionResult(data);
       setEvaluationMap({});
       setManualRowIds(new Set());
+      setRefinementSelectedRowIds(new Set());
+      setRefinedRowIds(new Set());
+      setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
       setSelectedClusterIds([]);
+      setClassificationGroups([]);
+      setRowClassificationMap({});
+      setRecordGroupAssignments([]);
       setEvaluationGroupFilter('all');
-
       if (mode === 'initial') {
         setOriginalConvertedResult(data);
         setCurrentStep(2);
         toast.success('Conversion completed. Continue to cleaning.');
-        return;
+      } else {
+        toast.success('Cleaning rules applied to the converted dataset.');
       }
-
-      toast.success('Cleaning rules applied to the converted dataset.');
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Conversion failed');
-    },
+    onError: (error: any) => toast.error(error.response?.data?.error || 'Conversion failed'),
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: async () => {
-      const rowsToEvaluate = visibleRowsInEvaluation.filter((row) => !manualRowIds.has(row.id));
-      if (!rowsToEvaluate.length) {
-        throw new Error('No visible rows to evaluate.');
-      }
+    mutationFn: async (params: { provider: 'gemini' | 'openai'; rows: DisplayRow[]; skipManual: boolean }) => {
+      const rowsToEvaluate = params.rows.filter((row) => (params.skipManual ? !manualRowIds.has(row.id) : true));
+      if (!rowsToEvaluate.length) throw new Error('No rows to evaluate.');
 
       const newMap: Record<string, RowEvaluationEntry> = {};
-
       if (previewMode === 'openai') {
-        const convOrderedIds: string[] = [];
-        const rowsByConv = new Map<string, DisplayRow[]>();
-        for (const row of rowsToEvaluate) {
-          if (!rowsByConv.has(row.blockId)) {
-            rowsByConv.set(row.blockId, []);
-            convOrderedIds.push(row.blockId);
-          }
-          rowsByConv.get(row.blockId)!.push(row);
-        }
-
-        // Look up the full messages array from conversionResult.data for each conv
         const normalizedConvs = normalizeOpenAIConversations(conversionResult?.data || []);
         const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
-        normalizedConvs.forEach((conv) => {
-          convMessagesMap.set(String(conv.conversation_id), conv.messages);
-        });
+        normalizedConvs.forEach((conv) => convMessagesMap.set(String(conv.conversation_id), conv.messages));
 
+        const convOrderedIds = Array.from(new Set(rowsToEvaluate.map((row) => row.blockId)));
         const conversationPayload = convOrderedIds.map((convId) => ({
           conversation_id: convId,
           messages: convMessagesMap.get(convId) || [],
         }));
 
-        const evaluation = await apiService.evaluateData(conversationPayload, previewMode);
-
+        const evaluation = await apiService.evaluateData(conversationPayload, previewMode, undefined, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const convId = convOrderedIds[idx];
-          if (!convId) return;
-
-          const isSuccess =
-            Number.isFinite(sample.scores.overall) &&
-            sample.scores.overall > 0;
-
-          if (!isSuccess) return;
-
+          if (!convId || !Number.isFinite(sample.scores.overall) || sample.scores.overall <= 0) return;
           const score: EvaluationScores = {
             socratic: sample.scores.socratic,
             encouragement: sample.scores.encouragement,
@@ -1301,35 +1482,16 @@ export function ConversionPage() {
             overall: sample.scores.overall,
             reason: sample.reason,
           };
-
-          const convRows = rowsByConv.get(convId) || [];
-          for (const row of convRows) {
-            newMap[row.id] = {
-              scores: score,
-              evaluatedBy: 'gemini',
-            };
-          }
+          rowsToEvaluate.filter((row) => row.blockId === convId).forEach((row) => {
+            newMap[row.id] = { scores: score, evaluatedBy: params.provider };
+          });
         });
-
       } else {
-        const payload = rowsToEvaluate.map((row) => ({
-          instruction: row.instruction,
-          input: row.input,
-          output: row.output,
-        }));
-
-        const evaluation = await apiService.evaluateData(payload, previewMode);
-
+        const payload = rowsToEvaluate.map((row) => ({ instruction: row.instruction, input: row.input, output: row.output }));
+        const evaluation = await apiService.evaluateData(payload, previewMode, undefined, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const row = rowsToEvaluate[idx];
-          if (!row) return;
-
-          const isSuccess =
-            Number.isFinite(sample.scores.overall) &&
-            sample.scores.overall > 0;
-
-          if (!isSuccess) return;
-
+          if (!row || !Number.isFinite(sample.scores.overall) || sample.scores.overall <= 0) return;
           newMap[row.id] = {
             scores: {
               accuracy: sample.scores.accuracy,
@@ -1338,195 +1500,394 @@ export function ConversionPage() {
               overall: sample.scores.overall,
               reason: sample.reason,
             },
-            evaluatedBy: 'gemini',
+            evaluatedBy: params.provider,
           };
         });
       }
-
       setEvaluationMap((prev) => ({ ...prev, ...newMap }));
-      return Object.keys(newMap).length;
+      return { count: Object.keys(newMap).length, provider: params.provider };
     },
-    onSuccess: (evaluatedCount) => {
-      toast.success(`Evaluation completed. ${evaluatedCount} rows scored by Gemini.`);
+    onSuccess: ({ count, provider }) => {
+      const label = provider === 'openai' ? 'OpenAI' : 'Gemini';
+      toast.success(`Evaluation completed. ${count} rows scored by ${label}.`);
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Evaluation failed');
+      const backendError = error?.response?.data;
+      const message = backendError?.details
+        ? `${backendError.error}: ${backendError.details}`
+        : (backendError?.error || error.message || 'Evaluation failed');
+      toast.error(message);
     },
+  });
+
+  const refineMutation = useMutation({
+    mutationFn: async () => {
+      const candidateRows = evaluationRows.filter((row) => {
+        const score = evaluationMap[row.id]?.scores.overall;
+        return Number.isFinite(score) && (score || 0) < 8;
+      });
+      if (!candidateRows.length) {
+        throw new Error('No rows with overall < 8 in the current filtered dataset.');
+      }
+      const payload = candidateRows.map((row) => ({
+        assistant: row.assistantText,
+        reason: evaluationMap[row.id]?.scores.reason || '',
+      }));
+      const refined = await apiService.refineData(payload);
+
+      setConversionResult((prev) => {
+        if (!prev) return prev;
+        const nextData = [...prev.data];
+
+        if (previewMode === 'openai') {
+          const convs = normalizeOpenAIConversations(prev.data || []);
+          const convIdToIndex = new Map<string, number>();
+          convs.forEach((conv, idx) => convIdToIndex.set(String(conv.conversation_id), idx));
+
+          candidateRows.forEach((row, idx) => {
+            const targetIndex = convIdToIndex.get(row.blockId);
+            const refinedText = refined.items[idx]?.refinedOutput || row.assistantText;
+            if (targetIndex === undefined) return;
+            const record = nextData[targetIndex];
+            if (Array.isArray(record?.messages)) {
+              const assistantIdx = [...record.messages]
+                .map((msg: any, i: number) => ({ role: String(msg?.role || ''), i }))
+                .filter((m: any) => m.role === 'assistant')
+                .map((m: any) => m.i)
+                .pop();
+              if (assistantIdx !== undefined) {
+                record.messages[assistantIdx] = {
+                  ...record.messages[assistantIdx],
+                  content: refinedText,
+                };
+              }
+            }
+          });
+        } else {
+          candidateRows.forEach((row, idx) => {
+            const rowIndex = allRows.findIndex((r) => r.id === row.id);
+            if (rowIndex >= 0 && nextData[rowIndex]) {
+              nextData[rowIndex] = {
+                ...nextData[rowIndex],
+                output: refined.items[idx]?.refinedOutput || row.assistantText,
+              };
+            }
+          });
+        }
+
+        return { ...prev, data: nextData };
+      });
+
+      const refinedIds = new Set(refinedRowIds);
+      candidateRows.forEach((row) => refinedIds.add(row.id));
+      setRefinedRowIds(refinedIds);
+
+      const selectable = new Set(refinementSelectedRowIds);
+      candidateRows.forEach((row) => selectable.add(row.id));
+      setRefinementSelectedRowIds(selectable);
+
+      return candidateRows.length;
+    },
+    onSuccess: (count) => toast.success(`Refined ${count} rows using Gemini.`),
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
   });
 
   const acceptMutation = useMutation({
     mutationFn: async () => {
-      if (!uploadedFile) {
-        throw new Error('No uploaded file found.');
-      }
-
-      if (!conversionResult) {
-        throw new Error('No converted data available to save.');
-      }
-
+      const effectiveFileId = uploadedFile?.fileId || loadedProjectFileId;
+      if (!effectiveFileId || !conversionResult) throw new Error('No data available to save.');
       const createdAt = new Date().toISOString();
-
-      const toResultPayload = (entry: RowEvaluationEntry) => ({
-        accuracy: entry.scores.accuracy,
-        clarity: entry.scores.clarity,
-        completeness: entry.scores.completeness,
-        socratic: entry.scores.socratic,
-        encouragement: entry.scores.encouragement,
-        factuality: entry.scores.factuality,
-        overall: entry.scores.overall,
-        reason: entry.scores.reason,
-      });
-
-      let records: Array<{
-        format: string;
-        data: Record<string, any>;
-        evaluatedBy: EvaluatedBy;
-        results: {
-          accuracy?: number;
-          clarity?: number;
-          completeness?: number;
-          socratic?: number;
-          encouragement?: number;
-          factuality?: number;
-          overall: number;
-          reason: string;
-        };
-        createdAt: string;
-      }> = [];
-
+      const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
       if (previewMode === 'openai') {
-        const conversations = normalizeOpenAIConversations(conversionResult.data || []);
-        const messagesByConversation = new Map<string, Array<{ role: string; content: string }>>();
-        conversations.forEach((conv) => {
-          messagesByConversation.set(String(conv.conversation_id), conv.messages);
+        normalizeOpenAIConversations(conversionResult.data || []).forEach((conv) => {
+          convMessagesMap.set(String(conv.conversation_id), conv.messages || []);
         });
-
-        const rowsByConversation = new Map<string, DisplayRow[]>();
-        rowsWithGroups.forEach((row) => {
-          if (!rowsByConversation.has(row.blockId)) {
-            rowsByConversation.set(row.blockId, []);
-          }
-          rowsByConversation.get(row.blockId)!.push(row);
-        });
-
-        records = Array.from(rowsByConversation.entries())
-          .map(([conversationId, rows]) => {
-            const conversationEntry = evaluationMap[conversationId];
-            const evaluatedRows = rows.filter((row) => !!evaluationMap[row.id] || !!evaluationMap[row.blockId]);
-            if (!conversationEntry && evaluatedRows.length === 0) {
-              return null;
-            }
-
-            const preferredRow =
-              evaluatedRows.find((row) => {
-                const rowEntry = evaluationMap[row.id] || evaluationMap[row.blockId];
-                return rowEntry?.evaluatedBy === 'manual';
-              }) || evaluatedRows[0];
-
-            const entry = conversationEntry || (preferredRow
-              ? (evaluationMap[preferredRow.id] || evaluationMap[preferredRow.blockId])
-              : undefined);
-            if (!entry) {
-              return null;
-            }
-
-            const fallbackMessages = rows
-              .flatMap((row) => [
-                { role: 'user', content: row.userText || row.instruction || '' },
-                { role: 'assistant', content: row.assistantText || row.output || '' },
-              ])
-              .filter((msg) => msg.content.trim() !== '');
-
-            const messages = (messagesByConversation.get(conversationId) || fallbackMessages).map((msg) => ({
-              role: String(msg.role || ''),
-              content: String(msg.content || ''),
-            }));
-
-            return {
-              format: 'openai',
-              data: {
-                messages,
-              },
-              evaluatedBy: entry.evaluatedBy,
-              results: toResultPayload(entry),
-              createdAt,
-            };
-          })
-          .filter(Boolean) as typeof records;
-      } else {
-        records = rowsWithGroups
-          .map((row) => {
-            const entry = evaluationMap[row.id];
-            if (!entry) {
-              return null;
-            }
-
-            return {
-              format: 'alpaca',
-              data: {
-                instruction: row.instruction,
-                input: row.input,
-                output: row.output,
-              },
-              evaluatedBy: entry.evaluatedBy,
-              results: toResultPayload(entry),
-              createdAt,
-            };
-          })
-          .filter(Boolean) as typeof records;
       }
 
-      if (!records.length) {
-        throw new Error('No evaluated rows to save.');
-      }
+      const records = allRows
+        .map((row) => {
+          const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+          const defaultScores: EvaluationScores = previewMode === 'openai'
+            ? {
+              socratic: -1,
+              encouragement: -1,
+              factuality: -1,
+              overall: -1,
+              reason: '',
+            }
+            : {
+              accuracy: -1,
+              clarity: -1,
+              completeness: -1,
+              overall: -1,
+              reason: '',
+            };
+          const resolvedScores = entry?.scores || defaultScores;
 
+          return {
+            format: previewMode,
+            data: previewMode === 'openai'
+              ? { messages: convMessagesMap.get(row.blockId) || [] }
+              : { instruction: row.instruction, input: row.input, output: row.output },
+            evaluatedBy: entry?.evaluatedBy || 'none',
+            results: {
+              accuracy: resolvedScores.accuracy,
+              clarity: resolvedScores.clarity,
+              completeness: resolvedScores.completeness,
+              socratic: resolvedScores.socratic,
+              encouragement: resolvedScores.encouragement,
+              factuality: resolvedScores.factuality,
+              overall: resolvedScores.overall,
+              reason: resolvedScores.reason,
+            },
+            createdAt,
+          };
+        }) as Array<any>;
+
+      if (!records.length) throw new Error('No evaluated rows to save.');
       await apiService.saveEvaluationResults({
-        fileId: uploadedFile.fileId,
+        fileId: effectiveFileId,
         projectName: projectName.trim() || formatDefaultProjectName(),
         items: records,
       });
-
       return records.length;
     },
-    onSuccess: (savedCount) => {
-      toast.success(`Accepted and saved ${savedCount} records to MongoDB.`);
-    },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Accept failed');
-    },
+    onSuccess: (savedCount) => toast.success(`Accepted and saved ${savedCount} records to MongoDB.`),
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Accept failed'),
   });
+
+  const clusterMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
+      return apiService.clusterData(conversionResult.data);
+    },
+    onSuccess: (result) => {
+      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
+      setClusteredResult(result);
+      const nextMap: Record<string, number> = {};
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
+        conversations.forEach((conv, idx) => {
+          const groupId = result.assignments[idx] ?? 0;
+          rowsWithClusterGroups.forEach((row) => {
+            if (row.blockId === String(conv.conversation_id)) {
+              nextMap[row.id] = groupId;
+            }
+          });
+        });
+      } else {
+        allRows.forEach((row, idx) => {
+          nextMap[row.id] = result.assignments[idx] ?? 0;
+        });
+      }
+      setRowClusterMap(nextMap);
+      setClusterGroups(result.groups);
+      setSelectedClusterIds([]);
+      toast.success(`Clustered data into ${result.groups.length} groups.`);
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Clustering failed'),
+  });
+
+  const filterMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversionResult?.data?.length) throw new Error('No clustered data to filter.');
+      return apiService.clusterFilter(conversionResult.data, filterThreshold);
+    },
+    onSuccess: (result) => {
+      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
+      setClusterGroups(result.groups);
+      const nextMap: Record<string, number> = {};
+      if (previewMode === 'openai') {
+        normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
+          nextMap[String(conv.conversation_id)] = result.assignments[idx] ?? 0;
+        });
+      } else {
+        result.data.forEach((item, idx) => {
+          nextMap[`alpaca-${idx}`] = (item as any).cluster ?? result.assignments[idx] ?? 0;
+        });
+      }
+      setRowClusterMap(nextMap);
+      setSelectedClusterIds([]);
+      toast.success(`Filtered dataset down to ${result.data.length} records.`);
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Filtering failed'),
+  });
+
+  const handleResetFiltering = () => {
+    if (!clusteredResult) return;
+    setConversionResult((prev) => (prev ? { ...prev, data: clusteredResult.data } : null));
+    setClusterGroups(clusteredResult.groups);
+    setSelectedClusterIds([]);
+    toast.success('Reset to pre-filter clustered state.');
+  };
+
+  const handleResetCleaning = () => {
+    if (!originalConvertedResult) return;
+    setConversionResult(originalConvertedResult);
+    setClusterGroups([]);
+    setRowClusterMap({});
+    setClassificationGroups([]);
+    setRowClassificationMap({});
+    setRecordGroupAssignments([]);
+    setEvaluationMap({});
+    setManualRowIds(new Set());
+    setRefinedRowIds(new Set());
+    setRefinementSelectedRowIds(new Set());
+    toast.success('Dataset reset to original converted state.');
+  };
+
+  const handleVisualize = () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available for visualization.');
+      return;
+    }
+    const vectors = buildFeatureVectors(conversionResult.data, previewMode);
+    if (!vectors.length) {
+      toast.error('Unable to extract numeric features from current data.');
+      return;
+    }
+    const elbow = computeElbow(vectors);
+    const kDistance = computeKDistance(vectors, 3);
+    setVisualizationResult({ elbow, kDistance, pointCount: vectors.length });
+    toast.success('Visualization metrics were computed from real uploaded data.');
+  };
+
+  const handleClassify = () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available for classification.');
+      return;
+    }
+    const assignments = buildBalancedGroupAssignments(conversionResult.data.length, 8);
+    setRecordGroupAssignments(assignments);
+
+    const nextRowMap: Record<string, number> = {};
+    if (previewMode === 'openai') {
+      const conversations = normalizeOpenAIConversations(conversionResult.data || []);
+      const convToGroup = new Map<string, number>();
+      conversations.forEach((conv, idx) => convToGroup.set(String(conv.conversation_id), assignments[idx] || 1));
+      allRows.forEach((row) => {
+        nextRowMap[row.id] = convToGroup.get(row.blockId) || 1;
+      });
+    } else {
+      allRows.forEach((row, idx) => {
+        nextRowMap[row.id] = assignments[idx] || 1;
+      });
+    }
+    setRowClassificationMap(nextRowMap);
+
+    const groups = Array.from({ length: 8 }, (_, i) => {
+      const groupId = i + 1;
+      return {
+        groupId,
+        label: `Group ${groupId}`,
+        count: assignments.filter((g) => g === groupId).length,
+      };
+    });
+    setClassificationGroups(groups);
+    setEvaluationGroupFilter('all');
+    toast.success('Classification completed. Dataset is split into Group 1 to Group 8.');
+  };
+
+  const handleDownloadTrainTestZip = async () => {
+    if (!conversionResult?.data?.length || !recordGroupAssignments.length) {
+      toast.error('Please run Classification first.');
+      return;
+    }
+
+    const byGroup = new Map<number, number[]>();
+    recordGroupAssignments.forEach((groupId, idx) => {
+      if (!byGroup.has(groupId)) byGroup.set(groupId, []);
+      byGroup.get(groupId)!.push(idx);
+    });
+
+    const testIndexSet = new Set<number>();
+    byGroup.forEach((indices) => {
+      const shuffled = shuffle(indices);
+      const testCount = Math.max(1, Math.round(indices.length * 0.1));
+      shuffled.slice(0, testCount).forEach((i) => testIndexSet.add(i));
+    });
+
+    const trainData: any[] = [];
+    const testData: any[] = [];
+    conversionResult.data.forEach((record, idx) => {
+      const payload = sanitizeRecordForDownload(record, previewMode);
+      if (testIndexSet.has(idx)) {
+        testData.push(payload);
+      } else {
+        trainData.push(payload);
+      }
+    });
+
+    const zip = new JSZip();
+    zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
+    zip.file('test_dataset.json', JSON.stringify(testData, null, 2));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
+    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records.`);
+  };
+
+  const handleDownloadByScore = () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available to download.');
+      return;
+    }
+
+    const qualifiedRows = rowsWithClassificationGroups.filter((row) => {
+      const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+      const overall = entry?.scores?.overall;
+      return Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold;
+    });
+
+    if (!qualifiedRows.length) {
+      toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+      return;
+    }
+
+    const filteredData: any[] = [];
+    if (previewMode === 'openai') {
+      const selectedConversationIds = new Set(qualifiedRows.map((row) => row.blockId));
+      const normalized = normalizeOpenAIConversations(conversionResult.data || []);
+      normalized.forEach((conv, idx) => {
+        if (selectedConversationIds.has(String(conv.conversation_id)) && conversionResult.data[idx]) {
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode));
+        }
+      });
+    } else {
+      const selectedRowIds = new Set(qualifiedRows.map((row) => row.id));
+      allRows.forEach((row, idx) => {
+        if (selectedRowIds.has(row.id) && conversionResult.data[idx]) {
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode));
+        }
+      });
+    }
+
+    if (!filteredData.length) {
+      toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+      return;
+    }
+
+    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
+    const blob = new Blob([JSON.stringify(filteredData, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}.json`);
+    toast.success(`Downloaded ${filteredData.length} samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+  };
 
   const handleToggleManualRow = (row: DisplayRow, checked: boolean) => {
     const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
     const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
     const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
-
     if (checked) {
-      setManualRowIds((prev) => {
-        const next = new Set(prev);
-        next.add(row.id);
-        return next;
-      });
-
+      setManualRowIds((prev) => new Set(prev).add(row.id));
       setEvaluationMap((prev) => {
         const existing = prev[row.id]?.scores;
-
-        // Keep the latest visible score if it already exists; only initialize when missing.
         if (existing) {
-          return {
-            ...prev,
-            [row.id]: {
-              ...prev[row.id],
-              evaluatedBy: 'manual',
-            },
-          };
+          return { ...prev, [row.id]: { ...prev[row.id], evaluatedBy: 'manual' } };
         }
-
-        const m1 = clampScore((existing as any)?.[metric1] ?? 0);
-        const m2 = clampScore((existing as any)?.[metric2] ?? 0);
-        const m3 = clampScore((existing as any)?.[metric3] ?? 0);
-        const overall = calculateOverallFromThree(m1, m2, m3);
-
+        const m1 = clampScore(0);
+        const m2 = clampScore(0);
+        const m3 = clampScore(0);
         return {
           ...prev,
           [row.id]: {
@@ -1534,28 +1895,24 @@ export function ConversionPage() {
               [metric1]: m1,
               [metric2]: m2,
               [metric3]: m3,
-              overall,
+              overall: calculateOverallFromThree(m1, m2, m3),
               reason: '',
             },
             evaluatedBy: 'manual',
           },
         };
       });
-      return;
+    } else {
+      setManualRowIds((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     }
-
-    setManualRowIds((prev) => {
-      const next = new Set(prev);
-      next.delete(row.id);
-      return next;
-    });
   };
 
   const handleManualFieldChange = (row: DisplayRow, field: string, value: string) => {
-    if (!manualRowIds.has(row.id)) {
-      return;
-    }
-
+    if (!manualRowIds.has(row.id)) return;
     const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
     const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
     const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
@@ -1563,308 +1920,125 @@ export function ConversionPage() {
     setEvaluationMap((prev) => {
       const existing = prev[row.id]?.scores || { overall: 0, reason: '' };
       const nextScores: EvaluationScores = { ...existing };
-
       if (field === 'reason') {
         nextScores.reason = value;
       } else {
         (nextScores as any)[field] = parseOptionalScore(value);
       }
-
       const v1 = clampScore((nextScores as any)[metric1] ?? 0);
       const v2 = clampScore((nextScores as any)[metric2] ?? 0);
       const v3 = clampScore((nextScores as any)[metric3] ?? 0);
       nextScores.overall = calculateOverallFromThree(v1, v2, v3);
-
-      return {
-        ...prev,
-        [row.id]: {
-          scores: nextScores,
-          evaluatedBy: 'manual',
-        },
-      };
+      return { ...prev, [row.id]: { scores: nextScores, evaluatedBy: 'manual' } };
     });
   };
 
   const handleResetEvaluation = () => {
     setEvaluationMap({});
     setManualRowIds(new Set());
+    setRefinementSelectedRowIds(new Set());
+    setRefinedRowIds(new Set());
     toast.success('Evaluation results have been reset.');
   };
 
+  const toggleClusterSelection = (groupId: number) => {
+    setSelectedClusterIds((prev) => (prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]));
+  };
+
   useEffect(() => {
+    const payload = (location.state as { loadProject?: LoadProjectPayload } | null)?.loadProject;
+    if (!payload || loadHandledRef.current) {
+      return;
+    }
+
+    const normalizedFormat: PreviewMode = payload.format === 'alpaca' ? 'alpaca' : 'openai';
+    const safeData = Array.isArray(payload.data) ? payload.data : [];
+    const safeEvaluationMap = payload.evaluationMap && typeof payload.evaluationMap === 'object'
+      ? payload.evaluationMap
+      : {};
+
+    const restoredResult: ConversionResult = {
+      data: safeData,
+      format: normalizedFormat,
+      output: JSON.stringify(safeData),
+      filename: `${payload.projectName || 'reloaded_project'}.json`,
+      stats: {
+        totalConversations: safeData.length,
+        totalMessages: normalizedFormat === 'openai'
+          ? safeData.reduce((sum, item) => sum + (Array.isArray(item?.messages) ? item.messages.length : 0), 0)
+          : safeData.length,
+        totalTokensEstimate: 0,
+      },
+    };
+
+    setConversionResult(restoredResult);
+    setOriginalConvertedResult(restoredResult);
+    setVisualizationResult(null);
+    setEvaluationMap(safeEvaluationMap);
+    setManualRowIds(new Set(
+      Object.entries(safeEvaluationMap)
+        .filter(([, value]) => value?.evaluatedBy === 'manual')
+        .map(([key]) => key)
+    ));
+    setRefinedRowIds(new Set());
+    setRefinementSelectedRowIds(new Set());
+    setClusterGroups([]);
+    setRowClusterMap({});
+    setSelectedClusterIds([]);
+    setClassificationGroups([]);
+    setRowClassificationMap({});
+    setRecordGroupAssignments([]);
+    setEvaluationGroupFilter('all');
+    setVisibleRowsInEvaluation([]);
+    setLoadedProjectFileId(payload.fileId || null);
+    updateConversionOptions({ format: normalizedFormat });
+    setProjectName(payload.projectName || formatDefaultProjectName());
+    setCurrentStep(6);
+    loadHandledRef.current = true;
+    toast.success('Project loaded. Continue evaluation at Step 6.');
+  }, [location.state, setProjectName, updateConversionOptions]);
+
+  useEffect(() => {
+    if (loadHandledRef.current && !uploadedFile?.fileId) {
+      return;
+    }
+
     setCurrentStep(1);
     setConversionResult(null);
     setOriginalConvertedResult(null);
+    setVisualizationResult(null);
     setEvaluationMap({});
     setManualRowIds(new Set());
+    setRefinedRowIds(new Set());
+    setRefinementSelectedRowIds(new Set());
     setClusterGroups([]);
     setRowClusterMap({});
     setSelectedClusterIds([]);
-    setClusteredResult(null);
+    setClassificationGroups([]);
+    setRowClassificationMap({});
+    setRecordGroupAssignments([]);
     setEvaluationGroupFilter('all');
     setVisibleRowsInEvaluation([]);
-    if (uploadedFile?.fileId) {
-      setProjectName(formatDefaultProjectName());
-    } else {
-      setProjectName('');
-    }
+    setLoadedProjectFileId(null);
+    loadHandledRef.current = false;
+    if (uploadedFile?.fileId) setProjectName(formatDefaultProjectName());
+    else setProjectName('');
   }, [uploadedFile?.fileId]);
 
   const canMoveFromStep2 = !!conversionResult;
-  const canMoveFromStep3 = clusterGroups.length > 0;
-  const canMoveFromStep4 = !!conversionResult;
+  const canMoveFromStep3 = !!visualizationResult;
+  const canMoveFromStep4 = clusterGroups.length > 0;
+  const canMoveFromStep5 = classificationGroups.length === 8;
+  const canMoveFromStep6 = !!conversionResult;
+  const canMoveFromStep7 = !!conversionResult;
 
-  const handleDownload = () => {
-    if (!conversionResult) {
-      return;
-    }
-
-    const { data, filename } = conversionResult;
-    const isJsonl = filename.endsWith('.jsonl');
-
-    let output: string;
-    const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
-
-    if (isJsonl) {
-      // JSONL format: mỗi dòng là một JSON object
-      output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
-    } else {
-      // JSON format: array of objects
-      output = JSON.stringify(cleanData, null, 2);
-    }
-
-    const blob = new Blob([output], {
-      type: isJsonl ? 'application/x-ndjson' : 'application/json',
+  const refinedHighlightMap = useMemo(() => {
+    const map: Record<string, 'refined'> = {};
+    refinedRowIds.forEach((id) => {
+      map[id] = 'refined';
     });
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    toast.success('File downloaded.');
-  };
-
-  const handleDownloadFilteredByScore = () => {
-    if (!conversionResult) {
-      return;
-    }
-
-    const threshold = Math.round(minOverallScore * 10) / 10;
-    let filtered: any[] = [];
-
-    if (previewMode === 'openai') {
-      const conversations = normalizeOpenAIConversations(conversionResult.data || []);
-
-      filtered = conversations
-        .map((conv) => {
-          const conversationId = String(conv.conversation_id);
-          const fromConversation = evaluationMap[conversationId];
-          const fromRows = rowsWithGroups.find(
-            (row) => row.blockId === conversationId && !!evaluationMap[row.id]
-          );
-          const entry = fromConversation || (fromRows ? evaluationMap[fromRows.id] : undefined);
-
-          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
-            return null;
-          }
-
-          return {
-            messages: conv.messages,
-          };
-        })
-        .filter(Boolean) as any[];
-    } else {
-      filtered = rowsWithGroups
-        .map((row) => {
-          const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
-            return null;
-          }
-
-          return {
-            instruction: row.instruction,
-            input: row.input,
-            output: row.output,
-          };
-        })
-        .filter(Boolean) as any[];
-    }
-
-    if (filtered.length === 0) {
-      toast.error('No evaluated samples match the selected overall score.');
-      return;
-    }
-
-    const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `filtered_${previewMode}_overall_gte_${threshold.toFixed(1)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    toast.success(`Downloaded ${filtered.length} samples with overall >= ${threshold.toFixed(1)}.`);
-  };
-
-  const handleResetCleaning = () => {
-    if (!originalConvertedResult) {
-      return;
-    }
-
-    setConversionResult(originalConvertedResult);
-    setEvaluationMap({});
-    setManualRowIds(new Set());
-    setClusterGroups([]);
-    setRowClusterMap({});
-    setSelectedClusterIds([]);
-    setEvaluationGroupFilter('all');
-    setClusteredResult(null);
-    toast.success('Dataset reset to original converted state.');
-  };
-
-  const clusterMutation = useMutation({
-    mutationFn: async () => {
-      if (!conversionResult?.data || conversionResult.data.length === 0) {
-        throw new Error('No converted data to cluster.');
-      }
-      return apiService.clusterData(conversionResult.data);
-    },
-    onSuccess: (result) => {
-      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
-      setClusteredResult(result);
-      setClusterGroups(result.groups);
-
-      // Restore old mapping method for UI
-      const nextMap: Record<string, number> = {};
-      if (previewMode === 'openai') {
-        // Map assignments từ Python (theo index conversation) sang row IDs
-        const conversations = normalizeOpenAIConversations(conversionResult!.data);
-        let assignmentIdx = 0;
-        conversations.forEach((conv) => {
-          const groupId = result.assignments[assignmentIdx] ?? 0;
-          // Tìm tất cả rows thuộc conversation này
-          rowsWithGroups.forEach((row) => {
-            if (row.blockId === String(conv.conversation_id)) {
-              nextMap[row.id] = groupId;
-            }
-          });
-          assignmentIdx++;
-        });
-      } else {
-        // Alpaca mode: 1 dataset item = 1 row
-        allRows.forEach((row, index) => {
-          nextMap[row.id] = result.assignments[index] ?? 0;
-        });
-      }
-
-      // Recompute group counts dựa trên display rows (QA pairs) thay vì conversations
-      const rowCountByGroup = new Map<number, number>();
-      Object.values(nextMap).forEach((gId) => {
-        rowCountByGroup.set(gId, (rowCountByGroup.get(gId) || 0) + 1);
-      });
-
-      const groupsWithRowCounts = result.groups.map((g: any) => ({
-        ...g,
-        count: rowCountByGroup.get(g.groupId) ?? g.count,
-      }));
-
-      setRowClusterMap(nextMap);
-      setClusterGroups(groupsWithRowCounts);
-      setSelectedClusterIds([]);
-      setEvaluationGroupFilter('all');
-
-      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
-      const itemsCount = previewMode === 'openai'
-        ? normalizeOpenAIConversations(conversionResult!.data).length
-        : conversionResult!.data.length;
-      toast.success(`Clustered ${itemsCount} ${countLabel} into ${result.groups.length} groups.`);
-    },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Clustering failed');
-    },
-  });
-
-  const filterMutation = useMutation({
-    mutationFn: async () => {
-      if (!conversionResult?.data || conversionResult.data.length === 0) {
-        throw new Error('No clustered data to filter.');
-      }
-      return apiService.clusterFilter(conversionResult.data, filterThreshold);
-    },
-    onSuccess: (result) => {
-      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
-      setClusterGroups(result.groups);
-
-      // Synchronize mapping for filtered data
-      const nextMap: Record<string, number> = {};
-      if (previewMode === 'openai') {
-        const conversations = normalizeOpenAIConversations(result.data);
-        conversations.forEach((conv, idx) => {
-          const groupId = result.assignments[idx] ?? 0;
-          // Note: Since allRows will refresh after setConversionResult,
-          // we use nextMap keys that match the conversation IDs used as row IDs.
-          nextMap[String(conv.conversation_id)] = groupId;
-        });
-      } else {
-        // Alpaca uses indices directly
-        result.data.forEach((item, idx) => {
-          nextMap[`alpaca-${idx}`] = (item as any).cluster ?? result.assignments[idx] ?? 0;
-        });
-      }
-
-      setRowClusterMap(nextMap);
-      setSelectedClusterIds([]);
-      setEvaluationGroupFilter('all');
-
-      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
-      toast.success(`Filtered dataset down to ${result.data.length} ${countLabel}.`);
-    },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Filtering failed');
-    },
-  });
-
-  const handleResetFiltering = () => {
-    if (!clusteredResult) return;
-
-    setConversionResult((prev) => prev ? { ...prev, data: clusteredResult.data } : null);
-    setClusterGroups(clusteredResult.groups);
-
-    const nextMap: Record<string, number> = {};
-    if (previewMode === 'openai') {
-      const conversations = normalizeOpenAIConversations(clusteredResult.data);
-      conversations.forEach((conv, idx) => {
-        const groupId = clusteredResult.assignments[idx] ?? 0;
-        allRows.forEach((row) => {
-          if (row.blockId === String(conv.conversation_id)) {
-            nextMap[row.id] = groupId;
-          }
-        });
-      });
-    } else {
-      allRows.forEach((row, idx) => {
-        nextMap[row.id] = clusteredResult.assignments[idx] ?? 0;
-      });
-    }
-
-    setRowClusterMap(nextMap);
-    setSelectedClusterIds([]);
-    setEvaluationGroupFilter('all');
-    toast.success('Reset to pre-filter clustered state.');
-  };
-
-  const toggleClusterSelection = (groupId: number) => {
-    setSelectedClusterIds((prev) =>
-      prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]
-    );
-  };
+    return map;
+  }, [refinedRowIds]);
 
   return (
     <div className="space-y-6">
@@ -1873,13 +2047,10 @@ export function ConversionPage() {
       {currentStep === 1 && (
         <div className="space-y-6">
           <FileUploader />
-
           {uploadedFile && (
             <>
               <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
-                <label htmlFor="projectName" className="block text-sm font-semibold text-gray-800">
-                  Project Name
-                </label>
+                <label htmlFor="projectName" className="block text-sm font-semibold text-gray-800">Project Name</label>
                 <input
                   id="projectName"
                   type="text"
@@ -1888,30 +2059,16 @@ export function ConversionPage() {
                   placeholder={formatDefaultProjectName()}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-200"
                 />
-                <p className="text-xs text-gray-500">
-                  Gợi ý: {formatDefaultProjectName()}.
-                </p>
               </div>
               <FileStatisticsCard stats={stats} />
               <Preview />
               <ConversionOptions />
-
               <button
                 onClick={() => convertMutation.mutate('initial')}
                 disabled={convertMutation.isPending}
                 className="w-full bg-primary-600 hover:bg-primary-700 disabled:bg-gray-400 text-white font-bold py-4 px-6 rounded-xl shadow-lg shadow-primary-200 transition-all active:scale-[0.98] flex items-center justify-center gap-3 text-lg"
               >
-                {convertMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    <span>Processing Dataset...</span>
-                  </>
-                ) : (
-                  <>
-                    <Wand2 className="w-6 h-6" />
-                    <span>Convert Dataset</span>
-                  </>
-                )}
+                {convertMutation.isPending ? <><Loader2 className="w-6 h-6 animate-spin" /><span>Processing Dataset...</span></> : <><Wand2 className="w-6 h-6" /><span>Convert Dataset</span></>}
               </button>
             </>
           )}
@@ -1922,59 +2079,87 @@ export function ConversionPage() {
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />
+              <ConvertedDatasetTable rows={allRows} mode={previewMode} />
             </div>
-
             <div className="space-y-4 lg:col-span-1">
               <PostConversionSummary result={conversionResult} />
-              <CleaningPipelineOptions
-                onAccept={() => convertMutation.mutate('clean')}
-                isLoading={convertMutation.isPending}
-              />
-
-              <div className="flex justify-end mt-2">
-                <button
-                  onClick={handleResetCleaning}
-                  disabled={!originalConvertedResult || convertMutation.isPending}
-                  className="px-4 py-2 text-xs rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
-                >
-                  Reset to Original
-                </button>
-              </div>
+              <CleaningPipelineOptions onAccept={() => convertMutation.mutate('clean')} isLoading={convertMutation.isPending} />
+              <button
+                onClick={handleResetCleaning}
+                disabled={!originalConvertedResult || convertMutation.isPending}
+                className="px-4 py-2 text-xs rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
+              >
+                Reset to Original
+              </button>
             </div>
           </div>
-
-          <StepNavigation
-            showBack
-            showNext
-            onBack={() => setCurrentStep(1)}
-            onNext={() => setCurrentStep(3)}
-            nextDisabled={!canMoveFromStep2}
-          />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(1)} onNext={() => setCurrentStep(3)} nextDisabled={!canMoveFromStep2} />
         </div>
       )}
 
       {currentStep === 3 && (
         <div className="space-y-5">
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Step 3 - Visualization</h3>
+                <p className="text-sm text-gray-600">Compute Elbow and K-Distance curves from uploaded JSON data.</p>
+              </div>
+              <button
+                onClick={handleVisualize}
+                className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-lg font-bold shadow-lg"
+              >
+                Visualize
+              </button>
+            </div>
+          </div>
+
+          {visualizationResult && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white border border-gray-200 rounded-xl p-4 h-[360px]">
+                <h4 className="text-sm font-semibold text-gray-800 mb-3">Elbow Method (WCSS)</h4>
+                <ResponsiveContainer width="100%" height="90%">
+                  <LineChart data={visualizationResult.elbow}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="k" />
+                    <YAxis />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="wcss" stroke="#2563eb" strokeWidth={2} dot />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-xl p-4 h-[360px]">
+                <h4 className="text-sm font-semibold text-gray-800 mb-3">K-Distance (min_samples=3)</h4>
+                <ResponsiveContainer width="100%" height="90%">
+                  <LineChart data={visualizationResult.kDistance}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="rank" />
+                    <YAxis />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="distance" stroke="#0ea5e9" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(2)} onNext={() => setCurrentStep(4)} nextDisabled={!canMoveFromStep3} />
+        </div>
+      )}
+
+      {currentStep === 4 && (
+        <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />
             </div>
-
             <div className="space-y-4 lg:col-span-1">
               <button
                 onClick={() => clusterMutation.mutate()}
                 disabled={!conversionResult || clusterMutation.isPending}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold"
               >
-                {clusterMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Clustering...</span>
-                  </>
-                ) : (
-                  <span>Cluster</span>
-                )}
+                {clusterMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Clustering...</span></> : <span>Cluster</span>}
               </button>
 
               {clusterGroups.length > 0 && (
@@ -1983,86 +2168,33 @@ export function ConversionPage() {
                     <label className="text-sm font-semibold text-gray-700">Similarity Threshold</label>
                     <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(2)}</span>
                   </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={filterThreshold}
-                    onChange={(e) => setFilterThreshold(parseFloat(e.target.value))}
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-green-600"
-                  />
-                  <p className="text-[10px] text-gray-500 leading-tight">
-                    Higher threshold (e.g. 0.95) keeps more samples. Lower threshold filters more aggressively.
-                  </p>
+                  <input type="range" min="0" max="1" step="0.01" value={filterThreshold} onChange={(e) => setFilterThreshold(parseFloat(e.target.value))} className="w-full" />
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => filterMutation.mutate()}
-                      disabled={filterMutation.isPending}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
-                    >
-                      {filterMutation.isPending ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Filtering Noise...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-4 h-4" />
-                          <span>Filter Noise</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={handleResetFiltering}
-                      disabled={filterMutation.isPending}
-                      className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold transition-colors flex items-center gap-2"
-                      title="Reset noise filter"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Reset Filter</span>
-                    </button>
+                    <button onClick={() => filterMutation.mutate()} disabled={filterMutation.isPending} className="flex-1 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold">Filter Noise</button>
+                    <button onClick={handleResetFiltering} disabled={filterMutation.isPending} className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold">Reset Filter</button>
                   </div>
                 </div>
               )}
-
-              {/* Removed restrictive OpenAI-only message */}
 
               {clusterGroups.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
                     <h3 className="text-sm font-semibold text-gray-900">Cluster Statistics</h3>
-                    <p className="text-xs text-gray-600 mt-1">Select groups to filter preview table.</p>
                   </div>
-                  <div className="max-h-[420px] overflow-auto">
+                  <div className="max-h-[320px] overflow-auto">
                     <table className="min-w-full text-sm">
                       <thead className="bg-gray-50 sticky top-0">
                         <tr>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Select</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Group</th>
-                          <th className="px-4 py-2 text-left font-semibold text-gray-700">Label</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Count</th>
                         </tr>
                       </thead>
                       <tbody>
                         {clusterGroups.map((group) => (
                           <tr key={group.groupId} className="border-t border-gray-100">
-                            <td className="px-4 py-2">
-                              <input
-                                type="checkbox"
-                                checked={selectedClusterIds.includes(group.groupId)}
-                                onChange={() => toggleClusterSelection(group.groupId)}
-                              />
-                            </td>
+                            <td className="px-4 py-2"><input type="checkbox" checked={selectedClusterIds.includes(group.groupId)} onChange={() => toggleClusterSelection(group.groupId)} /></td>
                             <td className="px-4 py-2 font-medium text-gray-800">Group {group.groupId}</td>
-                            <td className="px-4 py-2 text-gray-700">
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${group.label === 'Chuyên môn'
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-green-100 text-green-800'
-                                }`}>
-                                {group.label === 'Chuyên môn' ? '📘' : '💬'} {group.label}
-                              </span>
-                            </td>
                             <td className="px-4 py-2 text-gray-700">{group.count}</td>
                           </tr>
                         ))}
@@ -2073,18 +2205,38 @@ export function ConversionPage() {
               )}
             </div>
           </div>
-
-          <StepNavigation
-            showBack
-            showNext
-            onBack={() => setCurrentStep(2)}
-            onNext={() => setCurrentStep(4)}
-            nextDisabled={!canMoveFromStep3}
-          />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(3)} onNext={() => setCurrentStep(5)} nextDisabled={!canMoveFromStep4} />
         </div>
       )}
 
-      {currentStep === 4 && (
+      {currentStep === 5 && (
+        <div className="space-y-5">
+          <div className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Step 5 - Classification</h3>
+              <p className="text-sm text-gray-600">Preview current data and split randomly into Group 1..8 for downstream filtering.</p>
+            </div>
+            <button onClick={handleClassify} className="px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">Classify</button>
+          </div>
+
+          <ConvertedDatasetTable rows={classifiedRows} mode={previewMode} />
+
+          {classificationGroups.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {classificationGroups.map((group) => (
+                <div key={group.groupId} className="bg-indigo-50 border border-indigo-100 rounded-lg p-3">
+                  <div className="text-xs text-indigo-700">Group {group.groupId}</div>
+                  <div className="text-lg font-bold text-indigo-900">{group.count}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(4)} onNext={() => setCurrentStep(6)} nextDisabled={!canMoveFromStep5} />
+        </div>
+      )}
+
+      {currentStep === 6 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -2092,15 +2244,17 @@ export function ConversionPage() {
             showEvaluationColumns
             evaluationMap={evaluationMap}
             selectedManualRows={manualRowIds}
-            clusterGroups={clusterGroups}
+            clusterGroups={classificationGroups}
             evaluationGroupFilter={evaluationGroupFilter}
             onEvaluationGroupFilterChange={setEvaluationGroupFilter}
-            onEvaluate={() => evaluateMutation.mutate()}
+            onEvaluate={() => evaluateMutation.mutate({ provider: 'gemini', rows: visibleRowsInEvaluation, skipManual: true })}
+            onEvaluateOpenAI={() => evaluateMutation.mutate({ provider: 'openai', rows: visibleRowsInEvaluation, skipManual: true })}
             onAccept={() => acceptMutation.mutate()}
             onReset={handleResetEvaluation}
-            onToggleManualRow={handleToggleManualRow}
+            onToggleRow={handleToggleManualRow}
             onManualFieldChange={handleManualFieldChange}
-            isEvaluating={evaluateMutation.isPending}
+            isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
+            isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
             disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
             isAccepting={acceptMutation.isPending}
             onVisibleRowsChange={setVisibleRowsInEvaluation}
@@ -2117,89 +2271,117 @@ export function ConversionPage() {
             </div>
           )}
 
-          <StepNavigation
-            showBack
-            showNext
-            onBack={() => setCurrentStep(3)}
-            onNext={() => setCurrentStep(5)}
-            nextDisabled={!canMoveFromStep4}
-          />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(5)} onNext={() => setCurrentStep(7)} nextDisabled={!canMoveFromStep6} />
         </div>
       )}
 
-      {currentStep === 5 && (
+      {currentStep === 7 && (
+        <div className="space-y-5">
+          <ConvertedDatasetTable
+            rows={evaluationRows}
+            mode={previewMode}
+            showEvaluationColumns
+            evaluationMap={evaluationMap}
+            selectedRows={refinementSelectedRowIds}
+            editableSelectedRows={false}
+            rowHighlightMap={refinedHighlightMap}
+            clusterGroups={classificationGroups}
+            evaluationGroupFilter={evaluationGroupFilter}
+            onEvaluationGroupFilterChange={setEvaluationGroupFilter}
+            onEvaluate={() => {
+              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
+              evaluateMutation.mutate({ provider: 'gemini', rows, skipManual: false });
+            }}
+            onEvaluateOpenAI={() => {
+              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
+              evaluateMutation.mutate({ provider: 'openai', rows, skipManual: false });
+            }}
+            onAccept={() => acceptMutation.mutate()}
+            onReset={handleResetEvaluation}
+            onToggleRow={(row, checked) => {
+              setRefinementSelectedRowIds((prev) => {
+                const next = new Set(prev);
+                if (checked) next.add(row.id);
+                else next.delete(row.id);
+                return next;
+              });
+            }}
+            extraActions={
+              <button
+                onClick={() => refineMutation.mutate()}
+                disabled={refineMutation.isPending}
+                className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white text-xs font-semibold"
+              >
+                {refineMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                <span>Refine data</span>
+              </button>
+            }
+            isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
+            isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
+            disableEvaluate={!refinementSelectedRowIds.size}
+            isAccepting={acceptMutation.isPending}
+          />
+
+          <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+            Rows refined successfully are highlighted with a light-blue background. Their previous scores are preserved until you re-evaluate selected rows.
+          </div>
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={() => setCurrentStep(8)} nextDisabled={!canMoveFromStep7} />
+        </div>
+      )}
+
+      {currentStep === 8 && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable
-                rows={clusteredRows}
-                mode={previewMode}
-                showEvaluationColumns
-                showEvaluationActions={false}
-                evaluationMap={evaluationMap}
-              />
+              <ConvertedDatasetTable rows={classifiedRows} mode={previewMode} showEvaluationColumns showEvaluationActions={false} evaluationMap={evaluationMap} />
             </div>
-
             <div className="space-y-4 lg:col-span-1">
               <button
-                onClick={handleDownload}
-                disabled={!conversionResult}
-                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-4 px-6 rounded-xl shadow-md transition-all active:scale-[0.98]"
+                onClick={handleDownloadTrainTestZip}
+                disabled={!conversionResult || classificationGroups.length !== 8}
+                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-4 px-6 rounded-xl shadow-md"
               >
                 <Download className="w-5 h-5" />
-                <span>Download Converted File</span>
+                <span>Download train/test zip</span>
               </button>
+
+              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-gray-900">Download Filter by Overall Score</p>
+                  <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
+                    {downloadScoreThreshold.toFixed(1)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  value={downloadScoreThreshold}
+                  onChange={(e) => setDownloadScoreThreshold(parseFloat(e.target.value))}
+                  className="w-full"
+                />
+                <button
+                  onClick={handleDownloadByScore}
+                  disabled={!conversionResult}
+                  className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download overall &gt;= filter</span>
+                </button>
+              </div>
 
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900 flex gap-2">
                 <Sparkles className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <p>
-                  Use the form below to push your final dataset to Hugging Face Hub.
-                </p>
+                <p>Upload final dataset to Hugging Face after validating the split files.</p>
               </div>
 
-              {uploadedFile && conversionResult && (
-                <HuggingFaceUpload conversionResult={conversionResult} />
-              )}
-
-              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-gray-900">Filter by overall score</h3>
-                <p className="text-xs text-gray-600">
-                  Download only evaluated samples with overall score greater than or equal to the selected value.
-                </p>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs text-gray-600">
-                    <span>Threshold</span>
-                    <span className="font-semibold text-gray-900">{minOverallScore.toFixed(1)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={10}
-                    step={0.1}
-                    value={minOverallScore}
-                    onChange={(e) => setMinOverallScore(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="flex items-center justify-between text-[11px] text-gray-500">
-                    <span>0.0</span>
-                    <span>10.0</span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleDownloadFilteredByScore}
-                  disabled={!conversionResult}
-                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-2.5 px-4 rounded-lg"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download filtered file</span>
-                </button>
-              </div>
+              {uploadedFile && conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
             </div>
           </div>
 
-          <StepNavigation showBack onBack={() => setCurrentStep(4)} />
+          <StepNavigation showBack onBack={() => setCurrentStep(7)} />
         </div>
       )}
     </div>

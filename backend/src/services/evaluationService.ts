@@ -1,6 +1,6 @@
 import { ILlmProvider } from './providers/ILlmProvider';
 import { AlpacaFormat } from '../types';
-import { ALPACA_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT } from '../constants/prompts';
+import { ALPACA_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, REFINEMENT_SYSTEM_PROMPT } from '../constants/prompts';
 import { GeminiProvider } from './providers/GeminiProvider';
 
 export interface SampleEvaluation {
@@ -44,12 +44,53 @@ export interface OpenAIConversationSample {
 // Union type: either a flat Alpaca sample or a full OpenAI conversation
 export type EvaluationSample = AlpacaFormat | OpenAIConversationSample;
 
+export interface RefinementSample {
+    assistant: string;
+    reason: string;
+}
+
+export interface RefinementResultItem {
+    assistant: string;
+    refinedOutput: string;
+}
+
 function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
     return Array.isArray((s as OpenAIConversationSample).messages);
 }
 
 export class EvaluationService {
     constructor(private provider: ILlmProvider) { }
+
+    private static readonly MAX_MESSAGES_PER_CONVERSATION = 16;
+    private static readonly MAX_MESSAGE_CHARS = 800;
+
+    private compactText(content: string, maxChars = EvaluationService.MAX_MESSAGE_CHARS): string {
+        const text = String(content || '');
+        if (text.length <= maxChars) {
+            return text;
+        }
+
+        const head = text.slice(0, Math.floor(maxChars * 0.7));
+        const tail = text.slice(-Math.floor(maxChars * 0.3));
+        return `${head}\n...[truncated]...\n${tail}`;
+    }
+
+    private compactMessages(messages: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
+        const normalized = messages.map((m) => ({
+            role: String(m?.role || ''),
+            content: this.compactText(String(m?.content || '')),
+        }));
+
+        if (normalized.length <= EvaluationService.MAX_MESSAGES_PER_CONVERSATION) {
+            return normalized;
+        }
+
+        const half = Math.floor(EvaluationService.MAX_MESSAGES_PER_CONVERSATION / 2);
+        return [
+            ...normalized.slice(0, half),
+            ...normalized.slice(-half),
+        ];
+    }
 
     private toInstructionOutput(sample: EvaluationSample): { instruction: string; output: string } {
         if (isConversationSample(sample)) {
@@ -82,10 +123,7 @@ export class EvaluationService {
                 if (isConversationSample(s)) {
                     return {
                         index,
-                        messages: s.messages.map((m) => ({
-                            role: String(m.role || ''),
-                            content: String(m.content || ''),
-                        })),
+                        messages: this.compactMessages(s.messages || []),
                     };
                 }
 
@@ -107,7 +145,7 @@ export class EvaluationService {
                 };
             });
 
-        const samplesJson = JSON.stringify(batchPayload, null, 2);
+        const samplesJson = JSON.stringify(batchPayload);
         const prompt = isOpenAI
             ? OPENAI_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson)
             : ALPACA_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson);
@@ -175,6 +213,14 @@ export class EvaluationService {
             });
 
         } catch (error: any) {
+            const statusCode = Number(error?.response?.status || 0);
+            if (statusCode === 413 && samples.length > 1) {
+                const mid = Math.ceil(samples.length / 2);
+                const left = await this.evaluateChunk(samples.slice(0, mid), format);
+                const right = await this.evaluateChunk(samples.slice(mid), format);
+                return [...left, ...right];
+            }
+
             console.error('Eval error for chunk:', error.message);
             return samples.map((sample) => {
                 const { instruction, output } = this.toInstructionOutput(sample);
@@ -249,6 +295,62 @@ export class EvaluationService {
             passRate,
             samples: results,
         };
+    }
+
+    async refineBatch(data: RefinementSample[]): Promise<RefinementResultItem[]> {
+        if (!data.length) {
+            return [];
+        }
+
+        const CHUNK_SIZE = 10;
+        const results: RefinementResultItem[] = [];
+
+        for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+            const chunk = data.slice(i, i + CHUNK_SIZE);
+            const payload = chunk.map((item, index) => ({
+                index,
+                assistant: String(item.assistant || ''),
+                reason: String(item.reason || ''),
+            }));
+
+            const prompt = REFINEMENT_SYSTEM_PROMPT.replace('${samplesJson}', JSON.stringify(payload, null, 2));
+
+            try {
+                const rawText = await this.provider.generateContent(prompt);
+                const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+                const jsonString = jsonMatch ? jsonMatch[0] : rawText;
+                const parsed = JSON.parse(jsonString);
+                const arr = Array.isArray(parsed) ? parsed : [parsed];
+
+                const mapped = new Map<number, any>();
+                arr.forEach((item, idx) => {
+                    const itemIndex = Number(item?.index);
+                    if (Number.isFinite(itemIndex)) {
+                        mapped.set(itemIndex, item);
+                    } else {
+                        mapped.set(idx, item);
+                    }
+                });
+
+                chunk.forEach((original, idx) => {
+                    const responseItem = mapped.get(idx);
+                    const refinedOutput = String(responseItem?.refinedOutput || original.assistant || '').trim();
+                    results.push({
+                        assistant: original.assistant,
+                        refinedOutput,
+                    });
+                });
+            } catch (error) {
+                chunk.forEach((original) => {
+                    results.push({
+                        assistant: original.assistant,
+                        refinedOutput: original.assistant,
+                    });
+                });
+            }
+        }
+
+        return results;
     }
 }
 

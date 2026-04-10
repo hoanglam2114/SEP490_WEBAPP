@@ -100,6 +100,7 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 
 // Gemini Evaluation
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
+router.post('/evaluate/refine', (req, res) => evalController.refine(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
 router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistory(req, res));
 router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));

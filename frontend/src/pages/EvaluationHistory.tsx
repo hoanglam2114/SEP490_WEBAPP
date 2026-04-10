@@ -5,7 +5,7 @@ import { Toaster, toast } from 'react-hot-toast';
 import { apiService } from '../services/api';
 
 type EvalFormat = 'openai' | 'alpaca';
-type EvaluatedBy = 'manual' | 'gemini';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'none';
 
 type EvalResults = {
   accuracy?: number;
@@ -171,6 +171,13 @@ function computeOverall(draft: EditDraft): number {
   return Math.round(((a + b + c) / 3) * 10) / 10;
 }
 
+function formatScoreDisplay(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-';
+  const n = Number(value);
+  if (Number.isFinite(n) && n === -1) return '-';
+  return String(value);
+}
+
 export const EvaluationHistory: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -180,6 +187,7 @@ export const EvaluationHistory: React.FC = () => {
   const [projectSearch, setProjectSearch] = useState('');
   const [selectedProjectName, setSelectedProjectName] = useState<string | null>(null);
   const [projectMinOverallMap, setProjectMinOverallMap] = useState<Record<string, string>>({});
+  const [showUnaudited, setShowUnaudited] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft | null>(null);
@@ -274,7 +282,13 @@ export const EvaluationHistory: React.FC = () => {
       ? project.items
       : project.items.filter((item) => item.format === selectedFormat);
 
-    return byFormat.filter((item) => item.results.overall >= minOverall);
+    return byFormat.filter((item) => {
+      const overall = Number(item.results.overall);
+      if (overall === -1) {
+        return showUnaudited;
+      }
+      return overall >= minOverall;
+    });
   };
 
   const selectedProjectItems = selectedProject ? getProjectVisibleItems(selectedProject) : [];
@@ -288,12 +302,14 @@ export const EvaluationHistory: React.FC = () => {
 
   const handleDownloadProject = (project: EvaluationProjectGroup) => {
     const visibleItems = getProjectVisibleItems(project);
-    if (visibleItems.length === 0) {
+    const downloadableItems = visibleItems.filter((item) => Number(item.results.overall) !== -1);
+
+    if (downloadableItems.length === 0) {
       toast.error('No visible data to download.');
       return;
     }
 
-    const blob = new Blob([JSON.stringify(visibleItems, null, 2)], {
+    const blob = new Blob([JSON.stringify(downloadableItems, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
     const objectUrl = window.URL.createObjectURL(blob);
@@ -304,6 +320,83 @@ export const EvaluationHistory: React.FC = () => {
     link.click();
     document.body.removeChild(link);
     window.URL.revokeObjectURL(objectUrl);
+  };
+
+  const handleContinueEvaluation = (project: EvaluationProjectGroup) => {
+    const preferredFormat: EvalFormat = selectedFormat === 'all formats'
+      ? ((project.items[0]?.format || 'alpaca') as EvalFormat)
+      : selectedFormat;
+
+    const sameFormatItems = project.items.filter((item) => item.format === preferredFormat);
+    if (!sameFormatItems.length) {
+      toast.error('No data in selected format to continue evaluation.');
+      return;
+    }
+
+    const evaluationEntries = new Map<string, any>();
+    let restoredData: any[] = [];
+
+    if (preferredFormat === 'openai') {
+      const conversationMap = new Map<string, any>();
+      sameFormatItems.forEach((item, index) => {
+        const conversationId = `reload-conv-${index + 1}`;
+        const messages = Array.isArray(item.data.messages)
+          ? item.data.messages.map((msg: any) => ({ role: String(msg?.role || ''), content: String(msg?.content || '') }))
+          : [
+            { role: 'user', content: String(item.data.userText || item.data.instruction || '') },
+            { role: 'assistant', content: String(item.data.assistantText || item.data.output || '') },
+          ];
+
+        conversationMap.set(conversationId, {
+          conversation_id: conversationId,
+          messages,
+        });
+        evaluationEntries.set(conversationId, {
+          evaluatedBy: item.evaluatedBy,
+          scores: {
+            socratic: item.results.socratic ?? -1,
+            encouragement: item.results.encouragement ?? -1,
+            factuality: item.results.factuality ?? -1,
+            overall: item.results.overall ?? -1,
+            reason: item.results.reason || '',
+          },
+        });
+      });
+      restoredData = Array.from(conversationMap.values());
+    } else {
+      const rowMap = new Map<string, any>();
+      sameFormatItems.forEach((item, index) => {
+        const rowId = `alpaca-${index}`;
+        rowMap.set(rowId, {
+          instruction: String(item.data.instruction || ''),
+          input: String(item.data.input || ''),
+          output: String(item.data.output || item.data.assistantText || ''),
+        });
+        evaluationEntries.set(rowId, {
+          evaluatedBy: item.evaluatedBy,
+          scores: {
+            accuracy: item.results.accuracy ?? -1,
+            clarity: item.results.clarity ?? -1,
+            completeness: item.results.completeness ?? -1,
+            overall: item.results.overall ?? -1,
+            reason: item.results.reason || '',
+          },
+        });
+      });
+      restoredData = Array.from(rowMap.values());
+    }
+
+    navigate('/chatbotconverter', {
+      state: {
+        loadProject: {
+          fileId: sameFormatItems[0].fileId,
+          projectName: project.projectName,
+          format: preferredFormat,
+          data: restoredData,
+          evaluationMap: Object.fromEntries(evaluationEntries.entries()),
+        },
+      },
+    });
   };
 
   return (
@@ -459,7 +552,7 @@ export const EvaluationHistory: React.FC = () => {
                 min={0}
                 max={10}
                 step="0.1"
-                value={projectMinOverallMap[selectedProject.projectName] ?? ''}
+                value={projectMinOverallMap[selectedProject.projectName] ?? '0'}
                 onChange={(e) =>
                   setProjectMinOverallMap((prev) => ({
                     ...prev,
@@ -475,6 +568,23 @@ export const EvaluationHistory: React.FC = () => {
                 className="px-3 py-2 text-sm font-semibold text-emerald-700 border border-emerald-300 rounded-lg bg-emerald-50 hover:bg-emerald-100"
               >
                 Download
+              </button>
+
+              <label className="inline-flex items-center gap-2 px-2 py-1 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showUnaudited}
+                  onChange={(e) => setShowUnaudited(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span>Hiển thị câu chưa chấm</span>
+              </label>
+
+              <button
+                onClick={() => handleContinueEvaluation(selectedProject)}
+                className="px-3 py-2 text-sm font-semibold text-indigo-700 border border-indigo-300 rounded-lg bg-indigo-50 hover:bg-indigo-100"
+              >
+                Continue Evaluation
               </button>
 
               <div className="ml-auto text-xs text-slate-500">
@@ -503,9 +613,9 @@ export const EvaluationHistory: React.FC = () => {
                     const isEditing = editingId === item._id;
                     const [k1, k2, k3] = metricKeys(item.format);
 
-                    const scoreA = isEditing && draft ? draft.metricA : String(item.results[k1] ?? '');
-                    const scoreB = isEditing && draft ? draft.metricB : String(item.results[k2] ?? '');
-                    const scoreC = isEditing && draft ? draft.metricC : String(item.results[k3] ?? '');
+                    const scoreA = isEditing && draft ? draft.metricA : item.results[k1];
+                    const scoreB = isEditing && draft ? draft.metricB : item.results[k2];
+                    const scoreC = isEditing && draft ? draft.metricC : item.results[k3];
                     const overall = isEditing && draft ? computeOverall(draft) : item.results.overall;
                     const reason = isEditing && draft ? draft.reason : item.results.reason;
 
@@ -539,7 +649,7 @@ export const EvaluationHistory: React.FC = () => {
                               className="w-20 px-2 py-1 border border-slate-300 rounded"
                             />
                           ) : (
-                            scoreA
+                            formatScoreDisplay(scoreA)
                           )}
                         </td>
                         <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">
@@ -554,7 +664,7 @@ export const EvaluationHistory: React.FC = () => {
                               className="w-20 px-2 py-1 border border-slate-300 rounded"
                             />
                           ) : (
-                            scoreB
+                            formatScoreDisplay(scoreB)
                           )}
                         </td>
                         <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">
@@ -569,11 +679,11 @@ export const EvaluationHistory: React.FC = () => {
                               className="w-20 px-2 py-1 border border-slate-300 rounded"
                             />
                           ) : (
-                            scoreC
+                            formatScoreDisplay(scoreC)
                           )}
                         </td>
 
-                        <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{overall}</td>
+                        <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{formatScoreDisplay(overall)}</td>
                         <td className="px-3 py-3 text-slate-700 align-top break-words">
                           {isEditing ? (
                             <input

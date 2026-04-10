@@ -162,13 +162,22 @@ export const apiService = {
   evaluateData: async (
     data: any[],
     format?: string,
-    sampleSize?: number
+    sampleSize?: number,
+    provider: 'gemini' | 'openai' = 'gemini'
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
       format,
       sampleSize,
+      provider,
     });
+    return response.data;
+  },
+
+  refineData: async (
+    data: Array<{ assistant: string; reason: string }>
+  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+    const response = await api.post('/evaluate/refine', { data });
     return response.data;
   },
 
@@ -178,7 +187,7 @@ export const apiService = {
     items: Array<{
       format: string;
       data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini';
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
       results: {
         accuracy?: number;
         clarity?: number;
@@ -214,7 +223,7 @@ export const apiService = {
         projectName: string;
         format: 'openai' | 'alpaca';
         data: Record<string, any>;
-        evaluatedBy: 'manual' | 'gemini';
+        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
         results: {
           accuracy?: number;
           clarity?: number;
@@ -259,7 +268,7 @@ export const apiService = {
         overall: number;
         reason: string;
       };
-      evaluatedBy: 'manual' | 'gemini';
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
     }
   ): Promise<{ message: string; item: any }> => {
     const response = await api.patch(`/evaluate/history/${id}`, payload);

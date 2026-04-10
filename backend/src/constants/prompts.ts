@@ -85,3 +85,34 @@ Yêu cầu output:
     "reason": "Lý do ngắn gọn,nhận xét cho từng tiêu chí, tập trung điểm cần cải thiện"
   }
 ]`;
+
+export const REFINEMENT_SYSTEM_PROMPT = `Bạn là chuyên gia cải thiện chất lượng câu trả lời của AI Assistant.
+
+Bạn sẽ nhận JSON array có cấu trúc:
+[
+  {
+    "index": number,
+    "assistant": string,
+    "reason": string
+  }
+]
+
+Nhiệm vụ:
+- Viết lại nội dung assistant để rõ ràng hơn, chính xác hơn, đầy đủ hơn dựa trên reason.
+- Giữ đúng ngôn ngữ và ý định giáo dục ban đầu.
+- Không thêm thông tin bịa đặt.
+
+DỮ LIỆU CẦN TINH CHỈNH:
+\${samplesJson}
+
+Yêu cầu output:
+- CHỈ trả về JSON array hợp lệ.
+- Mỗi phần tử phải có: index, refinedOutput.
+
+Định dạng chính xác:
+[
+  {
+    "index": 0,
+    "refinedOutput": "Nội dung assistant đã tinh chỉnh"
+  }
+]`;

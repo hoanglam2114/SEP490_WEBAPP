@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
-import { evaluationService, EvaluationSample } from '../services/evaluationService';
+import { EvaluationSample, EvaluationService, RefinementSample } from '../services/evaluationService';
 import { EvaluationHistory } from '../models/EvaluationHistory';
+import { GeminiProvider } from '../services/providers/GeminiProvider';
+import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 
 type EvalFormat = 'openai' | 'alpaca';
 
@@ -67,6 +69,13 @@ function normalizeEvaluationData(format: EvalFormat, rawData: Record<string, any
 
 
 export class EvaluationController {
+    private getService(provider?: string): EvaluationService {
+        if (String(provider || '').toLowerCase() === 'openai') {
+            return new EvaluationService(new OpenAIProvider());
+        }
+        return new EvaluationService(new GeminiProvider());
+    }
+
     /**
      * POST /api/evaluate
      * Body: { data: EvaluationSample[], format?: string }
@@ -74,9 +83,10 @@ export class EvaluationController {
      */
     async evaluate(req: Request, res: Response): Promise<void> {
         try {
-            const { data, format } = req.body as {
+            const { data, format, provider } = req.body as {
                 data: EvaluationSample[];
                 format?: string;
+                provider?: 'gemini' | 'openai';
             };
 
             if (!data || !Array.isArray(data) || data.length === 0) {
@@ -84,13 +94,46 @@ export class EvaluationController {
                 return;
             }
 
-            const result = await evaluationService.evaluateBatch(data, format);
+            const service = this.getService(provider);
+            const result = await service.evaluateBatch(data, format);
 
             res.json(result);
         } catch (error: any) {
             console.error('Evaluation error:', error);
             res.status(500).json({
                 error: 'Đánh giá thất bại',
+                details: error.message,
+            });
+        }
+    }
+
+    /**
+     * POST /api/evaluate/refine
+     * Body: { data: [{ assistant, reason }] }
+     */
+    async refine(req: Request, res: Response): Promise<void> {
+        try {
+            const { data } = req.body as {
+                data: RefinementSample[];
+            };
+
+            if (!Array.isArray(data) || data.length === 0) {
+                res.status(400).json({ error: 'Cần cung cấp mảng data để refine.' });
+                return;
+            }
+
+            const service = new EvaluationService(new GeminiProvider());
+            const samples = data.map((item) => ({
+                assistant: String(item?.assistant || ''),
+                reason: String(item?.reason || ''),
+            }));
+
+            const refined = await service.refineBatch(samples);
+            res.json({ items: refined, refined: refined.length });
+        } catch (error: any) {
+            console.error('Refine error:', error);
+            res.status(500).json({
+                error: 'Tinh chỉnh dữ liệu thất bại',
                 details: error.message,
             });
         }
@@ -108,7 +151,7 @@ export class EvaluationController {
                 items: Array<{
                     format: string;
                     data: Record<string, any>;
-                    evaluatedBy: 'manual' | 'gemini';
+                    evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
                     results: {
                         accuracy?: number;
                         clarity?: number;
@@ -135,7 +178,7 @@ export class EvaluationController {
                     item &&
                     (item.format === 'openai' || item.format === 'alpaca') &&
                     item.data &&
-                    (item.evaluatedBy === 'manual' || item.evaluatedBy === 'gemini') &&
+                    (item.evaluatedBy === 'manual' || item.evaluatedBy === 'gemini' || item.evaluatedBy === 'openai' || item.evaluatedBy === 'none') &&
                     item.results &&
                     Number.isFinite(item.results.overall)
                 )
@@ -285,7 +328,7 @@ export class EvaluationController {
                     overall: number;
                     reason: string;
                 };
-                evaluatedBy: 'manual' | 'gemini';
+                evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
             };
 
             if (!id) {
@@ -298,8 +341,8 @@ export class EvaluationController {
                 return;
             }
 
-            if (evaluatedBy !== 'manual' && evaluatedBy !== 'gemini') {
-                res.status(400).json({ error: 'evaluatedBy chỉ nhận manual hoặc gemini.' });
+            if (evaluatedBy !== 'manual' && evaluatedBy !== 'gemini' && evaluatedBy !== 'openai' && evaluatedBy !== 'none') {
+                res.status(400).json({ error: 'evaluatedBy chỉ nhận manual, gemini, openai hoặc none.' });
                 return;
             }
 
