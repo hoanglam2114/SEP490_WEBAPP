@@ -4,6 +4,7 @@ import { TrainingStatus, JobConfig } from '../pages/AutoTrainScreen';
 interface TrainingStore {
   activeJobs: Record<string, TrainingStatus>;
   lossHistories: Record<string, { progress: number; loss: number }[]>;
+  evalLossHistories: Record<string, { progress: number; loss: number }[]>;
   jobConfigs: Record<string, JobConfig>;
   trainingStartTimes: Record<string, Date>;
   trainingStartProgress: Record<string, number>;
@@ -13,6 +14,7 @@ interface TrainingStore {
   addJob: (jobId: string, config: JobConfig) => void;
   updateJobStatus: (jobId: string, status: TrainingStatus) => void;
   updateLossHistory: (jobId: string, progress: number, loss: number) => void;
+  updateEvalLossHistory: (jobId: string, progress: number, loss: number) => void;
   removeJob: (jobId: string) => void;
   setJobConfig: (jobId: string, config: JobConfig) => void;
   setEventSource: (jobId: string, es: EventSource) => void;
@@ -23,6 +25,7 @@ interface TrainingStore {
 export const useTrainingStore = create<TrainingStore>((set, get) => ({
   activeJobs: {},
   lossHistories: {},
+  evalLossHistories: {},
   jobConfigs: {},
   trainingStartTimes: {},
   trainingStartProgress: {},
@@ -60,11 +63,34 @@ export const useTrainingStore = create<TrainingStore>((set, get) => ({
     return state;
   }),
 
-  removeJob: (jobId) => set((state) => {
-    const newActiveJobs = { ...state.activeJobs };
-    delete newActiveJobs[jobId];
-    return { activeJobs: newActiveJobs };
+  updateEvalLossHistory: (jobId, progress, loss) => set((state) => {
+    const history = state.evalLossHistories[jobId] || [];
+    const lastEntry = history[history.length - 1];
+    
+    if (!lastEntry || lastEntry.loss !== loss) {
+      return {
+        evalLossHistories: {
+          ...state.evalLossHistories,
+          [jobId]: [...history, { progress, loss }]
+        }
+      };
+    }
+    return state;
   }),
+
+  removeJob: (jobId) => {
+    const es = get().eventSources[jobId];
+    if (es) {
+      es.close();
+    }
+    set((state) => {
+      const newActiveJobs = { ...state.activeJobs };
+      const newES = { ...state.eventSources };
+      delete newActiveJobs[jobId];
+      delete newES[jobId];
+      return { activeJobs: newActiveJobs, eventSources: newES };
+    });
+  },
 
   setJobConfig: (jobId, config) => set((state) => ({
     jobConfigs: { ...state.jobConfigs, [jobId]: config }
@@ -92,6 +118,7 @@ export const useTrainingStore = create<TrainingStore>((set, get) => ({
     set({
       activeJobs: {},
       lossHistories: {},
+      evalLossHistories: {},
       jobConfigs: {},
       trainingStartTimes: {},
       trainingStartProgress: {},

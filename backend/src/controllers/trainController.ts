@@ -100,6 +100,30 @@ async function fetchWithForm(url: string, form: FormData): Promise<ReturnType<ty
   });
 }
 
+async function hfRepoCheckpointProbe(
+  repoId: string,
+  token?: string,
+): Promise<{ result: 'has' | 'no' | 'unknown' | 'not_found' }> {
+  try {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`https://huggingface.co/api/models/${encodeURIComponent(repoId)}`, { headers });
+    if (response.status === 404) return { result: 'not_found' };
+    if (response.status === 401 || response.status === 403) return { result: 'unknown' };
+    if (!response.ok) return { result: 'unknown' };
+
+    const data: any = await response.json();
+    const siblings: any[] = Array.isArray(data?.siblings) ? data.siblings : [];
+    const has = siblings.some((s) => {
+      const name = typeof s?.rfilename === 'string' ? s.rfilename : '';
+      return name.includes('checkpoint-') || name === 'last-checkpoint' || name.startsWith('last-checkpoint/');
+    });
+    return { result: has ? 'has' : 'no' };
+  } catch {
+    return { result: 'unknown' };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/train/start
 // FE sends multipart/form-data (file + params)
@@ -437,14 +461,25 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
       const data: any = await response.json();
 
       // IF latest_checkpoint exists, update the DB so we can resume later
-      if (data.latest_checkpoint || (data.metrics && typeof data.metrics.loss === 'number')) {
+      if (data.latest_checkpoint || (data.metrics && (typeof data.metrics.loss === 'number' || typeof data.metrics.eval_loss === 'number'))) {
+        const updateFields: any = {};
+        if (data.latest_checkpoint) {
+          updateFields.latest_checkpoint_file_id = data.latest_checkpoint;
+        }
+        
+        const pushFields: any = {};
+        if (data.metrics && typeof data.metrics.loss === 'number') {
+          pushFields.lossHistory = { progress: data.progress || 0, loss: data.metrics.loss };
+        }
+        if (data.metrics && typeof data.metrics.eval_loss === 'number') {
+          pushFields.evalLossHistory = { progress: data.progress || 0, loss: data.metrics.eval_loss };
+        }
+
         TrainingHistory.updateOne(
           { jobId },
           { 
-            ...(data.latest_checkpoint ? { latest_checkpoint_file_id: data.latest_checkpoint } : {}),
-            ...(data.metrics && typeof data.metrics.loss === 'number' 
-                ? { $push: { lossHistory: { progress: data.progress || 0, loss: data.metrics.loss } } } 
-                : {})
+            ...updateFields,
+            ...(Object.keys(pushFields).length > 0 ? { $push: pushFields } : {})
           }
         ).catch(err => console.error('[Backend] Failed to update history during stream:', err));
       }
@@ -561,6 +596,11 @@ export const resumeTraining = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Job not found in database' });
     }
 
+    const snapshotConfig = history.config_snapshot || {};
+    const resumeHfToken =
+      (typeof snapshotConfig.hf_token === 'string' ? snapshotConfig.hf_token : '') ||
+      (typeof history.hfToken === 'string' ? history.hfToken : '');
+
     // Determine checkpoint source:
     // Priority 1: latest_checkpoint_file_id (e.g. Google Drive file ID)
     // Priority 2: hfRepoId if pushToHub was enabled (checkpoint saved to HF Hub)
@@ -577,11 +617,25 @@ export const resumeTraining = async (req: Request, res: Response) => {
       });
     }
 
+    if (checkpointSource === 'hf') {
+      const probe = await hfRepoCheckpointProbe(checkpointId, resumeHfToken);
+      if (probe.result === 'not_found') {
+        return res.status(400).json({
+          error:
+            'Cannot resume: Hugging Face repo not found (or not accessible). Check hf_repo_id and token permissions.',
+        });
+      }
+      if (probe.result === 'no') {
+        return res.status(400).json({
+          error:
+            'Cannot resume: No checkpoint found in Hugging Face repo yet (checkpoint-* or last-checkpoint). If you stopped before the first save, it will restart from step 1. Wait until a checkpoint is saved (e.g. after save_steps) then try Resume again.'
+        });
+      }
+    }
+
     console.log(`[Backend] Resuming job ${jobId} from checkpoint [${checkpointSource}]: ${checkpointId}`);
 
     // 2. Reconstruct JSON config from stored snapshot
-    const snapshotConfig = history.config_snapshot || {};
-
     const resumeConfig: any = {
       ...snapshotConfig,
       job_id: jobId,

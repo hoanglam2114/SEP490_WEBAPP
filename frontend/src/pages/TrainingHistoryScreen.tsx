@@ -51,6 +51,7 @@ interface TrainingHistoryItem {
   startedAt: string;
   completedAt: string;
   lossHistory?: { progress: number; loss: number }[];
+  evalLossHistory?: { progress: number; loss: number }[];
   createdAt: string;
   latest_checkpoint_file_id?: string;
   workerUrl?: string;

@@ -41,6 +41,7 @@ export interface ITrainingHistory extends Document {
   startedAt: Date;
   completedAt?: Date;
   lossHistory?: { progress: number; loss: number }[];
+  evalLossHistory?: { progress: number; loss: number }[];
   createdAt: Date;
   updatedAt: Date;
 
@@ -97,6 +98,12 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     startedAt: { type: Date, required: true },
     completedAt: { type: Date },
     lossHistory: [
+      {
+        progress: { type: Number },
+        loss: { type: Number },
+      },
+    ],
+    evalLossHistory: [
       {
         progress: { type: Number },
         loss: { type: Number },

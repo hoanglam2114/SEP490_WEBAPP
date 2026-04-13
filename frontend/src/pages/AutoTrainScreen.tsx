@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+import { useTrainingStore } from "../hooks/useTrainingStore";
 
 const DATASET_SOURCES = [
   { value: "local", label: "Local Upload" },
@@ -133,21 +134,22 @@ const PARAM_LABELS: Record<
   },
 };
 
-interface TrainingMetrics {
+export interface TrainingMetrics {
   loss: number;
+  eval_loss?: number;
   accuracy: number;
   vram: number;
   gpu_util: number;
 }
 
-interface TrainingStatus {
+export interface TrainingStatus {
   status: string;
   progress: number;
   metrics?: TrainingMetrics;
   logs?: string[];
 }
 
-interface JobConfig {
+export interface JobConfig {
   projectName: string;
   baseModel: string;
   datasetSource: string;
@@ -218,21 +220,26 @@ export const AutoTrainScreen: React.FC = () => {
   const [showStartError, setShowStartError] = useState(false);
 
   // Parallel Training state
-  const [activeJobs, setActiveJobs] = useState<Record<string, TrainingStatus>>(
-    {},
-  );
-  const [lossHistories, setLossHistories] = useState<
-    Record<string, { progress: number; loss: number }[]>
-  >({});
-  const [, setJobConfigs] = useState<Record<string, JobConfig>>({});
-  const eventSourcesRef = useRef<Record<string, EventSource>>({});
+  const {
+    activeJobs,
+    lossHistories,
+    trainingStartTimes,
+    trainingStartProgress,
+    eventSources
+  } = useTrainingStore();
+
   const [showLog, setShowLog] = useState(false);
   const [systemResources, setSystemResources] =
     useState<SystemResources | null>(null);
   const logRefs = useRef<Record<string, HTMLPreElement | null>>({});
   const paramSectionRef = useRef<HTMLDivElement>(null);
-  const trainingStartTimesRef = useRef<Record<string, Date>>({});
-  const trainingStartProgressRef = useRef<Record<string, number>>({});
+
+  // Automatically show log if there are active jobs when component mounts
+  useEffect(() => {
+    if (Object.keys(activeJobs).length > 0) {
+      setShowLog(true);
+    }
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -449,51 +456,30 @@ export const AutoTrainScreen: React.FC = () => {
   }, [location.state]);
 
   const startTrackingJob = (jobId: string, config?: JobConfig) => {
-    if (eventSourcesRef.current[jobId]) return;
+    const store = useTrainingStore.getState();
+    if (store.eventSources[jobId]) return;
 
     if (config) {
-      setJobConfigs((prev) => ({ ...prev, [jobId]: config }));
+      store.setJobConfig(jobId, config);
     }
 
     setShowLog(true);
-    trainingStartTimesRef.current[jobId] = new Date();
-    delete trainingStartProgressRef.current[jobId];
-    setActiveJobs((prev) => {
-      if (prev[jobId]) return prev;
-      return {
-        ...prev,
-        [jobId]: { status: "CONNECTING", progress: 0, logs: [] },
-      };
-    });
+    store.addJob(jobId, config || store.jobConfigs[jobId]);
 
     const es = new EventSource(`/api/train/stream/${jobId}`);
-    eventSourcesRef.current[jobId] = es;
+    store.setEventSource(jobId, es);
 
     es.onmessage = (event) => {
       try {
         const status: TrainingStatus = JSON.parse(event.data);
-        setActiveJobs((prev) => ({ ...prev, [jobId]: status }));
-
-        // Initialize start progress for ETA calculation on the first update
-        if (trainingStartProgressRef.current[jobId] === undefined) {
-          trainingStartProgressRef.current[jobId] = status.progress || 0;
-        }
+        useTrainingStore.getState().updateJobStatus(jobId, status);
 
         if (status.metrics && typeof status.metrics.loss === "number") {
-          setLossHistories((prev) => {
-            const history = prev[jobId] || [];
-            const lastEntry = history[history.length - 1];
-            if (!lastEntry || lastEntry.loss !== status.metrics!.loss) {
-              return {
-                ...prev,
-                [jobId]: [
-                  ...history,
-                  { progress: status.progress || 0, loss: status.metrics!.loss },
-                ],
-              };
-            }
-            return prev;
-          });
+          useTrainingStore.getState().updateLossHistory(jobId, status.progress || 0, status.metrics.loss);
+        }
+
+        if (status.metrics && typeof status.metrics.eval_loss === "number") {
+          useTrainingStore.getState().updateEvalLossHistory(jobId, status.progress || 0, status.metrics.eval_loss);
         }
 
         if (
@@ -502,57 +488,45 @@ export const AutoTrainScreen: React.FC = () => {
           status.status === "FAILED" ||
           status.status === "ERROR"
         ) {
-          es.close();
-          delete eventSourcesRef.current[jobId];
+          useTrainingStore.getState().closeEventSource(jobId);
 
-          // Use config from state to handle async closure
-          setJobConfigs((currentConfigs) => {
-            const jobConfig = currentConfigs[jobId];
-            if (jobConfig) {
-              const completedAt = new Date();
-              const startedAt =
-                trainingStartTimesRef.current[jobId] || new Date();
-              const trainingDuration =
-                completedAt.getTime() - startedAt.getTime();
-              const logs = status.logs || [];
-              const lastLogLine = logs.length > 0 ? logs[logs.length - 1] : "";
+          const currentStore = useTrainingStore.getState();
+          const jobConfig = currentStore.jobConfigs[jobId];
+          if (jobConfig) {
+            const completedAt = new Date();
+            const startedAt = currentStore.trainingStartTimes[jobId] || new Date();
+            const trainingDuration = completedAt.getTime() - startedAt.getTime();
+            const logs = status.logs || [];
+            const lastLogLine = logs.length > 0 ? logs[logs.length - 1] : "";
 
-              fetch("/api/train/history", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  jobId,
-                  ...jobConfig,
-                  status: status.status,
-                  finalMetrics: status.metrics,
-                  lastLogLine,
-                  trainingDuration,
-                  startedAt: startedAt.toISOString(),
-                  completedAt: completedAt.toISOString(),
-                }),
-              })
-                .then((r) => r.json())
-                .then((d) =>
-                  console.log("[AutoTrain] History updated:", d.message),
-                )
-                .catch((e) =>
-                  console.error("[AutoTrain] Failed to update history:", e),
-                );
-            }
-            return currentConfigs;
-          });
+            fetch("/api/train/history", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId,
+                ...jobConfig,
+                status: status.status,
+                finalMetrics: status.metrics,
+                lastLogLine,
+                trainingDuration,
+                startedAt: startedAt.toISOString(),
+                completedAt: completedAt.toISOString(),
+              }),
+            })
+              .then((r) => r.json())
+              .then((d) => console.log("[AutoTrain] History updated:", d.message))
+              .catch((e) => console.error("[AutoTrain] Failed to update history:", e));
+          }
         }
       } catch {}
     };
 
     es.addEventListener("end", () => {
-      es.close();
-      delete eventSourcesRef.current[jobId];
+      useTrainingStore.getState().closeEventSource(jobId);
     });
 
     es.onerror = () => {
-      es.close();
-      delete eventSourcesRef.current[jobId];
+      useTrainingStore.getState().closeEventSource(jobId);
     };
   };
 
@@ -570,8 +544,8 @@ export const AutoTrainScreen: React.FC = () => {
     const interval = setInterval(fetchResources, 5000);
 
     return () => {
-      Object.values(eventSourcesRef.current).forEach((es) => es.close());
       clearInterval(interval);
+      // Removed closing EventSources here so they persist in the store
     };
   }, []);
 
@@ -699,15 +673,9 @@ export const AutoTrainScreen: React.FC = () => {
   const handleStopTraining = async (jobId: string) => {
     try {
       await fetch(`/api/train/stop/${jobId}`, { method: "POST" });
-      if (eventSourcesRef.current[jobId]) {
-        eventSourcesRef.current[jobId].close();
-        delete eventSourcesRef.current[jobId];
-      }
-      setActiveJobs((prev) => {
-        const next = { ...prev };
-        if (next[jobId]) next[jobId].status = "STOPPED";
-        return next;
-      });
+      const store = useTrainingStore.getState();
+      store.closeEventSource(jobId);
+      store.updateJobStatus(jobId, { ...store.activeJobs[jobId], status: "STOPPED" });
     } catch {}
   };
 
@@ -760,16 +728,34 @@ export const AutoTrainScreen: React.FC = () => {
       job.status,
     ),
   );
-  const activeJobCount = Object.keys(eventSourcesRef.current).length;
+  const activeJobCount = Object.keys(eventSources).length;
+
+  const getChartData = (id: string) => {
+    const trainingHistory = lossHistories[id] || [];
+    const evaluationHistory = (useTrainingStore.getState().evalLossHistories || {})[id] || [];
+    
+    // Ghép 2 mảng theo progress
+    const combined: Record<number, { progress: number; loss?: number; eval_loss?: number }> = {};
+    
+    trainingHistory.forEach(item => {
+      combined[item.progress] = { ...combined[item.progress], progress: item.progress, loss: item.loss };
+    });
+    
+    evaluationHistory.forEach(item => {
+      combined[item.progress] = { ...combined[item.progress], progress: item.progress, eval_loss: item.loss };
+    });
+    
+    return Object.values(combined).sort((a, b) => a.progress - b.progress);
+  };
 
   const calculateETA = (jobId: string, progress: number) => {
     if (!progress || progress <= 0 || progress >= 100) return null;
-    const startTime = trainingStartTimesRef.current[jobId];
-    const startProgress = trainingStartProgressRef.current[jobId] || 0;
+    const startTime = trainingStartTimes[jobId];
+    const startProgress = trainingStartProgress[jobId] || 0;
     if (!startTime) return null;
 
     const now = new Date();
-    const elapsedMs = now.getTime() - startTime.getTime();
+    const elapsedMs = now.getTime() - new Date(startTime).getTime();
     
     // Calculate progress gained since this session started
     const progressGained = progress - startProgress;
@@ -1669,11 +1655,7 @@ export const AutoTrainScreen: React.FC = () => {
                         )}
                         <button
                           onClick={() => {
-                            setActiveJobs((prev) => {
-                              const next = { ...prev };
-                              delete next[id];
-                              return next;
-                            });
+                            useTrainingStore.getState().removeJob(id);
                           }}
                           className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all"
                         >
@@ -1747,13 +1729,41 @@ export const AutoTrainScreen: React.FC = () => {
                         </div>
 
                         {status.metrics && (
-                          <div className="grid grid-cols-2 gap-3 mb-4">
-                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
-                              <div className="text-[10px] text-slate-400 font-medium mb-0.5">
-                                Loss
+                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+                            <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-3">
+                              <div className="text-[10px] text-blue-500 font-bold uppercase mb-0.5">
+                                Train Loss
                               </div>
-                              <div className="text-lg font-bold text-slate-700">
-                                {status.metrics?.loss}
+                              <div className="text-lg font-bold text-blue-700 font-mono">
+                                {status.metrics?.loss.toFixed(4)}
+                              </div>
+                            </div>
+                            <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-3">
+                              <div className="text-[10px] text-rose-500 font-bold uppercase mb-0.5 flex items-center gap-1">
+                                Eval Loss
+                                <span className="group relative">
+                                  <span className="cursor-help text-rose-400">ⓘ</span>
+                                  <span className="invisible group-hover:visible absolute left-0 bottom-full mb-2 w-48 p-2 bg-slate-800 text-white text-[9px] rounded-lg leading-tight z-50">
+                                    Validation Loss: Độ lỗi trên tập dữ liệu kiểm tra. Nếu tăng dần là dấu hiệu Overfit.
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="text-lg font-bold text-rose-700 font-mono">
+                                {status.metrics?.eval_loss?.toFixed(4) || "---"}
+                              </div>
+                            </div>
+                            <div className="bg-amber-50/50 border border-amber-100 rounded-xl p-3">
+                              <div className="text-[10px] text-amber-500 font-bold uppercase mb-0.5">
+                                Overfit Gap
+                              </div>
+                              <div className={`text-lg font-bold font-mono ${
+                                status.metrics?.eval_loss && status.metrics?.loss 
+                                  ? (status.metrics.eval_loss - status.metrics.loss) > 0.5 ? "text-red-600" : "text-amber-700"
+                                  : "text-slate-400"
+                              }`}>
+                                {status.metrics?.eval_loss && status.metrics?.loss 
+                                  ? (status.metrics.eval_loss - status.metrics.loss).toFixed(4)
+                                  : "0.0000"}
                               </div>
                             </div>
                             <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
@@ -1772,23 +1782,20 @@ export const AutoTrainScreen: React.FC = () => {
                                 {status.metrics?.vram} MB
                               </div>
                             </div>
-                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
-                              <div className="text-[10px] text-slate-400 font-medium mb-0.5">
-                                GPU Util
-                              </div>
-                              <div className="text-lg font-bold text-slate-700">
-                                {status.metrics?.gpu_util}%
-                              </div>
-                            </div>
                           </div>
                         )}
                         {lossHistories[id] && lossHistories[id].length > 0 && (
                           <div className="bg-white border border-slate-100 rounded-xl p-3 h-40">
-                            <div className="text-[10px] text-slate-400 font-medium mb-2">
-                              Training Loss Chart
+                            <div className="text-[10px] text-slate-400 font-medium mb-2 flex items-center gap-4">
+                              <span className="flex items-center gap-1">
+                                <span className="w-2 h-0.5 bg-blue-500 rounded" /> Training Loss
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <span className="w-2 h-0.5 bg-rose-500 rounded" /> Eval Loss (Overfit)
+                              </span>
                             </div>
                             <ResponsiveContainer width="100%" height="100%">
-                              <LineChart data={lossHistories[id]}>
+                              <LineChart data={getChartData(id)}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                                 <XAxis 
                                   dataKey="progress" 
@@ -1800,7 +1807,7 @@ export const AutoTrainScreen: React.FC = () => {
                                   domain={['auto', 'auto']}
                                 />
                                 <Tooltip 
-                                  contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                  contentStyle={{ fontSize: '10px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                                   labelFormatter={(value) => `Progress: ${value}%`}
                                 />
                                 <Line 
@@ -1810,6 +1817,16 @@ export const AutoTrainScreen: React.FC = () => {
                                   strokeWidth={2} 
                                   dot={false}
                                   activeDot={{ r: 4 }}
+                                  connectNulls
+                                />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="eval_loss" 
+                                  stroke="#f43f5e" 
+                                  strokeWidth={2} 
+                                  dot={{ r: 3, fill: '#f43f5e' }}
+                                  activeDot={{ r: 5 }}
+                                  connectNulls
                                 />
                               </LineChart>
                             </ResponsiveContainer>
