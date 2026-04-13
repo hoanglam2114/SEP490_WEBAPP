@@ -5,6 +5,7 @@ import { HuggingFaceController } from '../controllers/huggingfaceController';
 import { EvaluationController } from '../controllers/evaluationController';
 import {
   startTraining,
+  getActiveTrainingJobs,
   getTrainingStatus,
   streamTrainingStatus,
   stopTraining,
@@ -111,6 +112,7 @@ router.delete('/cluster/cache', deleteClusterCache);
 
 // Training Routes
 router.post('/train/start', upload.single('dataset_file'), startTraining);
+router.get('/train/active', getActiveTrainingJobs);
 router.get('/train/status/:jobId', getTrainingStatus);
 router.get('/train/stream/:jobId', streamTrainingStatus);
 router.post('/train/stop/:jobId', stopTraining);

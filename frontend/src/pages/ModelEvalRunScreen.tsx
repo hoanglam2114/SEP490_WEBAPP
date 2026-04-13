@@ -665,7 +665,6 @@ export const ModelEvalRunScreen: React.FC = () => {
     return j.projectName.toLowerCase().includes(q) || j.baseModel.toLowerCase().includes(q) || j.hfRepoId.toLowerCase().includes(q);
   });
   const canSubmit = !!selectedJobId && !!evalFile && !!judgeModel && submitPhase === 'idle';
-  const workerCount = Math.min(activeRuns.length, 3);
   const maxEta = activeRuns.reduce((max, r) => Math.max(max, r.etaSeconds ?? 0), 0);
   // can_create_eval từ GPU (VRAM + slots), fallback về slot count nếu GPU offline
   const canCreateEval = gpuStatus ? gpuStatus.can_create_eval : activeRuns.length < 3;

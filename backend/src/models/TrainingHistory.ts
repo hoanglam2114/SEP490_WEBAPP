@@ -40,6 +40,7 @@ export interface ITrainingHistory extends Document {
   trainingDuration: number;    // thời gian thực tế (milliseconds)
   startedAt: Date;
   completedAt?: Date;
+  lossHistory?: { progress: number; loss: number }[];
   createdAt: Date;
   updatedAt: Date;
 
@@ -95,6 +96,12 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     trainingDuration: { type: Number, default: 0 },  // ms
     startedAt: { type: Date, required: true },
     completedAt: { type: Date },
+    lossHistory: [
+      {
+        progress: { type: Number },
+        loss: { type: Number },
+      },
+    ],
 
     // Model Evaluation
     pinnedEvalId: { type: String, default: null },

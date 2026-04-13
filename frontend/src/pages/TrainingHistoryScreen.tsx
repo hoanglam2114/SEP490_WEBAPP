@@ -1,5 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from 'recharts';
 
 interface TrainingHistoryItem {
   _id: string;
@@ -41,6 +50,7 @@ interface TrainingHistoryItem {
   trainingDuration: number;
   startedAt: string;
   completedAt: string;
+  lossHistory?: { progress: number; loss: number }[];
   createdAt: string;
   latest_checkpoint_file_id?: string;
   workerUrl?: string;
@@ -383,47 +393,88 @@ export const TrainingHistoryScreen: React.FC = () => {
                           </div>
                         </div>
 
-                        {/* Details */}
-                        <div className="space-y-3">
-                          <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Details</h4>
-                          <div className="space-y-2 text-sm">
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Job ID</span>
-                              <span className="text-slate-700 font-mono text-xs">{item.jobId}</span>
+                        {/* Chart or Details */}
+                        <div className="space-y-4">
+                          {item.lossHistory && item.lossHistory.length > 0 ? (
+                            <div className="bg-white border border-slate-200 rounded-xl p-4 h-64 shadow-inner">
+                              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Loss Curve</h4>
+                              <ResponsiveContainer width="100%" height="85%">
+                                <LineChart data={item.lossHistory}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                  <XAxis 
+                                    dataKey="progress" 
+                                    tick={{ fontSize: 10, fill: '#94a3b8' }} 
+                                    tickFormatter={(v) => `${v}%`}
+                                  />
+                                  <YAxis 
+                                    tick={{ fontSize: 10, fill: '#94a3b8' }} 
+                                    domain={['auto', 'auto']}
+                                  />
+                                  <Tooltip 
+                                    contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    labelFormatter={(v) => `Progress: ${v}%`}
+                                  />
+                                  <Line 
+                                    type="monotone" 
+                                    dataKey="loss" 
+                                    stroke="#3b82f6" 
+                                    strokeWidth={2} 
+                                    dot={false}
+                                  />
+                                </LineChart>
+                              </ResponsiveContainer>
                             </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Base Model</span>
-                              <span className="text-slate-700 text-xs font-medium">{item.baseModel}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Dataset</span>
-                              <span className="text-slate-700">{item.datasetName} ({item.datasetSource})</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Column Mapping</span>
-                              <span className="text-slate-700">{item.columnMapping}</span>
-                            </div>
-                            {item.pushToHub && (
-                              <div className="flex justify-between">
-                                <span className="text-slate-500">HF Repo</span>
-                                <span className="text-slate-700">{item.hfRepoId}</span>
+                          ) : (
+                            <div>
+                              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Details</h4>
+                              <div className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                  <span className="text-slate-500">Job ID</span>
+                                  <span className="text-slate-700 font-mono text-xs">{item.jobId}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-500">Base Model</span>
+                                  <span className="text-slate-700 text-xs font-medium">{item.baseModel}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-500">Dataset</span>
+                                  <span className="text-slate-700">{item.datasetName} ({item.datasetSource})</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-500">Training Duration</span>
+                                  <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>
+                                </div>
                               </div>
-                            )}
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Training Duration</span>
-                              <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>
                             </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Started At</span>
-                              <span className="text-slate-700">{formatDate(item.startedAt)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">Completed At</span>
-                              <span className="text-slate-700">{formatDate(item.completedAt)}</span>
-                            </div>
-                          </div>
+                          )}
                         </div>
                       </div>
+
+                      {/* Full Info Details if Chart was shown */}
+                      {item.lossHistory && item.lossHistory.length > 0 && (
+                        <div className="bg-white/50 border border-slate-100 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-y-3 gap-x-6 text-sm">
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Job ID</span>
+                            <span className="text-slate-700 font-mono text-xs">{item.jobId}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Dataset</span>
+                            <span className="text-slate-700">{item.datasetName}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Duration</span>
+                            <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Started</span>
+                            <span className="text-slate-700">{formatDate(item.startedAt)}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Completed</span>
+                            <span className="text-slate-700">{formatDate(item.completedAt)}</span>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Last Log Line */}
                       {item.lastLogLine && (

@@ -136,9 +136,53 @@ export const startTraining = async (req: Request, res: Response) => {
       projectName,
       datasetSource,
       columnMapping,
+      column_mapping, // Accept both camelCase and snake_case
     } = req.body;
 
+    console.log('[Backend] Received columnMapping:', columnMapping);
+    console.log('[Backend] Received column_mapping:', column_mapping);
+
+    const finalColumnMapping = columnMapping || column_mapping || 'text';
+    console.log('[Backend] Using finalColumnMapping:', finalColumnMapping);
+
     const datasetFile = req.file; // populated by multer when a file is uploaded
+
+    // ── Local File Column Validation ──────────────────────────────────────────
+    if (datasetFile) {
+      try {
+        const filePath = datasetFile.path;
+        const fileContent = fs.readFileSync(filePath, { encoding: 'utf-8', flag: 'r' });
+        
+        let columns: string[] = [];
+        if (datasetFile.originalname.endsWith('.json')) {
+          try {
+            const parsed = JSON.parse(fileContent);
+            const item = Array.isArray(parsed) ? parsed[0] : parsed;
+            if (item && typeof item === 'object') {
+              columns = Object.keys(item);
+            }
+          } catch {
+            // Try JSONL
+            const firstLine = fileContent.split('\n')[0];
+            const parsed = JSON.parse(firstLine);
+            if (parsed && typeof parsed === 'object') {
+              columns = Object.keys(parsed);
+            }
+          }
+        } else if (datasetFile.originalname.endsWith('.csv')) {
+          const firstLine = fileContent.split('\n')[0];
+          columns = firstLine.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+        }
+
+        if (columns.length > 0 && !columns.includes(finalColumnMapping)) {
+          return res.status(400).json({
+            error: `Column Mapping Error: The column '${finalColumnMapping}' was not found in your dataset file. Detected columns: ${columns.join(', ')}`
+          });
+        }
+      } catch (err) {
+        console.warn('[Backend] Could not validate columns in file:', err);
+      }
+    }
 
     // ── Validation ──────────────────────────────────────────────────────────
     if (!model_name || typeof model_name !== 'string') {
@@ -192,6 +236,11 @@ export const startTraining = async (req: Request, res: Response) => {
       // Google Drive for checkpoint saving
       drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
       service_account: parsedGoogleCredentials,
+      // Pass column mapping to GPU service in multiple formats to be safe
+      column_mapping: finalColumnMapping,
+      dataset_text_field: finalColumnMapping,
+      text_column: finalColumnMapping,
+      target_column: finalColumnMapping,
     };
 
     // If no file uploaded, embed HF Hub ID directly into config
@@ -201,6 +250,9 @@ export const startTraining = async (req: Request, res: Response) => {
 
     const form = new FormData();
     form.append('config', JSON.stringify(config));
+    // Also append as top-level fields for some GPU service versions
+    form.append('column_mapping', finalColumnMapping);
+    form.append('dataset_text_field', finalColumnMapping);
 
     if (datasetFile) {
       form.append('file', fs.createReadStream(datasetFile.path), {
@@ -288,7 +340,11 @@ export const startTraining = async (req: Request, res: Response) => {
         status: 'QUEUED', // <--- CHANGE: Set initial status to QUEUED
         trainingDuration: 0,
         startedAt: new Date(),
-        config_snapshot: req.body,
+        config_snapshot: {
+          ...req.body,
+          column_mapping: finalColumnMapping,
+          dataset_text_field: finalColumnMapping,
+        },
         datasetPath: savedDatasetPath,
         workerUrl: workerUrl,
       });
@@ -301,6 +357,23 @@ export const startTraining = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Backend] startTraining error:', err);
     return res.status(500).json({ error: err.message || 'Failed to start training' });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/train/active
+// Returns all active training jobs from MongoDB
+// ---------------------------------------------------------------------------
+export const getActiveTrainingJobs = async (_req: Request, res: Response) => {
+  try {
+    const activeJobs = await TrainingHistory.find({
+      status: { $in: ['QUEUED', 'PENDING', 'LOADING_MODEL', 'TRAINING', 'RUNNING'] }
+    }).sort({ startedAt: -1 });
+    
+    return res.json(activeJobs);
+  } catch (err: any) {
+    console.error('[Backend] getActiveTrainingJobs error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to get active jobs' });
   }
 };
 
@@ -364,11 +437,16 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
       const data: any = await response.json();
 
       // IF latest_checkpoint exists, update the DB so we can resume later
-      if (data.latest_checkpoint) {
+      if (data.latest_checkpoint || (data.metrics && typeof data.metrics.loss === 'number')) {
         TrainingHistory.updateOne(
           { jobId },
-          { latest_checkpoint_file_id: data.latest_checkpoint }
-        ).catch(err => console.error('[Backend] Failed to update latest_checkpoint:', err));
+          { 
+            ...(data.latest_checkpoint ? { latest_checkpoint_file_id: data.latest_checkpoint } : {}),
+            ...(data.metrics && typeof data.metrics.loss === 'number' 
+                ? { $push: { lossHistory: { progress: data.progress || 0, loss: data.metrics.loss } } } 
+                : {})
+          }
+        ).catch(err => console.error('[Backend] Failed to update history during stream:', err));
       }
 
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -420,6 +498,16 @@ export const stopTraining = async (req: Request, res: Response) => {
       headers: { 'ngrok-skip-browser-warning': 'true' }
     });
     const data = await response.json();
+
+    await TrainingHistory.updateOne(
+      { jobId },
+      {
+        status: 'STOPPED',
+        completedAt: new Date(),
+      }
+    );
+
+    workerManager.decrementJobs(workerUrl);
     return res.json(data);
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to stop training' });
