@@ -1,11 +1,11 @@
-﻿import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Toaster, toast } from 'react-hot-toast';
 import { apiService } from '../services/api';
 
 type EvalFormat = 'openai' | 'alpaca';
-type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'none';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
 type EvalResults = {
   accuracy?: number;

@@ -36,7 +36,7 @@ type EvaluationScores = {
   reason: string;
 };
 
-type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'none';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
 type RowEvaluationEntry = {
   scores: EvaluationScores;
@@ -116,140 +116,16 @@ const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 8, label: 'Finish' },
 ];
 
-type NumericPoint = number[];
-
 type VisualizationResult = {
   elbow: Array<{ k: number; wcss: number }>;
   kDistance: Array<{ rank: number; distance: number }>;
   pointCount: number;
+  noiseCount?: number;
 };
 
-function euclideanDistance(a: NumericPoint, b: NumericPoint): number {
-  let sum = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    const diff = (a[i] || 0) - (b[i] || 0);
-    sum += diff * diff;
-  }
-  return Math.sqrt(sum);
-}
-
-function vectorMean(points: NumericPoint[]): NumericPoint {
-  if (!points.length) return [];
-  const dim = points[0].length;
-  const mean = new Array(dim).fill(0);
-  points.forEach((p) => {
-    for (let i = 0; i < dim; i += 1) {
-      mean[i] += p[i] || 0;
-    }
-  });
-  for (let i = 0; i < dim; i += 1) {
-    mean[i] /= points.length;
-  }
-  return mean;
-}
-
-function computeKMeansWcss(points: NumericPoint[], k: number, maxIterations = 15): number {
-  if (!points.length) return 0;
-  const safeK = Math.max(1, Math.min(k, points.length));
-
-  let centroids = points.slice(0, safeK).map((p) => [...p]);
-  let assignments = new Array(points.length).fill(0);
-
-  for (let iter = 0; iter < maxIterations; iter += 1) {
-    assignments = points.map((point) => {
-      let minDist = Number.POSITIVE_INFINITY;
-      let best = 0;
-      centroids.forEach((centroid, idx) => {
-        const d = euclideanDistance(point, centroid);
-        if (d < minDist) {
-          minDist = d;
-          best = idx;
-        }
-      });
-      return best;
-    });
-
-    const nextCentroids = new Array(safeK).fill(0).map(() => [] as NumericPoint[]);
-    points.forEach((point, idx) => {
-      nextCentroids[assignments[idx]].push(point);
-    });
-
-    centroids = nextCentroids.map((clusterPoints, idx) => {
-      if (!clusterPoints.length) {
-        return centroids[idx];
-      }
-      return vectorMean(clusterPoints);
-    });
-  }
-
-  let wcss = 0;
-  points.forEach((point, idx) => {
-    const centroid = centroids[assignments[idx]];
-    const d = euclideanDistance(point, centroid);
-    wcss += d * d;
-  });
-
-  return Number(wcss.toFixed(3));
-}
-
-function computeElbow(points: NumericPoint[]): Array<{ k: number; wcss: number }> {
-  if (points.length < 2) return [];
-  const maxK = Math.min(10, points.length);
-  const result: Array<{ k: number; wcss: number }> = [];
-  for (let k = 1; k <= maxK; k += 1) {
-    result.push({ k, wcss: computeKMeansWcss(points, k) });
-  }
-  return result;
-}
-
-function computeKDistance(points: NumericPoint[], minSamples = 3): Array<{ rank: number; distance: number }> {
-  if (points.length <= minSamples) return [];
-
-  const distances = points.map((point, idx) => {
-    const all = points
-      .map((candidate, j) => {
-        if (idx === j) return Number.POSITIVE_INFINITY;
-        return euclideanDistance(point, candidate);
-      })
-      .sort((a, b) => a - b);
-
-    return all[minSamples - 1];
-  });
-
-  const sorted = [...distances].sort((a, b) => b - a);
-  return sorted.map((distance, index) => ({
-    rank: index + 1,
-    distance: Number(distance.toFixed(4)),
-  }));
-}
-
-function buildFeatureVectors(data: any[], mode: PreviewMode): NumericPoint[] {
-  if (!data.length) return [];
-
-  if (mode === 'openai') {
-    const convs = normalizeOpenAIConversations(data);
-    return convs.map((conv) => {
-      const messages = conv.messages || [];
-      const userCount = messages.filter((m) => m.role === 'user').length;
-      const assistantCount = messages.filter((m) => m.role === 'assistant').length;
-      const avgUserLen = userCount
-        ? messages.filter((m) => m.role === 'user').reduce((s, m) => s + String(m.content || '').length, 0) / userCount
-        : 0;
-      const avgAssistantLen = assistantCount
-        ? messages.filter((m) => m.role === 'assistant').reduce((s, m) => s + String(m.content || '').length, 0) / assistantCount
-        : 0;
-      const totalLen = messages.reduce((s, m) => s + String(m.content || '').length, 0);
-      return [messages.length, userCount, assistantCount, avgUserLen, avgAssistantLen, totalLen];
-    });
-  }
-
-  return data.map((item) => {
-    const instruction = String(item?.instruction ?? item?.query ?? '').trim();
-    const input = String(item?.input ?? item?.context ?? '').trim();
-    const output = String(item?.output ?? item?.answer ?? item?.response ?? '').trim();
-    return [instruction.length, input.length, output.length, instruction.split(/\s+/).filter(Boolean).length, output.split(/\s+/).filter(Boolean).length, (instruction + input + output).length];
-  });
-}
+// NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
+// computeElbow, computeKDistance, buildFeatureVectors) have been removed.
+// Step 3 now uses GPU Service API for semantic embedding-based computation.
 
 function shuffle<T>(arr: T[]): T[] {
   const next = [...arr];
@@ -482,6 +358,7 @@ function ConvertedDatasetTable({
   onEvaluationGroupFilterChange,
   onEvaluate,
   onEvaluateOpenAI,
+  onEvaluateDeepseek,
   onAccept,
   onReset,
   onToggleRow,
@@ -489,6 +366,7 @@ function ConvertedDatasetTable({
   extraActions,
   isEvaluating,
   isEvaluatingOpenAI,
+  isEvaluatingDeepseek,
   disableEvaluate,
   isAccepting,
   onVisibleRowsChange,
@@ -507,6 +385,7 @@ function ConvertedDatasetTable({
   onEvaluationGroupFilterChange?: (value: 'all' | number) => void;
   onEvaluate?: () => void;
   onEvaluateOpenAI?: () => void;
+  onEvaluateDeepseek?: () => void;
   onAccept?: () => void;
   onReset?: () => void;
   onToggleRow?: (row: DisplayRow, checked: boolean) => void;
@@ -514,6 +393,7 @@ function ConvertedDatasetTable({
   extraActions?: any;
   isEvaluating?: boolean;
   isEvaluatingOpenAI?: boolean;
+  isEvaluatingDeepseek?: boolean;
   disableEvaluate?: boolean;
   isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
@@ -652,7 +532,18 @@ function ConvertedDatasetTable({
                   className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:bg-gray-400 text-white text-xs font-semibold"
                 >
                   {isEvaluatingOpenAI ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                  <span>Evaluate witn OpenAI</span>
+                  <span>Evaluate with OpenAI</span>
+                </button>
+              )}
+
+              {onEvaluateDeepseek && (
+                <button
+                  onClick={onEvaluateDeepseek}
+                  disabled={!hasRows || disableEvaluate || isEvaluatingDeepseek}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white text-xs font-semibold"
+                >
+                  {isEvaluatingDeepseek ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span>Evaluate with Deepseek</span>
                 </button>
               )}
 
@@ -1304,6 +1195,11 @@ export function ConversionPage() {
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
   const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null);
+  const [maxK, setMaxK] = useState<number>(20);
+  const [dbscanEps, setDbscanEps] = useState<number>(0.15);
+  const [dbscanMinSamples, setDbscanMinSamples] = useState<number>(6);
+  const [clusterK, setClusterK] = useState<number>(8);
+  const [isVisualizing, setIsVisualizing] = useState<boolean>(false);
   const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
   const [manualRowIds, setManualRowIds] = useState<Set<string>>(new Set());
   const [refinementSelectedRowIds, setRefinementSelectedRowIds] = useState<Set<string>>(new Set());
@@ -1455,7 +1351,7 @@ export function ConversionPage() {
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: async (params: { provider: 'gemini' | 'openai'; rows: DisplayRow[]; skipManual: boolean }) => {
+    mutationFn: async (params: { provider: 'gemini' | 'openai' | 'deepseek'; rows: DisplayRow[]; skipManual: boolean }) => {
       const rowsToEvaluate = params.rows.filter((row) => (params.skipManual ? !manualRowIds.has(row.id) : true));
       if (!rowsToEvaluate.length) throw new Error('No rows to evaluate.');
 
@@ -1508,7 +1404,7 @@ export function ConversionPage() {
       return { count: Object.keys(newMap).length, provider: params.provider };
     },
     onSuccess: ({ count, provider }) => {
-      const label = provider === 'openai' ? 'OpenAI' : 'Gemini';
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
       toast.success(`Evaluation completed. ${count} rows scored by ${label}.`);
     },
     onError: (error: any) => {
@@ -1659,7 +1555,7 @@ export function ConversionPage() {
   const clusterMutation = useMutation({
     mutationFn: async () => {
       if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
-      return apiService.clusterData(conversionResult.data);
+      return apiService.clusterData(conversionResult.data, clusterK, dbscanEps, dbscanMinSamples);
     },
     onSuccess: (result) => {
       setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
@@ -1736,20 +1632,28 @@ export function ConversionPage() {
     toast.success('Dataset reset to original converted state.');
   };
 
-  const handleVisualize = () => {
+  const handleVisualize = async () => {
     if (!conversionResult?.data?.length) {
       toast.error('No data available for visualization.');
       return;
     }
-    const vectors = buildFeatureVectors(conversionResult.data, previewMode);
-    if (!vectors.length) {
-      toast.error('Unable to extract numeric features from current data.');
-      return;
+    setIsVisualizing(true);
+    try {
+      const result = await apiService.clusterVisualize(conversionResult.data, maxK, dbscanEps, dbscanMinSamples);
+      setVisualizationResult({
+        elbow: result.elbow,
+        kDistance: result.kDistance,
+        pointCount: result.pointCount,
+        noiseCount: result.noiseCount,
+      });
+      toast.success(`GPU Visualization complete — ${result.pointCount} points analyzed.`);
+    } catch (err: any) {
+      console.error('Visualize error:', err);
+      const msg = err?.response?.data?.error || err?.message || 'Failed to compute visualization.';
+      toast.error(msg);
+    } finally {
+      setIsVisualizing(false);
     }
-    const elbow = computeElbow(vectors);
-    const kDistance = computeKDistance(vectors, 3);
-    setVisualizationResult({ elbow, kDistance, pointCount: vectors.length });
-    toast.success('Visualization metrics were computed from real uploaded data.');
   };
 
   const handleClassify = () => {
@@ -2100,47 +2004,106 @@ export function ConversionPage() {
       {currentStep === 3 && (
         <div className="space-y-5">
           <div className="bg-white border border-gray-200 rounded-xl p-5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-4">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Step 3 - Visualization</h3>
-                <p className="text-sm text-gray-600">Compute Elbow and K-Distance curves from uploaded JSON data.</p>
+                <p className="text-sm text-gray-600">Send dataset to GPU Service to compute Elbow &amp; K-Distance curves using semantic embeddings.</p>
               </div>
-              <button
-                onClick={handleVisualize}
-                className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-lg font-bold shadow-lg"
-              >
-                Visualize
-              </button>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">Max K:</label>
+                  <input
+                    type="number"
+                    min={2}
+                    max={50}
+                    value={maxK}
+                    onChange={(e) => setMaxK(Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 20)))}
+                    className="w-16 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">EPS:</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="1.0"
+                    value={dbscanEps}
+                    onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.15)}
+                    className="w-20 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">Min Samples:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={dbscanMinSamples}
+                    onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 6)}
+                    className="w-16 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <button
+                  onClick={handleVisualize}
+                  disabled={isVisualizing || !conversionResult?.data?.length}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-xl text-sm font-bold shadow-lg transition-colors"
+                >
+                  {isVisualizing ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Computing...
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5" />
+                      Visualize (GPU)
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
           {visualizationResult && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-white border border-gray-200 rounded-xl p-4 h-[360px]">
-                <h4 className="text-sm font-semibold text-gray-800 mb-3">Elbow Method (WCSS)</h4>
+            <>
+              <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 flex items-center gap-3 text-sm text-blue-800">
+                <Sparkles className="w-5 h-5 text-blue-500 flex-shrink-0" />
+                <span>
+                  <strong>{visualizationResult.pointCount}</strong> points analyzed
+                  {typeof visualizationResult.noiseCount === 'number' && (
+                    <>, <strong>{visualizationResult.noiseCount}</strong> noise points filtered by DBSCAN</>
+                  )}
+                </span>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-xl p-6 h-[600px]">
+                <h4 className="text-base font-bold text-gray-800 mb-4 text-center">Phương pháp Khuỷu tay (Elbow Method) để tìm K tối ưu</h4>
                 <ResponsiveContainer width="100%" height="90%">
-                  <LineChart data={visualizationResult.elbow}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="k" />
-                    <YAxis />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="wcss" stroke="#2563eb" strokeWidth={2} dot />
+                  <LineChart data={visualizationResult.elbow} margin={{ top: 20, right: 30, left: 20, bottom: 25 }}>
+                    <CartesianGrid strokeDasharray="5 5" stroke="#ccc" />
+                    <XAxis 
+                      dataKey="k" 
+                      label={{ value: 'Số lượng cụm (K)', position: 'insideBottom', offset: -15 }} 
+                      ticks={Array.from({ length: maxK }, (_, i) => i + 1)}
+                    />
+                    <YAxis 
+                      label={{ value: 'WCSS (Inertia)', angle: -90, position: 'insideLeft', offset: 0 }} 
+                    />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '8px', border: '1px solid #ccc' }}
+                    />
+                    <Line 
+                      type="linear" 
+                      dataKey="wcss" 
+                      stroke="blue" 
+                      strokeWidth={2} 
+                      dot={{ r: 5, fill: 'blue', stroke: 'blue' }} 
+                      activeDot={{ r: 7 }}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              <div className="bg-white border border-gray-200 rounded-xl p-4 h-[360px]">
-                <h4 className="text-sm font-semibold text-gray-800 mb-3">K-Distance (min_samples=3)</h4>
-                <ResponsiveContainer width="100%" height="90%">
-                  <LineChart data={visualizationResult.kDistance}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="rank" />
-                    <YAxis />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="distance" stroke="#0ea5e9" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            </>
           )}
 
           <StepNavigation showBack showNext onBack={() => setCurrentStep(2)} onNext={() => setCurrentStep(4)} nextDisabled={!canMoveFromStep3} />
@@ -2154,13 +2117,54 @@ export function ConversionPage() {
               <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />
             </div>
             <div className="space-y-4 lg:col-span-1">
-              <button
-                onClick={() => clusterMutation.mutate()}
-                disabled={!conversionResult || clusterMutation.isPending}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold"
-              >
-                {clusterMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Clustering...</span></> : <span>Cluster</span>}
-              </button>
+              <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+                <h4 className="text-sm font-semibold text-gray-900 border-b border-gray-100 pb-2">Clustering Parameters</h4>
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Target K (Clusters)</label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={50}
+                      value={clusterK}
+                      onChange={(e) => setClusterK(Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 8)))}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">DBSCAN EPS</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        max="1.0"
+                        value={dbscanEps}
+                        onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.15)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Min Samples</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max={20}
+                        value={dbscanMinSamples}
+                        onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 6)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => clusterMutation.mutate()}
+                  disabled={!conversionResult || clusterMutation.isPending}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
+                >
+                  {clusterMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Clustering...</span></> : <><Zap className="w-4 h-4" /><span>Cluster</span></>}
+                </button>
+              </div>
 
               {clusterGroups.length > 0 && (
                 <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
@@ -2249,12 +2253,14 @@ export function ConversionPage() {
             onEvaluationGroupFilterChange={setEvaluationGroupFilter}
             onEvaluate={() => evaluateMutation.mutate({ provider: 'gemini', rows: visibleRowsInEvaluation, skipManual: true })}
             onEvaluateOpenAI={() => evaluateMutation.mutate({ provider: 'openai', rows: visibleRowsInEvaluation, skipManual: true })}
+            onEvaluateDeepseek={() => evaluateMutation.mutate({ provider: 'deepseek', rows: visibleRowsInEvaluation, skipManual: true })}
             onAccept={() => acceptMutation.mutate()}
             onReset={handleResetEvaluation}
             onToggleRow={handleToggleManualRow}
             onManualFieldChange={handleManualFieldChange}
             isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
             isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
+            isEvaluatingDeepseek={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'deepseek'}
             disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
             isAccepting={acceptMutation.isPending}
             onVisibleRowsChange={setVisibleRowsInEvaluation}
@@ -2296,6 +2302,10 @@ export function ConversionPage() {
               const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
               evaluateMutation.mutate({ provider: 'openai', rows, skipManual: false });
             }}
+            onEvaluateDeepseek={() => {
+              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
+              evaluateMutation.mutate({ provider: 'deepseek', rows, skipManual: false });
+            }}
             onAccept={() => acceptMutation.mutate()}
             onReset={handleResetEvaluation}
             onToggleRow={(row, checked) => {
@@ -2318,6 +2328,7 @@ export function ConversionPage() {
             }
             isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
             isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
+            isEvaluatingDeepseek={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'deepseek'}
             disableEvaluate={!refinementSelectedRowIds.size}
             isAccepting={acceptMutation.isPending}
           />

@@ -26,7 +26,7 @@ import {
   appendMessageToSession,
   deleteSession
 } from '../controllers/chatSessionController';
-import { clusterData, clusterFilter, deleteClusterCache } from '../controllers/clusterController';
+import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize } from '../controllers/clusterController';
 
 
 import {
@@ -106,6 +106,7 @@ router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistor
 router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
 
 // Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
+router.post('/cluster/visualize', clusterVisualize);
 router.post('/cluster', clusterData);
 router.post('/cluster/filter', clusterFilter);
 router.delete('/cluster/cache', deleteClusterCache);

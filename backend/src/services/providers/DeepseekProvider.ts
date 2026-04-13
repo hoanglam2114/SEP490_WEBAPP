@@ -4,18 +4,16 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-export class OpenAIProvider implements ILlmProvider {
+export class DeepseekProvider implements ILlmProvider {
   private readonly apiKey: string;
-  private readonly model: string;
   private readonly baseUrl: string;
 
   constructor() {
-    this.apiKey = process.env.OPENAI_API_KEY || '';
-    this.model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    this.baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+    this.apiKey = process.env.DEEPSEEK_API_KEY || '';
+    this.baseUrl = 'https://api.deepseek.com';
 
     if (!this.apiKey) {
-      throw new Error('OPENAI_API_KEY is missing.');
+      console.warn('DEEPSEEK_API_KEY is missing. Evaluation using Deepseek will fail.');
     }
   }
 
@@ -23,7 +21,7 @@ export class OpenAIProvider implements ILlmProvider {
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
       {
-        model: this.model,
+        model: 'deepseek-chat',
         messages: [
           {
             role: 'system',
@@ -35,7 +33,6 @@ export class OpenAIProvider implements ILlmProvider {
           },
         ],
         temperature: 0.1,
-        max_completion_tokens: 8192,
       },
       {
         headers: {

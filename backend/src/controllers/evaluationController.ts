@@ -3,6 +3,7 @@ import { EvaluationSample, EvaluationService, RefinementSample } from '../servic
 import { EvaluationHistory } from '../models/EvaluationHistory';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
+import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 
 type EvalFormat = 'openai' | 'alpaca';
 
@@ -70,8 +71,12 @@ function normalizeEvaluationData(format: EvalFormat, rawData: Record<string, any
 
 export class EvaluationController {
     private getService(provider?: string): EvaluationService {
-        if (String(provider || '').toLowerCase() === 'openai') {
+        const p = String(provider || '').toLowerCase();
+        if (p === 'openai') {
             return new EvaluationService(new OpenAIProvider());
+        }
+        if (p === 'deepseek') {
+            return new EvaluationService(new DeepseekProvider());
         }
         return new EvaluationService(new GeminiProvider());
     }
@@ -86,7 +91,7 @@ export class EvaluationController {
             const { data, format, provider } = req.body as {
                 data: EvaluationSample[];
                 format?: string;
-                provider?: 'gemini' | 'openai';
+                provider?: 'gemini' | 'openai' | 'deepseek';
             };
 
             if (!data || !Array.isArray(data) || data.length === 0) {
@@ -151,7 +156,7 @@ export class EvaluationController {
                 items: Array<{
                     format: string;
                     data: Record<string, any>;
-                    evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
+                    evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
                     results: {
                         accuracy?: number;
                         clarity?: number;
@@ -178,7 +183,7 @@ export class EvaluationController {
                     item &&
                     (item.format === 'openai' || item.format === 'alpaca') &&
                     item.data &&
-                    (item.evaluatedBy === 'manual' || item.evaluatedBy === 'gemini' || item.evaluatedBy === 'openai' || item.evaluatedBy === 'none') &&
+                    ['manual', 'gemini', 'openai', 'deepseek', 'none'].includes(item.evaluatedBy) &&
                     item.results &&
                     Number.isFinite(item.results.overall)
                 )
@@ -328,7 +333,7 @@ export class EvaluationController {
                     overall: number;
                     reason: string;
                 };
-                evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
+                evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
             };
 
             if (!id) {
@@ -341,8 +346,8 @@ export class EvaluationController {
                 return;
             }
 
-            if (evaluatedBy !== 'manual' && evaluatedBy !== 'gemini' && evaluatedBy !== 'openai' && evaluatedBy !== 'none') {
-                res.status(400).json({ error: 'evaluatedBy chỉ nhận manual, gemini, openai hoặc none.' });
+            if (!['manual', 'gemini', 'openai', 'deepseek', 'none'].includes(evaluatedBy)) {
+                res.status(400).json({ error: 'evaluatedBy chỉ nhận manual, gemini, openai, deepseek hoặc none.' });
                 return;
             }
 

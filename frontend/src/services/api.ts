@@ -163,7 +163,7 @@ export const apiService = {
     data: any[],
     format?: string,
     sampleSize?: number,
-    provider: 'gemini' | 'openai' = 'gemini'
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
@@ -187,7 +187,7 @@ export const apiService = {
     items: Array<{
       format: string;
       data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
       results: {
         accuracy?: number;
         clarity?: number;
@@ -223,7 +223,7 @@ export const apiService = {
         projectName: string;
         format: 'openai' | 'alpaca';
         data: Record<string, any>;
-        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
+        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
         results: {
           accuracy?: number;
           clarity?: number;
@@ -268,20 +268,30 @@ export const apiService = {
         overall: number;
         reason: string;
       };
-      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'none';
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
     }
   ): Promise<{ message: string; item: any }> => {
     const response = await api.patch(`/evaluate/history/${id}`, payload);
     return response.data;
   },
 
-  clusterData: (data: any[]): Promise<{
+  clusterData: (
+    data: any[],
+    k?: number,
+    eps?: number,
+    minSamples?: number
+  ): Promise<{
     data: any[];
     groups: any[];
     assignments: number[];
   }> =>
     api
-      .post('/cluster', { data })
+      .post('/cluster', {
+        data,
+        k,
+        eps,
+        min_samples: minSamples,
+      })
       .then((res) => res.data),
 
   clusterFilter: (
@@ -299,6 +309,21 @@ export const apiService = {
   deleteClusterCache: (): Promise<any> =>
     api
       .delete('/cluster/cache')
+      .then((res) => res.data),
+
+  clusterVisualize: (
+    data: any[],
+    maxK: number = 20,
+    eps: number = 0.15,
+    minSamples: number = 6
+  ): Promise<{
+    elbow: Array<{ k: number; wcss: number }>;
+    kDistance: Array<{ rank: number; distance: number }>;
+    pointCount: number;
+    noiseCount?: number;
+  }> =>
+    api
+      .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
       .then((res) => res.data),
 
   getChatSessions: async (limit = 30): Promise<any[]> => {

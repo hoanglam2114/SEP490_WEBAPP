@@ -1,0 +1,167 @@
+# GPU-based Elbow/K-Distance Visualization cho Step 3
+
+## Bối cảnh
+
+Hiện tại, Step 3 (Visualization) trong `ConversionPage.tsx` tính toán **Elbow (WCSS)** và **K-Distance** hoàn toàn ở **frontend** bằng JavaScript thuần. Cách này sử dụng feature vectors dựa trên **độ dài văn bản** (character count, word count) thay vì **semantic embeddings** thực sự.
+
+Code Python được cung cấp sử dụng:
+1. **SentenceTransformer** (`intfloat/multilingual-e5-base`) → sinh embedding 768-d cho mỗi utterance
+2. **Mean pooling** → tổng hợp embedding thành vector cấp conversation
+3. **DBSCAN** → lọc noise trước khi chạy Elbow
+4. **K-Means** từ k=1→20 → tính WCSS cho Elbow chart
+
+**Mục tiêu**: Chuyển phần tính toán nặng (embedding + DBSCAN + K-Means) sang **GPU Service** (Python/Colab), backend Node.js chỉ proxy, frontend nhận kết quả và vẽ biểu đồ bằng Recharts.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **GPU_SERVICE_URL**: Hiện project đã có `GPU_SERVICE_URL` trong `.env` (`https://screwable-dreama-illuminatingly.ngrok-free.dev`). Plan này giả định GPU Service (Flask Python trên Colab) sẽ được bạn thêm endpoint mới `/api/cluster/visualize` phía Python. Plan này **CHỈ** bao gồm phần thay đổi ở **Node.js backend** và **React frontend**.
+
+> [!WARNING]
+> **Python GPU Service không nằm trong scope repo này**. Bạn cần tự triển khai endpoint `/api/cluster/visualize` trên Colab. Plan sẽ cung cấp **spec** đầy đủ cho endpoint đó.
+
+## Kiến trúc tổng quan
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend (React)
+    participant BE as Backend (Node.js)
+    participant GPU as GPU Service (Colab)
+    
+    FE->>BE: POST /api/cluster/visualize<br/>{data: OpenAI[] | Alpaca[], max_k: 20}
+    BE->>GPU: POST /api/cluster/visualize<br/>{data, max_k}
+    Note over GPU: 1. SentenceTransformer encode<br/>2. Mean pooling<br/>3. DBSCAN lọc noise<br/>4. K-Means k=1→max_k → WCSS<br/>5. K-Distance sorted
+    GPU-->>BE: {elbow: [{k, wcss}], kDistance: [{rank, distance}], pointCount}
+    BE-->>FE: Forward JSON trực tiếp
+    FE->>FE: Vẽ biểu đồ Recharts
+```
+
+## Proposed Changes
+
+### GPU Service Python Spec (Không code — chỉ spec)
+
+Endpoint mới trên Flask/Colab:
+
+```
+POST /api/cluster/visualize
+
+Request Body:
+{
+  "data": [
+    { "messages": [{ "role": "user", "content": "..." }, ...] },
+    ...
+  ],
+  "max_k": 20
+}
+
+Response:
+{
+  "elbow": [
+    { "k": 1, "wcss": 12345.67 },
+    { "k": 2, "wcss": 8901.23 },
+    ...
+  ],
+  "kDistance": [
+    { "rank": 1, "distance": 0.8523 },
+    { "rank": 2, "distance": 0.7812 },
+    ...
+  ],
+  "pointCount": 156,
+  "noiseCount": 12
+}
+```
+
+Logic Python bên trong:
+1. Extract user utterances từ `data`
+2. Encode bằng `SentenceTransformer('intfloat/multilingual-e5-base')` với prefix `"query: "`
+3. Mean pooling per conversation → L2 normalize
+4. DBSCAN (eps=0.15, min_samples=6, metric='cosine') → lọc noise
+5. K-Means k=1→max_k trên clean embeddings → output WCSS array
+6. K-Distance: tính khoảng cách nearest neighbor thứ `min_samples` cho mỗi điểm, sort giảm dần
+
+---
+
+### Backend Node.js
+
+#### [MODIFY] [clusterController.ts](file:///c:/Users/Do%20Duan/Documents/LEARNING/Spring%202026/SEP490/Source%20Code/temp/SEP_PROJECT_chatbot/Update%20log/SEP490_WEBAPP%20%281%29/SEP490_WEBAPP/backend/src/controllers/clusterController.ts)
+
+Thêm hàm `clusterVisualize`:
+- Nhận `req.body.data` (array dataset) và `req.body.max_k` (default 20)
+- Forward sang `GPU_SERVICE_URL/api/cluster/visualize`
+- Trả JSON response cho frontend
+
+#### [MODIFY] [routes/index.ts](file:///c:/Users/Do%20Duan/Documents/LEARNING/Spring%202026/SEP490/Source%20Code/temp/SEP_PROJECT_chatbot/Update%20log/SEP490_WEBAPP%20%281%29/SEP490_WEBAPP/backend/src/routes/index.ts)
+
+Thêm route:
+```typescript
+router.post('/cluster/visualize', clusterVisualize);
+```
+
+> [!IMPORTANT]
+> Route `/cluster/visualize` **phải đặt trước** `/cluster` (wildcard) trong file routes. Thực tế route `/cluster` là POST exact match nên không conflict, nhưng đặt cùng group cho rõ ràng.
+
+---
+
+### Frontend React
+
+#### [MODIFY] [api.ts](file:///c:/Users/Do%20Duan/Documents/LEARNING/Spring%202026/SEP490/Source%20Code/temp/SEP_PROJECT_chatbot/Update%20log/SEP490_WEBAPP%20%281%29/SEP490_WEBAPP/frontend/src/services/api.ts)
+
+Thêm method mới:
+```typescript
+clusterVisualize: (data: any[], maxK?: number): Promise<{
+  elbow: Array<{ k: number; wcss: number }>;
+  kDistance: Array<{ rank: number; distance: number }>;
+  pointCount: number;
+  noiseCount?: number;
+}> =>
+  api.post('/cluster/visualize', { data, max_k: maxK ?? 20 })
+    .then(res => res.data),
+```
+
+#### [MODIFY] [ConversionPage.tsx](file:///c:/Users/Do%20Duan/Documents/LEARNING/Spring%202026/SEP490/Source%20Code/temp/SEP_PROJECT_chatbot/Update%20log/SEP490_WEBAPP%20%281%29/SEP490_WEBAPP/frontend/src/pages/ConversionPage.tsx)
+
+**Thay đổi chính ở Step 3:**
+
+1. **Thay `handleVisualize`** từ computed-locally → gọi API `clusterVisualize`
+   - Sử dụng `useMutation` pattern (giống `clusterMutation`)
+   - Loading state với spinner
+   - Error handling + toast
+
+2. **Thêm input `maxK`** để user tuỳ chỉnh (default 20)
+
+3. **Thêm hiển thị thông tin**: `pointCount` (số điểm sau lọc DBSCAN), `noiseCount` (số bị lọc)
+
+4. **Xoá code local computation**: Xoá hoặc giữ lại các hàm `computeElbow`, `computeKMeansWcss`, `computeKDistance`, `buildFeatureVectors`, `euclideanDistance`, `vectorMean` — **chúng sẽ không được sử dụng nữa** cho step 3 nhưng có thể giữ lại làm fallback.
+
+**Chi tiết thay đổi UI Step 3:**
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Step 3 - Visualization                              │
+│ Gửi dataset tới GPU Service để tính Elbow & K-Dist  │
+│                                                      │
+│ Max K: [___20___]   [🔄 Visualize (GPU)]            │
+│                                                      │
+│ ⓘ 156 points analyzed, 12 noise points filtered     │
+├────────────────────────┬────────────────────────────┤
+│  Elbow Method (WCSS)   │  K-Distance (min_samples)  │
+│  [Recharts LineChart]  │  [Recharts LineChart]       │
+└────────────────────────┴────────────────────────────┘
+```
+
+## Open Questions
+
+> [!IMPORTANT]
+> 1. **Bạn đã có sẵn GPU Service (Flask) trên Colab chưa?** Nếu chưa, bạn có muốn tôi viết cả file Python Flask cho endpoint `/api/cluster/visualize` không?
+> 2. **Có cần giữ lại fallback local computation trên frontend** (dùng feature vectors đơn giản) khi GPU Service offline không? Hay xoá hẳn code local?
+
+## Verification Plan
+
+### Automated Tests
+- Khởi động backend (`npm run dev`) → gọi `POST /api/cluster/visualize` với mock data → xác nhận proxy hoạt động
+- Khởi động frontend → navigate đến Step 3 → click "Visualize" → xác nhận biểu đồ render đúng
+
+### Manual Verification  
+- Kiểm tra khi GPU Service offline → toast error message rõ ràng
+- Kiểm tra biểu đồ Elbow hiển thị đúng WCSS giảm dần khi K tăng
+- Kiểm tra biểu đồ K-Distance hiển thị đường cong giảm dần
