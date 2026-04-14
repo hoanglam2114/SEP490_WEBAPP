@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import fetch from 'node-fetch'; // assuming node-fetch is available based on package.json
+import { ChatHistory } from '../models/ChatHistory';
 
 const gpuServiceUrl = process.env.GPU_SERVICE_URL ? process.env.GPU_SERVICE_URL.replace(/\/$/, '') : 'http://localhost:5000';
 const PYTHON_INFERENCE_URL = `${gpuServiceUrl}/api/infer`;
@@ -128,7 +129,29 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
     // Pipe the response body from Python server to Express response
     if (inferResponse.body) {
-      inferResponse.body.pipe(res);
+      inferResponse.body.pipe(res, { end: false });
+      inferResponse.body.on('end', () => {
+        const input_parameters = {
+          do_sample: true,
+          max_new_tokens,
+          repetition_penalty,
+          system_prompt,
+          temperature,
+          text_input: actualMessage,
+          top_k,
+          top_p
+        };
+        const finalChunk = JSON.stringify({
+          is_final: true,
+          input_parameters
+        });
+        res.write(`data: ${finalChunk}\n\n`);
+        res.end();
+      });
+      inferResponse.body.on('error', (err) => {
+        console.error('Stream piping error:', err);
+        res.end();
+      });
     } else {
       res.status(500).json({ error: 'Không nhận được luồng dữ liệu từ GPU service' });
     }
@@ -154,7 +177,10 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     const inferResponse = await fetch(`${PYTHON_INFERENCE_URL}/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true' 
+      },
       body: JSON.stringify({
         hf_model_id: hf_model_id,
         text_input: text_input,
@@ -182,7 +208,29 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     // Pipe the response body
     if (inferResponse.body) {
-      inferResponse.body.pipe(res);
+      inferResponse.body.pipe(res, { end: false });
+      inferResponse.body.on('end', () => {
+        const input_parameters = {
+          do_sample: true,
+          max_new_tokens,
+          repetition_penalty,
+          system_prompt,
+          temperature,
+          text_input,
+          top_k,
+          top_p
+        };
+        const finalChunk = JSON.stringify({
+          is_final: true,
+          input_parameters
+        });
+        res.write(`data: ${finalChunk}\n\n`);
+        res.end();
+      });
+      inferResponse.body.on('error', (err) => {
+        console.error('Stream piping error:', err);
+        res.end();
+      });
     } else {
       res.status(500).json({ error: 'Không nhận được luồng dữ liệu từ GPU service' });
     }
@@ -194,5 +242,75 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
     } else {
       res.end(`data: ${JSON.stringify({ error: 'Kết nối stream bị gián đoạn' })}\n\n`);
     }
+  }
+};
+
+export const saveChatHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { userMessage, aiMessage, model, responseTime } = req.body;
+    
+    if (!userMessage || !aiMessage || !model || responseTime === undefined) {
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+
+    const newHistory = new ChatHistory({
+      userMessage,
+      aiMessage,
+      model,
+      responseTime
+    });
+
+    await newHistory.save();
+    res.status(201).json({ message: 'Saved successfully', data: newHistory });
+  } catch (error: any) {
+    console.error('Save Chat History Error:', error);
+    res.status(500).json({ error: 'Failed to save chat history', details: error.message });
+  }
+};
+
+export const getChatHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 20;
+    const history = await ChatHistory.find()
+      .sort({ createdAt: -1 })
+      .limit(limit);
+      
+    res.json(history);
+  } catch (error: any) {
+    console.error('Get Chat History Error:', error);
+    res.status(500).json({ error: 'Failed to fetch chat history', details: error.message });
+  }
+};
+
+export const loadModel = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { hf_model_id, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty } = req.body;
+
+    if (!hf_model_id) {
+      res.status(400).json({ error: 'hf_model_id là bắt buộc' });
+      return;
+    }
+
+    const loadResponse = await fetch(`${gpuServiceUrl}/api/model/load`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true' 
+      },
+      body: JSON.stringify({ hf_model_id, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty })
+    });
+
+    if (!loadResponse.ok) {
+      const errorData: any = await loadResponse.json().catch(() => ({}));
+      throw new Error(errorData.error || `Lỗi từ Python backend: ${loadResponse.statusText}`);
+    }
+
+    const data: any = await loadResponse.json();
+    res.json(data);
+
+  } catch (error: any) {
+    console.error('Load Model Proxy Error:', error);
+    res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python model load', details: error.message });
   }
 };

@@ -21,12 +21,14 @@ export interface ITrainingHistory extends Document {
     warmup_steps: number;               // LR warmup steps
     weight_decay: number;               // Weight decay for AdamW
     seed: number;                       // Random seed
+    early_stopping_loss: number;        // Stop if loss < this
+    early_stopping_patience: number;    // Steps to wait for loss decrease
     optim: string;                      // Optimizer type
     lr_scheduler_type: string;          // LR scheduler type
   };
   pushToHub: boolean;
   hfRepoId: string;
-  hfToken?: string;
+  hfToken: string;
   status: string;              // 'COMPLETED' | 'STOPPED' | 'FAILED'
   finalMetrics?: {
     loss: number;
@@ -49,6 +51,7 @@ export interface ITrainingHistory extends Document {
   drive_folder_id?: string;
   config_snapshot?: any;
   datasetPath?: string;
+  workerUrl?: string;
 }
 
 const TrainingHistorySchema = new Schema<ITrainingHistory>(
@@ -73,6 +76,8 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
       warmup_steps: { type: Number, default: 5 },
       weight_decay: { type: Number, default: 0.01 },
       seed: { type: Number, default: 3407 },
+      early_stopping_loss: { type: Number, default: 0.5 },
+      early_stopping_patience: { type: Number, default: 100 },
       optim: { type: String, default: 'adamw_8bit' },
       lr_scheduler_type: { type: String, default: 'linear' },
     },
@@ -99,6 +104,7 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     drive_folder_id: { type: String },
     config_snapshot: { type: Schema.Types.Mixed }, // Store arbitrary JSON config
     datasetPath: { type: String },
+    workerUrl: { type: String },
   },
   {
     timestamps: true, // tự tạo createdAt, updatedAt

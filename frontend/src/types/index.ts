@@ -93,7 +93,7 @@ export interface SampleEvaluation {
     clarity?: number;
     completeness?: number;
     socratic?: number;
-    alignment?: number;
+    encouragement?: number;
     factuality?: number;
     overall: number;
   };
@@ -108,7 +108,7 @@ export interface EvaluationResult {
     clarity?: number;
     completeness?: number;
     socratic?: number;
-    alignment?: number;
+    encouragement?: number;
     factuality?: number;
     overall: number;
   };

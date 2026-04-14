@@ -18,7 +18,15 @@ import {
   deleteTrainingHistory,
   getDistinctBaseModels,
 } from '../controllers/trainingHistoryController';
-import { chatWithAI, inferWithAI, chatWithAIStream, inferWithAIStream } from '../controllers/chatController';
+import { chatWithAI, inferWithAI, chatWithAIStream, inferWithAIStream, saveChatHistory, getChatHistory, loadModel } from '../controllers/chatController';
+import {
+  getSessions,
+  getSessionById,
+  createSession,
+  appendMessageToSession,
+  deleteSession
+} from '../controllers/chatSessionController';
+import { clusterData, clusterFilter, deleteClusterCache } from '../controllers/clusterController';
 
 
 import {
@@ -74,6 +82,17 @@ router.post('/chat', chatWithAI);
 router.post('/infer', inferWithAI);
 router.post('/chat/stream', chatWithAIStream);
 router.post('/infer/stream', inferWithAIStream);
+router.post('/model/load', loadModel);
+router.post('/chat/history', saveChatHistory);
+router.get('/chat/history', getChatHistory);
+
+// Chat Session Routes
+router.get('/chat/sessions', getSessions);
+router.get('/chat/sessions/:id', getSessionById);
+router.post('/chat/sessions', createSession);
+router.put('/chat/sessions/:id', appendMessageToSession);
+router.delete('/chat/sessions/:id', deleteSession);
+
 
 // Hugging Face Routes
 router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req, res));
@@ -81,6 +100,13 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 // Gemini Evaluation
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
+router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistory(req, res));
+router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
+
+// Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
+router.post('/cluster', clusterData);
+router.post('/cluster/filter', clusterFilter);
+router.delete('/cluster/cache', deleteClusterCache);
 
 // Training Routes
 router.post('/train/start', upload.single('dataset_file'), startTraining);

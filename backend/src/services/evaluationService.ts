@@ -12,7 +12,7 @@ export interface SampleEvaluation {
         clarity?: number;     // Rõ ràng (0–10)
         completeness?: number; // Đủ ý (0–10)
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;     // Trung bình
     };
@@ -26,7 +26,7 @@ export interface EvaluationResult {
         clarity?: number;
         completeness?: number;
         socratic?: number;
-        alignment?: number;
+        encouragement?: number;
         factuality?: number;
         overall: number;
     };
@@ -35,38 +35,82 @@ export interface EvaluationResult {
     samples: SampleEvaluation[];
 }
 
-export class EvaluationService {
-    constructor(private provider: ILlmProvider) {}
+// A full OpenAI conversation object sent from the frontend for conversation-level evaluation
+export interface OpenAIConversationSample {
+    conversation_id?: string;
+    messages: Array<{ role: string; content: string }>;
+}
 
-    /**
-     * Helper to delay execution (rate limiting)
-     */
-    private sleep(ms: number) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
+// Union type: either a flat Alpaca sample or a full OpenAI conversation
+export type EvaluationSample = AlpacaFormat | OpenAIConversationSample;
+
+function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
+    return Array.isArray((s as OpenAIConversationSample).messages);
+}
+
+export class EvaluationService {
+    constructor(private provider: ILlmProvider) { }
+
+    private toInstructionOutput(sample: EvaluationSample): { instruction: string; output: string } {
+        if (isConversationSample(sample)) {
+            const firstUser = sample.messages.find((m) => m.role === 'user');
+            const lastAssistant = [...sample.messages].reverse().find((m) => m.role === 'assistant');
+            return {
+                instruction: firstUser?.content || '',
+                output: lastAssistant?.content?.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || '',
+            };
+        }
+
+        return {
+            instruction: sample.instruction,
+            output: sample.output,
+        };
     }
 
     /**
-     * Đánh giá một chunk (lên đến 20 mẫu)
+     * Đánh giá một chunk (lên đến 20 mẫu).
+     * - Khi format = 'openai' và sample có trường messages[], đánh giá toàn bộ cuộc hội thoại.
+     * - Khi format = 'alpaca', đánh giá theo cặp instruction/output như cũ.
      */
-    async evaluateChunk(samples: AlpacaFormat[], format?: string): Promise<SampleEvaluation[]> {
+    async evaluateChunk(samples: EvaluationSample[], format?: string): Promise<SampleEvaluation[]> {
         if (samples.length === 0) return [];
 
         const isOpenAI = format === 'openai';
-        let prompt = '';
 
-        if (isOpenAI) {
-            const samplesText = samples.map((s, index) =>
-                `=== MẪU ${index + 1} ===\n**Instruction/User:**\n${s.instruction}\n**Input/<think>:**\n${s.input || 'N/A'}\n**Output/Assistant:**\n${s.output}\n`
-            ).join('\n');
+        const batchPayload = isOpenAI
+            ? samples.map((s, index) => {
+                if (isConversationSample(s)) {
+                    return {
+                        index,
+                        messages: s.messages.map((m) => ({
+                            role: String(m.role || ''),
+                            content: String(m.content || ''),
+                        })),
+                    };
+                }
 
-            prompt = OPENAI_SYSTEM_PROMPT.replace('${samplesSize}', String(samples.length)).replace('${samplesText}', samplesText);
-        } else {
-            const samplesText = samples.map((s, index) =>
-                `=== MẪU ${index + 1} ===\n**Câu hỏi:**\n${s.instruction}\n**Câu trả lời:**\n${s.output}\n`
-            ).join('\n');
+                return {
+                    index,
+                    messages: [
+                        { role: 'user', content: String((s as AlpacaFormat).instruction || '') },
+                        { role: 'assistant', content: String((s as AlpacaFormat).output || '') },
+                    ],
+                };
+            })
+            : samples.map((s, index) => {
+                const alpaca = s as AlpacaFormat;
+                return {
+                    index,
+                    instruction: String(alpaca.instruction || ''),
+                    input: String(alpaca.input || ''),
+                    output: String(alpaca.output || ''),
+                };
+            });
 
-            prompt = ALPACA_SYSTEM_PROMPT.replace('${samplesSize}', String(samples.length)).replace('${samplesText}', samplesText);
-        }
+        const samplesJson = JSON.stringify(batchPayload, null, 2);
+        const prompt = isOpenAI
+            ? OPENAI_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson)
+            : ALPACA_SYSTEM_PROMPT.replace('${samplesJson}', samplesJson);
 
         try {
             const rawText = await this.provider.generateContent(prompt);
@@ -88,63 +132,79 @@ export class EvaluationService {
                 parsedArray = [];
             }
 
+            const byIndex = new Map<number, any>();
+            parsedArray.forEach((item, idx) => {
+                const mappedIndex = Number(item?.index ?? item?.id);
+                if (Number.isFinite(mappedIndex)) {
+                    byIndex.set(mappedIndex, item);
+                } else {
+                    // Fallback by position if model omits index
+                    byIndex.set(idx, item);
+                }
+            });
+
             return samples.map((sample, idx) => {
-                const parsed = parsedArray[idx] || {};
+                const parsed = byIndex.get(idx) || {};
+                const scoreSource = parsed?.scores && typeof parsed.scores === 'object' ? parsed.scores : parsed;
                 const reason = String(parsed.reason || 'Không có lý do cụ thể');
+                const { instruction, output } = this.toInstructionOutput(sample);
 
                 if (isOpenAI) {
-                    const socratic = Math.min(10, Math.max(0, Number(parsed.socratic) || 0));
-                    const alignment = Math.min(10, Math.max(0, Number(parsed.alignment) || 0));
-                    const factuality = Math.min(10, Math.max(0, Number(parsed.factuality) || 0));
-                    const overall = Math.round(((socratic + alignment + factuality) / 3) * 10) / 10;
+                    const socratic = Math.min(10, Math.max(0, Number(scoreSource.socratic) || 0));
+                    const encouragement = Math.min(10, Math.max(0, Number(scoreSource.encouragement) || 0));
+                    const factuality = Math.min(10, Math.max(0, Number(scoreSource.factuality) || 0));
+                    const overall = Math.round(((socratic + encouragement + factuality) / 3) * 10) / 10;
                     return {
-                        instruction: sample.instruction,
-                        output: sample.output,
-                        reason: reason,
-                        scores: { socratic, alignment, factuality, overall }
-                    };
-                } else {
-                    const accuracy = Math.min(10, Math.max(0, Number(parsed.accuracy) || 0));
-                    const clarity = Math.min(10, Math.max(0, Number(parsed.clarity) || 0));
-                    const completeness = Math.min(10, Math.max(0, Number(parsed.completeness) || 0));
-                    const overall = Math.round(((accuracy + clarity + completeness) / 3) * 10) / 10;
-                    return {
-                        instruction: sample.instruction,
-                        output: sample.output,
-                        reason: reason,
-                        scores: { accuracy, clarity, completeness, overall }
+                        instruction,
+                        output,
+                        reason,
+                        scores: { socratic, encouragement, factuality, overall },
                     };
                 }
+
+                const accuracy = Math.min(10, Math.max(0, Number(scoreSource.accuracy) || 0));
+                const clarity = Math.min(10, Math.max(0, Number(scoreSource.clarity) || 0));
+                const completeness = Math.min(10, Math.max(0, Number(scoreSource.completeness) || 0));
+                const overall = Math.round(((accuracy + clarity + completeness) / 3) * 10) / 10;
+                return {
+                    instruction,
+                    output,
+                    reason,
+                    scores: { accuracy, clarity, completeness, overall },
+                };
             });
 
         } catch (error: any) {
             console.error('Eval error for chunk:', error.message);
-            return samples.map((sample) => ({
-                instruction: sample.instruction,
-                output: sample.output,
-                reason: 'Lỗi API: ' + error.message,
-                scores: { overall: 0 },
-            }));
+            return samples.map((sample) => {
+                const { instruction, output } = this.toInstructionOutput(sample);
+                return {
+                    instruction,
+                    output,
+                    reason: 'Lỗi API: ' + error.message,
+                    scores: { overall: 0 },
+                };
+            });
         }
     }
 
     /**
-     * Đánh giá batch mẫu sử dụng Rate Limit Queue
+     * Đánh giá batch mẫu sử dụng Rate Limit Queue.
+     * Accepts both AlpacaFormat[] and OpenAIConversationSample[].
      */
     async evaluateBatch(
-        data: AlpacaFormat[],
+        data: EvaluationSample[],
         format?: string
     ): Promise<EvaluationResult> {
         const populationSize = data.length;
         const sampleSize = Math.min(10, populationSize);
         const samples = data.slice(0, sampleSize);
-        console.log(`[Evaluation] Lấy 10 mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
+        console.log(`[Evaluation] Lấy ${sampleSize} mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
 
-        const CHUNK_SIZE = 50;
-        const DELAY_MS = 10000; // 10 giây delay => tối đa 6 req/phút
+        const CHUNK_SIZE = 10;
         const results: SampleEvaluation[] = [];
 
-        console.log(`[Evaluation] Bắt đầu xử lý Queue: ${Math.ceil(samples.length / CHUNK_SIZE)} chunks`);
+        console.log(`[Evaluation] Bắt đầu xử lý batching: ${Math.ceil(samples.length / CHUNK_SIZE)} chunk(s)`);
 
         for (let i = 0; i < samples.length; i += CHUNK_SIZE) {
             const chunk = samples.slice(i, i + CHUNK_SIZE);
@@ -152,21 +212,27 @@ export class EvaluationService {
 
             const chunkResults = await this.evaluateChunk(chunk, format);
             results.push(...chunkResults);
-
-            if (i + CHUNK_SIZE < samples.length) {
-                console.log(`[Evaluation] Đang chờ ${DELAY_MS}ms...`);
-                await this.sleep(DELAY_MS);
-            }
         }
 
         const evaluated = results.length;
+        if (evaluated === 0) {
+            return {
+                sampleSize: samples.length,
+                evaluated: 0,
+                totalPopulation: populationSize,
+                avgScores: { overall: 0 },
+                passRate: 0,
+                samples: [],
+            };
+        }
+
         const avgOverall = Math.round((results.reduce((s, r) => s + r.scores.overall, 0) / evaluated) * 10) / 10;
-        
+
         let avgScores: any = { overall: avgOverall };
-        
+
         if (format === 'openai') {
             avgScores.socratic = Math.round((results.reduce((s, r) => s + (r.scores.socratic || 0), 0) / evaluated) * 10) / 10;
-            avgScores.alignment = Math.round((results.reduce((s, r) => s + (r.scores.alignment || 0), 0) / evaluated) * 10) / 10;
+            avgScores.encouragement = Math.round((results.reduce((s, r) => s + (r.scores.encouragement || 0), 0) / evaluated) * 10) / 10;
             avgScores.factuality = Math.round((results.reduce((s, r) => s + (r.scores.factuality || 0), 0) / evaluated) * 10) / 10;
         } else {
             avgScores.accuracy = Math.round((results.reduce((s, r) => s + (r.scores.accuracy || 0), 0) / evaluated) * 10) / 10;

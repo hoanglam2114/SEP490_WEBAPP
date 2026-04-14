@@ -7,11 +7,14 @@ import { ConversionPage } from '../pages/ConversionPage';
 import { HomePage } from '../pages/HomePage';
 import { MainLayout } from '../layout/MainLayout';
 import { TrainingHistoryScreen } from '../pages/TrainingHistoryScreen';
+
 import { ModelEvalLeaderboardScreen } from '../pages/ModelEvalLeaderboardScreen';
 import { ModelEvalResultScreen } from '../pages/ModelEvalResultScreen';
 import { ModelEvalRunScreen } from '../pages/ModelEvalRunScreen';
 import { ModelEvalHistoryScreen } from '../pages/ModelEvalHistoryScreen';
 import { ModelEvalCompareScreen } from '../pages/ModelEvalCompareScreen';
+import { EvaluationHistory } from '../pages/EvaluationHistory';
+
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,6 +44,7 @@ export default function AppRouter() {
             element={<AutoTrainScreen />}
           />
           <Route path="/training-history" element={<TrainingHistoryScreen />} />
+          <Route path="/evaluation-history" element={<EvaluationHistory />} />
           <Route path="/chat" element={<ChatPage />} />
 
           {/* Model evaluation flow */}

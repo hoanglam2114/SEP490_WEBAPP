@@ -1,26 +1,37 @@
 import React, { useState } from 'react';
 import { UploadCloud, Loader2 } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
-import { apiService } from '../services/api';
 import { useAppStore } from '../hooks/useAppStore';
+import { ConversionResult } from '../types';
 import toast from 'react-hot-toast';
 
-export const HuggingFaceUpload: React.FC = () => {
-    const { uploadedFile, conversionOptions } = useAppStore();
+interface HuggingFaceUploadProps {
+    conversionResult: ConversionResult;
+}
+
+export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversionResult }) => {
+    const { uploadedFile } = useAppStore();
     const [token, setToken] = useState('');
     const [repoId, setRepoId] = useState('');
     const [isPrivate, setIsPrivate] = useState(true);
 
-    // Thêm method uploadHuggingFace vào apiService sau
     const uploadMutation = useMutation({
         mutationFn: async () => {
-            // 1. Convert data first
-            const convertedData = await apiService.convertData(
-                uploadedFile!.fileId,
-                conversionOptions
-            );
+            const { data, filename } = conversionResult;
+            const isJsonl = filename.endsWith('.jsonl');
 
-            // 2. Upload to HF Hub
+            // Strip metadata fields like 'cluster', 'groupId', etc. before uploading
+            const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
+
+            // Regenerate output consistent with backend and download button
+            let output: string;
+            if (isJsonl) {
+                output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
+            } else {
+                output = JSON.stringify(cleanData, null, 2);
+            }
+
+            // Upload to HF Hub
             const response = await fetch('/api/huggingface/upload', {
                 method: 'POST',
                 headers: {
@@ -29,8 +40,8 @@ export const HuggingFaceUpload: React.FC = () => {
                 body: JSON.stringify({
                     token,
                     repoId,
-                    fileName: convertedData.filename,
-                    content: convertedData.output,
+                    fileName: filename,
+                    content: output,
                     isPrivate,
                 }),
             });
@@ -44,7 +55,6 @@ export const HuggingFaceUpload: React.FC = () => {
         },
         onSuccess: (data) => {
             toast.success('Successfully uploaded to Hugging Face Hub!');
-            // Mở tab mới với URL của repo
             if (data.url) {
                 window.open(data.url, '_blank', 'noopener,noreferrer');
             }

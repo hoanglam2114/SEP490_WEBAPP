@@ -5,28 +5,21 @@ interface IEvaluationScore {
   clarity?: number;
   completeness?: number;
   socratic?: number;
-  alignment?: number;
+  encouragement?: number;
   factuality?: number;
   overall: number;
-}
-
-interface IEvaluationItem {
-  rowId: string;
-  groupId?: number;
-  instruction: string;
-  output: string;
   reason: string;
-  scores: IEvaluationScore;
 }
 
 export interface IEvaluationHistory extends Document {
   fileId: string;
+  projectName: string;
   format: string;
-  dataGroup: string;
-  results: IEvaluationItem[];
-  avgScores: IEvaluationScore;
+  data: Record<string, any>;
+  evaluatedBy: 'manual' | 'gemini';
+  results: IEvaluationScore;
   createdAt: Date;
-  updatedAt: Date;
+  updatedAt?: Date;
 }
 
 const EvaluationScoreSchema = new Schema<IEvaluationScore>(
@@ -35,21 +28,10 @@ const EvaluationScoreSchema = new Schema<IEvaluationScore>(
     clarity: { type: Number },
     completeness: { type: Number },
     socratic: { type: Number },
-    alignment: { type: Number },
+    encouragement: { type: Number },
     factuality: { type: Number },
     overall: { type: Number, required: true },
-  },
-  { _id: false }
-);
-
-const EvaluationItemSchema = new Schema<IEvaluationItem>(
-  {
-    rowId: { type: String, required: true },
-    groupId: { type: Number },
-    instruction: { type: String, required: true },
-    output: { type: String, required: true },
     reason: { type: String, default: '' },
-    scores: { type: EvaluationScoreSchema, required: true },
   },
   { _id: false }
 );
@@ -57,12 +39,15 @@ const EvaluationItemSchema = new Schema<IEvaluationItem>(
 const EvaluationHistorySchema = new Schema<IEvaluationHistory>(
   {
     fileId: { type: String, required: true, index: true },
-    format: { type: String, required: true },
-    dataGroup: { type: String, required: true, default: 'all' },
-    results: { type: [EvaluationItemSchema], default: [] },
-    avgScores: { type: EvaluationScoreSchema, required: true },
+    projectName: { type: String, required: true, index: true, trim: true },
+    format: { type: String, required: true, enum: ['openai', 'alpaca'] },
+    data: { type: Schema.Types.Mixed, required: true },
+    evaluatedBy: { type: String, required: true, enum: ['manual', 'gemini'] },
+    results: { type: EvaluationScoreSchema, required: true },
+    createdAt: { type: Date, required: true },
+    updatedAt: { type: Date, default: Date.now },
   },
-  { timestamps: true }
+  { timestamps: false }
 );
 
 export const EvaluationHistory = mongoose.model<IEvaluationHistory>(
