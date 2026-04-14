@@ -3,7 +3,12 @@ import fetch from 'node-fetch'; // assuming node-fetch is available based on pac
 import { ChatHistory } from '../models/ChatHistory';
 
 const gpuServiceUrl = process.env.GPU_SERVICE_URL ? process.env.GPU_SERVICE_URL.replace(/\/$/, '') : 'http://localhost:5000';
-const PYTHON_INFERENCE_URL = `${gpuServiceUrl}/api/infer`;
+const gpuServiceUrl2 = process.env.GPU_SERVICE_URL_2 ? process.env.GPU_SERVICE_URL_2.replace(/\/$/, '') : gpuServiceUrl;
+
+const getGpuUrl = (instanceId?: number) => {
+    return instanceId === 2 ? gpuServiceUrl2 : gpuServiceUrl;
+};
+
 
 export const chatWithAI = async (req: Request, res: Response): Promise<void> => {
   // Hàm này giờ đây sẽ bị deprecate hoặc dùng làm proxy tới Python infer endpoint mượt hơn
@@ -19,7 +24,10 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const inferResponse = await fetch(PYTHON_INFERENCE_URL, {
+    const { instanceId } = req.body;
+    const targetUrl = getGpuUrl(instanceId);
+    
+    const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -42,7 +50,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
   } catch (error: any) {
     console.error('Chat AI Proxy Error:', error);
-    res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python inference', details: error.message });
+    res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python inference', details: error.message });
   }
 };
 
@@ -55,7 +63,10 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    const inferResponse = await fetch(PYTHON_INFERENCE_URL, {
+    const { instanceId } = req.body;
+    const targetUrl = getGpuUrl(instanceId);
+
+    const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -78,7 +89,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
   } catch (error: any) {
     console.error('Inference AI Proxy Error:', error);
-    res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python inference', details: error.message });
+    res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python inference', details: error.message });
   }
 };
 
@@ -95,7 +106,10 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    const inferResponse = await fetch(`${PYTHON_INFERENCE_URL}/stream`, {
+    const { instanceId } = req.body;
+    const targetUrl = getGpuUrl(instanceId);
+
+    const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -159,9 +173,9 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
   } catch (error: any) {
     console.error('Chat AI Stream Proxy Error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python inference stream', details: error.message });
+      res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python inference stream', details: error.message });
     } else {
-      res.end(`data: ${JSON.stringify({ error: 'Kết nối stream bị gián đoạn' })}\n\n`);
+      res.end(`data: ${JSON.stringify({ error: 'Kết nối stream bị gián đoạn: ' + error.message })}\n\n`);
     }
   }
 };
@@ -175,7 +189,10 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const inferResponse = await fetch(`${PYTHON_INFERENCE_URL}/stream`, {
+    const { instanceId } = req.body;
+    const targetUrl = getGpuUrl(instanceId);
+
+    const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -238,9 +255,9 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
   } catch (error: any) {
     console.error('Inference AI Stream Proxy Error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python inference stream', details: error.message });
+      res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python inference stream', details: error.message });
     } else {
-      res.end(`data: ${JSON.stringify({ error: 'Kết nối stream bị gián đoạn' })}\n\n`);
+      res.end(`data: ${JSON.stringify({ error: 'Kết nối stream bị gián đoạn: ' + error.message })}\n\n`);
     }
   }
 };
@@ -292,7 +309,10 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const loadResponse = await fetch(`${gpuServiceUrl}/api/model/load`, {
+    const { instanceId } = req.body;
+    const targetUrl = getGpuUrl(instanceId);
+
+    const loadResponse = await fetch(`${targetUrl}/api/model/load`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -311,6 +331,6 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
 
   } catch (error: any) {
     console.error('Load Model Proxy Error:', error);
-    res.status(500).json({ error: 'Có lỗi xảy ra khi gọi Python model load', details: error.message });
+    res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python model load', details: error.message });
   }
 };

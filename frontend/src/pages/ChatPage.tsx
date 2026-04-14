@@ -86,7 +86,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => (
     </ReactMarkdown>
 );
 
-export default function ChatPage() {
+export function ChatInstance({ instanceId, hideSidebar = false, onSidebarToggle }: { instanceId: number, hideSidebar?: boolean, onSidebarToggle?: (isOpen: boolean) => void }) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const [loading, setLoading] = useState(false);
@@ -189,6 +189,7 @@ export default function ChatPage() {
             if (!modelLoaded) {
                 try {
                     const options = {
+                        instanceId,
                         system_prompt: systemPrompt || undefined,
                         max_new_tokens: maxNewTokens === "" ? undefined : maxNewTokens,
                         temperature: temperature === "" ? undefined : temperature,
@@ -205,6 +206,7 @@ export default function ChatPage() {
             }
 
             const options = {
+                instanceId,
                 system_prompt: systemPrompt || undefined,
                 max_new_tokens: maxNewTokens === "" ? undefined : maxNewTokens,
                 temperature: temperature === "" ? undefined : temperature,
@@ -304,6 +306,7 @@ export default function ChatPage() {
 
         try {
             const options = {
+                instanceId,
                 system_prompt: systemPrompt || undefined,
                 max_new_tokens: maxNewTokens === "" ? undefined : maxNewTokens,
                 temperature: temperature === "" ? undefined : temperature,
@@ -339,50 +342,56 @@ export default function ChatPage() {
         <div className="flex overflow-hidden h-screen bg-white text-black font-sans selection:bg-[#4285f4] selection:text-white">
 
             {/* Sidebar */}
-            <div className={`flex flex-col bg-[#f9fafb] border-r border-gray-200 transition-all duration-300 ${isSidebarOpen ? "w-72" : "w-16"} p-3 z-10 hidden md:flex`}>
-                <div className="flex items-center justify-between p-2 mb-6 border-b border-gray-100 pb-4">
-                    <button
-                        onClick={() => setSidebarOpen(!isSidebarOpen)}
-                        className="p-2 hover:bg-gray-200 rounded-full transition-colors focus:outline-none"
-                    >
-                        <Menu size={20} className="text-gray-700" />
-                    </button>
-                    {isSidebarOpen && (
+            {!hideSidebar && (
+                <div className={`flex flex-col bg-[#f9fafb] border-r border-gray-200 transition-[width] duration-300 ${isSidebarOpen ? "w-72" : "w-16"} p-3 z-10 hidden md:flex shrink-0`}>
+                    <div className="flex items-center justify-between p-2 mb-6 border-b border-gray-100 pb-4">
                         <button
-                            onClick={handleNewChat}
-                            className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-full transition-colors focus:outline-none flex items-center gap-2 px-4 shadow-sm relative group"
-                            title="Tạo đoạn chat mới"
+                            onClick={() => {
+                                const newState = !isSidebarOpen;
+                                setSidebarOpen(newState);
+                                if (onSidebarToggle) onSidebarToggle(newState);
+                            }}
+                            className="p-2 hover:bg-gray-200 rounded-full transition-colors focus:outline-none"
                         >
-                            <Plus size={18} />
-                            <span className="text-sm font-semibold">Tạo mới</span>
+                            <Menu size={20} className="text-gray-700" />
                         </button>
+                        {isSidebarOpen && (
+                            <button
+                                onClick={handleNewChat}
+                                className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-full transition-colors focus:outline-none flex items-center gap-2 px-4 shadow-sm relative group"
+                                title="Tạo đoạn chat mới"
+                            >
+                                <Plus size={18} />
+                                <span className="text-sm font-semibold">Tạo mới</span>
+                            </button>
+                        )}
+                    </div>
+                    {isSidebarOpen && (
+                        <div className="flex-1 overflow-y-auto">
+                            <div className="text-[13px] text-gray-500 px-3 mb-2 font-medium">Đoạn chat của bạn</div>
+                            <div className="flex flex-col gap-1">
+                                {chatSessions.length === 0 ? (
+                                    <div className="text-sm text-gray-400 px-4 italic">Chưa có lịch sử</div>
+                                ) : (
+                                    chatSessions.map((session, i) => (
+                                        <button
+                                            key={session._id || i}
+                                            onClick={() => handleLoadSession(session)}
+                                            className={`flex items-center gap-3 p-2.5 rounded-xl transition-colors text-sm w-full text-left truncate ${currentSessionId === session._id ? 'bg-blue-100 text-blue-800 font-medium' : 'hover:bg-gray-100 text-gray-700'
+                                                }`}
+                                        >
+                                            <MessageSquare size={16} className={`min-w-[16px] ml-1 ${currentSessionId === session._id ? 'text-blue-600' : 'text-gray-500'}`} />
+                                            <span className="truncate" title={session.title}>{session.title}</span>
+                                        </button>
+                                    ))
+                                )}
+                            </div>
+                        </div>
                     )}
                 </div>
-                {isSidebarOpen && (
-                    <div className="flex-1 overflow-y-auto">
-                        <div className="text-[13px] text-gray-500 px-3 mb-2 font-medium">Đoạn chat của bạn</div>
-                        <div className="flex flex-col gap-1">
-                            {chatSessions.length === 0 ? (
-                                <div className="text-sm text-gray-400 px-4 italic">Chưa có lịch sử</div>
-                            ) : (
-                                chatSessions.map((session, i) => (
-                                    <button
-                                        key={session._id || i}
-                                        onClick={() => handleLoadSession(session)}
-                                        className={`flex items-center gap-3 p-2.5 rounded-xl transition-colors text-sm w-full text-left truncate ${currentSessionId === session._id ? 'bg-blue-100 text-blue-800 font-medium' : 'hover:bg-gray-100 text-gray-700'
-                                            }`}
-                                    >
-                                        <MessageSquare size={16} className={`min-w-[16px] ml-1 ${currentSessionId === session._id ? 'text-blue-600' : 'text-gray-500'}`} />
-                                        <span className="truncate" title={session.title}>{session.title}</span>
-                                    </button>
-                                ))
-                            )}
-                        </div>
-                    </div>
-                )}
-            </div>
+            )}
 
-            <div className="flex-1 flex flex-col relative h-full w-full bg-white">
+            <div className="flex-1 flex flex-col relative h-full w-full bg-white min-w-0">
                 {/* Header */}
                 <div className="flex justify-between items-center p-4 min-h-[72px]">
                     <div className="flex items-center gap-4 group w-full max-w-2xl">
@@ -686,6 +695,32 @@ export default function ChatPage() {
                     border-radius: 10px;
                 }
             `}</style>
+        </div>
+    );
+}
+
+export default function ChatPage() {
+    const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+
+    // Kích thước Sidebar: w-72 = 288px. Một nửa = 144px. w-16 = 64px. Một nửa = 32px.
+    const sidebarOffset = isLeftSidebarOpen ? "144px" : "32px";
+
+    return (
+        <div className="flex flex-row w-full h-screen overflow-hidden bg-gray-50">
+            <div
+                className="flex h-full border-r border-gray-300 shadow-[2px_0_15px_rgba(0,0,0,0.05)] z-20 shrink-0 transition-[width] duration-300"
+                style={{ width: `calc(50% + ${sidebarOffset})` }}
+            >
+                <ChatInstance
+                    instanceId={1}
+                    hideSidebar={false}
+                    onSidebarToggle={setIsLeftSidebarOpen}
+                />
+            </div>
+
+            <div className="flex-1 h-full min-w-0">
+                <ChatInstance instanceId={2} hideSidebar={true} />
+            </div>
         </div>
     );
 }
