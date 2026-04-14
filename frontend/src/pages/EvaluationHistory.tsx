@@ -8,13 +8,13 @@ type EvalFormat = 'openai' | 'alpaca';
 type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
 type EvalResults = {
-  accuracy?: number;
-  clarity?: number;
-  completeness?: number;
-  socratic?: number;
-  encouragement?: number;
-  factuality?: number;
-  overall: number;
+  accuracy?: number | null;
+  clarity?: number | null;
+  completeness?: number | null;
+  socratic?: number | null;
+  encouragement?: number | null;
+  factuality?: number | null;
+  overall: number | null;
   reason: string;
 };
 
@@ -172,10 +172,21 @@ function computeOverall(draft: EditDraft): number {
 }
 
 function formatScoreDisplay(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '-';
+  if (value === null || value === undefined || value === '') return '';
   const n = Number(value);
-  if (Number.isFinite(n) && n === -1) return '-';
+  if (Number.isFinite(n) && n === -1) return '';
   return String(value);
+}
+
+function normalizeNullableScore(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    return null;
+  }
+  return n;
 }
 
 export const EvaluationHistory: React.FC = () => {
@@ -230,15 +241,24 @@ export const EvaluationHistory: React.FC = () => {
         throw new Error('No edit draft found.');
       }
 
-      const [k1, k2, k3] = metricKeys(item.format);
-      const results: EvalResults = {
-        ...item.results,
-        [k1]: normalizeScoreInput(draft.metricA || '0'),
-        [k2]: normalizeScoreInput(draft.metricB || '0'),
-        [k3]: normalizeScoreInput(draft.metricC || '0'),
-        overall: computeOverall(draft),
-        reason: draft.reason,
-      };
+      const metricA = normalizeScoreInput(draft.metricA || '0');
+      const metricB = normalizeScoreInput(draft.metricB || '0');
+      const metricC = normalizeScoreInput(draft.metricC || '0');
+      const results: EvalResults = item.format === 'openai'
+        ? {
+          socratic: metricA,
+          encouragement: metricB,
+          factuality: metricC,
+          overall: computeOverall(draft),
+          reason: draft.reason,
+        }
+        : {
+          accuracy: metricA,
+          clarity: metricB,
+          completeness: metricC,
+          overall: computeOverall(draft),
+          reason: draft.reason,
+        };
 
       await apiService.updateEvaluationHistory(item._id, {
         evaluatedBy: 'manual',
@@ -283,11 +303,12 @@ export const EvaluationHistory: React.FC = () => {
       : project.items.filter((item) => item.format === selectedFormat);
 
     return byFormat.filter((item) => {
-      const overall = Number(item.results.overall);
-      if (overall === -1) {
+      const overall = item.results.overall;
+      const isUnaudited = !Number.isFinite(overall) || (overall as number) < 0;
+      if (isUnaudited) {
         return showUnaudited;
       }
-      return overall >= minOverall;
+      return (overall as number) >= minOverall;
     });
   };
 
@@ -302,7 +323,7 @@ export const EvaluationHistory: React.FC = () => {
 
   const handleDownloadProject = (project: EvaluationProjectGroup) => {
     const visibleItems = getProjectVisibleItems(project);
-    const downloadableItems = visibleItems.filter((item) => Number(item.results.overall) !== -1);
+    const downloadableItems = visibleItems.filter((item) => Number.isFinite(item.results.overall) && (item.results.overall as number) >= 0);
 
     if (downloadableItems.length === 0) {
       toast.error('No visible data to download.');
@@ -354,10 +375,10 @@ export const EvaluationHistory: React.FC = () => {
         evaluationEntries.set(conversationId, {
           evaluatedBy: item.evaluatedBy,
           scores: {
-            socratic: item.results.socratic ?? -1,
-            encouragement: item.results.encouragement ?? -1,
-            factuality: item.results.factuality ?? -1,
-            overall: item.results.overall ?? -1,
+            socratic: normalizeNullableScore(item.results.socratic),
+            encouragement: normalizeNullableScore(item.results.encouragement),
+            factuality: normalizeNullableScore(item.results.factuality),
+            overall: normalizeNullableScore(item.results.overall),
             reason: item.results.reason || '',
           },
         });
@@ -375,10 +396,10 @@ export const EvaluationHistory: React.FC = () => {
         evaluationEntries.set(rowId, {
           evaluatedBy: item.evaluatedBy,
           scores: {
-            accuracy: item.results.accuracy ?? -1,
-            clarity: item.results.clarity ?? -1,
-            completeness: item.results.completeness ?? -1,
-            overall: item.results.overall ?? -1,
+            accuracy: normalizeNullableScore(item.results.accuracy),
+            clarity: normalizeNullableScore(item.results.clarity),
+            completeness: normalizeNullableScore(item.results.completeness),
+            overall: normalizeNullableScore(item.results.overall),
             reason: item.results.reason || '',
           },
         });
@@ -693,7 +714,7 @@ export const EvaluationHistory: React.FC = () => {
                               className="w-full px-2 py-1 border border-slate-300 rounded"
                             />
                           ) : (
-                            reason || '-'
+                            reason || ''
                           )}
                         </td>
                         <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{isEditing ? 'manual' : item.evaluatedBy}</td>

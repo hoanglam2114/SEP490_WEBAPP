@@ -57,7 +57,7 @@ export interface RefinementResultItem {
 function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
     return Array.isArray((s as OpenAIConversationSample).messages);
 }
-
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export class EvaluationService {
     constructor(private provider: ILlmProvider) { }
 
@@ -243,12 +243,14 @@ export class EvaluationService {
         format?: string
     ): Promise<EvaluationResult> {
         const populationSize = data.length;
-        const sampleSize = Math.min(10, populationSize);
-        const samples = data.slice(0, sampleSize);
-        console.log(`[Evaluation] Lấy ${sampleSize} mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
-
-        const CHUNK_SIZE = 10;
+        const samples = data;
+        // const sampleSize = Math.min(10, populationSize);
+        // const samples = data.slice(0, sampleSize);
+        //console.log(`[Evaluation] Lấy ${sampleSize} mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
+        console.log(`[Evaluation] Lấy mẫu để chấm: population=${populationSize}, samples=${samples.length}`);
+        const CHUNK_SIZE = 5;
         const results: SampleEvaluation[] = [];
+        
 
         console.log(`[Evaluation] Bắt đầu xử lý batching: ${Math.ceil(samples.length / CHUNK_SIZE)} chunk(s)`);
 
@@ -258,6 +260,7 @@ export class EvaluationService {
 
             const chunkResults = await this.evaluateChunk(chunk, format);
             results.push(...chunkResults);
+
         }
 
         const evaluated = results.length;
@@ -302,7 +305,7 @@ export class EvaluationService {
             return [];
         }
 
-        const CHUNK_SIZE = 10;
+        const CHUNK_SIZE = 5;
         const results: RefinementResultItem[] = [];
 
         for (let i = 0; i < data.length; i += CHUNK_SIZE) {
@@ -347,6 +350,10 @@ export class EvaluationService {
                         refinedOutput: original.assistant,
                     });
                 });
+            }
+            if (i + CHUNK_SIZE < data.length) {
+        console.log(`[Evaluation] Đang nghỉ 4 giây để tránh lỗi 429...`);
+        await delay(4000);
             }
         }
 

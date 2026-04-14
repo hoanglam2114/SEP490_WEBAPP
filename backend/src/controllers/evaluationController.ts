@@ -7,6 +7,46 @@ import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 
 type EvalFormat = 'openai' | 'alpaca';
 
+function normalizeNullableScore(value: unknown): number | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) {
+        return null;
+    }
+    return n;
+}
+
+function normalizeStoredResults(format: EvalFormat, results: {
+    accuracy?: number | null;
+    clarity?: number | null;
+    completeness?: number | null;
+    socratic?: number | null;
+    encouragement?: number | null;
+    factuality?: number | null;
+    overall: number | null;
+    reason: string;
+}) {
+    if (format === 'openai') {
+        return {
+            socratic: normalizeNullableScore(results.socratic),
+            encouragement: normalizeNullableScore(results.encouragement),
+            factuality: normalizeNullableScore(results.factuality),
+            overall: normalizeNullableScore(results.overall),
+            reason: String(results.reason || ''),
+        };
+    }
+
+    return {
+        accuracy: normalizeNullableScore(results.accuracy),
+        clarity: normalizeNullableScore(results.clarity),
+        completeness: normalizeNullableScore(results.completeness),
+        overall: normalizeNullableScore(results.overall),
+        reason: String(results.reason || ''),
+    };
+}
+
 function normalizeProjectName(input?: string): string {
     const value = String(input || '').trim();
     if (!value) {
@@ -158,13 +198,13 @@ export class EvaluationController {
                     data: Record<string, any>;
                     evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
                     results: {
-                        accuracy?: number;
-                        clarity?: number;
-                        completeness?: number;
-                        socratic?: number;
-                        encouragement?: number;
-                        factuality?: number;
-                        overall: number;
+                        accuracy?: number | null;
+                        clarity?: number | null;
+                        completeness?: number | null;
+                        socratic?: number | null;
+                        encouragement?: number | null;
+                        factuality?: number | null;
+                        overall: number | null;
                         reason: string;
                     };
                     createdAt: string;
@@ -184,8 +224,7 @@ export class EvaluationController {
                     (item.format === 'openai' || item.format === 'alpaca') &&
                     item.data &&
                     ['manual', 'gemini', 'openai', 'deepseek', 'none'].includes(item.evaluatedBy) &&
-                    item.results &&
-                    Number.isFinite(item.results.overall)
+                    item.results
                 )
                 .map((item) => {
                     const format = item.format as EvalFormat;
@@ -201,7 +240,7 @@ export class EvaluationController {
                         format,
                         data: normalizedData,
                         evaluatedBy: item.evaluatedBy,
-                        results: item.results,
+                        results: normalizeStoredResults(format, item.results),
                         createdAt: new Date(item.createdAt || Date.now()),
                         updatedAt: new Date(),
                     };
@@ -330,7 +369,7 @@ export class EvaluationController {
                     socratic?: number;
                     encouragement?: number;
                     factuality?: number;
-                    overall: number;
+                    overall: number | null;
                     reason: string;
                 };
                 evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
@@ -351,22 +390,26 @@ export class EvaluationController {
                 return;
             }
 
+            const existing = await EvaluationHistory.findById(id).lean();
+            if (!existing) {
+                res.status(404).json({ error: 'Không tìm thấy bản ghi evaluation history.' });
+                return;
+            }
+
+            const format = String((existing as any).format) === 'openai' ? 'openai' : 'alpaca';
+            const normalizedResults = normalizeStoredResults(format, results as any);
+
             const updated = await EvaluationHistory.findByIdAndUpdate(
                 id,
                 {
                     $set: {
-                        results,
+                        results: normalizedResults,
                         evaluatedBy,
                         updatedAt: new Date(),
                     },
                 },
                 { new: true }
             ).lean();
-
-            if (!updated) {
-                res.status(404).json({ error: 'Không tìm thấy bản ghi evaluation history.' });
-                return;
-            }
 
             res.json({
                 message: 'Cập nhật bản ghi evaluation thành công.',

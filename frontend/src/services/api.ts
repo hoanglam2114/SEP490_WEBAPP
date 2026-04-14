@@ -19,6 +19,17 @@ const api = axios.create({
   }
 });
 
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) {
+    return [items];
+  }
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "") => {
     const response = await api.post("/chat", { text_input, hf_hub_id });
@@ -174,11 +185,98 @@ export const apiService = {
     return response.data;
   },
 
+  evaluateDataChunked: async (
+    data: any[],
+    format?: string,
+    sampleSize?: number,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 100
+  ): Promise<EvaluationResult> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return {
+        sampleSize: 0,
+        evaluated: 0,
+        totalPopulation: 0,
+        avgScores: { overall: 0 },
+        passRate: 0,
+        samples: [],
+      };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.evaluateData(data, format, sampleSize, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(
+      chunks.map((chunk) => apiService.evaluateData(chunk, format, undefined, provider))
+    );
+
+    const samples = results.flatMap((item) => item.samples || []);
+    const evaluated = results.reduce((sum, item) => sum + (item.evaluated || 0), 0);
+    const totalPopulation = results.reduce((sum, item) => sum + (item.totalPopulation || 0), 0);
+    const totalPass = results.reduce((sum, item) => sum + ((item.passRate || 0) * (item.evaluated || 0)), 0);
+
+    const totals = samples.reduce(
+      (acc, sample) => ({
+        accuracy: acc.accuracy + (sample.scores.accuracy || 0),
+        clarity: acc.clarity + (sample.scores.clarity || 0),
+        completeness: acc.completeness + (sample.scores.completeness || 0),
+        socratic: acc.socratic + (sample.scores.socratic || 0),
+        encouragement: acc.encouragement + (sample.scores.encouragement || 0),
+        factuality: acc.factuality + (sample.scores.factuality || 0),
+        overall: acc.overall + (sample.scores.overall || 0),
+      }),
+      { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, encouragement: 0, factuality: 0, overall: 0 }
+    );
+
+    const divisor = Math.max(samples.length, 1);
+    return {
+      sampleSize: samples.length,
+      evaluated,
+      totalPopulation,
+      avgScores: {
+        accuracy: totals.accuracy / divisor,
+        clarity: totals.clarity / divisor,
+        completeness: totals.completeness / divisor,
+        socratic: totals.socratic / divisor,
+        encouragement: totals.encouragement / divisor,
+        factuality: totals.factuality / divisor,
+        overall: totals.overall / divisor,
+      },
+      passRate: evaluated > 0 ? totalPass / evaluated : 0,
+      samples,
+    };
+  },
+
   refineData: async (
-    data: Array<{ assistant: string; reason: string }>
+    data: Array<{ assistant: string; reason: string }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
   ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
-    const response = await api.post('/evaluate/refine', { data });
+    const response = await api.post('/evaluate/refine', { data, provider });
     return response.data;
+  },
+
+  refineDataChunked: async (
+    data: Array<{ assistant: string; reason: string }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 100
+  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return { items: [], refined: 0 };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.refineData(data, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(chunks.map((chunk) => apiService.refineData(chunk, provider)));
+
+    return {
+      items: results.flatMap((item) => item.items || []),
+      refined: results.reduce((sum, item) => sum + (item.refined || 0), 0),
+    };
   },
 
   saveEvaluationResults: async (payload: {
@@ -189,13 +287,13 @@ export const apiService = {
       data: Record<string, any>;
       evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
       results: {
-        accuracy?: number;
-        clarity?: number;
-        completeness?: number;
-        socratic?: number;
-        encouragement?: number;
-        factuality?: number;
-        overall: number;
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
         reason: string;
       };
       createdAt: string;
@@ -225,13 +323,13 @@ export const apiService = {
         data: Record<string, any>;
         evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
         results: {
-          accuracy?: number;
-          clarity?: number;
-          completeness?: number;
-          socratic?: number;
-          encouragement?: number;
-          factuality?: number;
-          overall: number;
+          accuracy?: number | null;
+          clarity?: number | null;
+          completeness?: number | null;
+          socratic?: number | null;
+          encouragement?: number | null;
+          factuality?: number | null;
+          overall: number | null;
           reason: string;
         };
         createdAt: string;
@@ -259,13 +357,13 @@ export const apiService = {
     id: string,
     payload: {
       results: {
-        accuracy?: number;
-        clarity?: number;
-        completeness?: number;
-        socratic?: number;
-        encouragement?: number;
-        factuality?: number;
-        overall: number;
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
         reason: string;
       };
       evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';

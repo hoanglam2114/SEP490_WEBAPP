@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
   Download,
   Loader2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Wand2,
   Zap,
 } from 'lucide-react';
@@ -22,17 +23,18 @@ import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type PreviewMode = 'alpaca' | 'openai';
+type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type EvaluationScores = {
-  accuracy?: number;
-  clarity?: number;
-  completeness?: number;
-  socratic?: number;
-  encouragement?: number;
-  factuality?: number;
-  overall: number;
+  accuracy?: number | null;
+  clarity?: number | null;
+  completeness?: number | null;
+  socratic?: number | null;
+  encouragement?: number | null;
+  factuality?: number | null;
+  overall: number | null;
   reason: string;
 };
 
@@ -94,6 +96,13 @@ function parseOptionalScore(value: string): number | undefined {
   return Math.min(10, Math.max(0, n));
 }
 
+function formatTableScore(value: number | null | undefined): string {
+  if (value === null || value === undefined || value === -1) {
+    return '';
+  }
+  return String(value);
+}
+
 function calculateOverallFromThree(a: number, b: number, c: number): number {
   return Math.round(((a + b + c) / 3) * 10) / 10;
 }
@@ -110,10 +119,9 @@ const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 2, label: 'Clean Data' },
   { id: 3, label: 'Visualization' },
   { id: 4, label: 'Clustering Data' },
-  { id: 5, label: 'Classification' },
-  { id: 6, label: 'Evaluation' },
-  { id: 7, label: 'Data Refinement' },
-  { id: 8, label: 'Finish' },
+  { id: 5, label: 'Evaluation' },
+  { id: 6, label: 'Data Refinement' },
+  { id: 7, label: 'Finish' },
 ];
 
 type VisualizationResult = {
@@ -134,17 +142,6 @@ function shuffle<T>(arr: T[]): T[] {
     [next[i], next[j]] = [next[j], next[i]];
   }
   return next;
-}
-
-function buildBalancedGroupAssignments(size: number, groupCount = 8): number[] {
-  const assignments = new Array(size).fill(1);
-  const indices = shuffle(Array.from({ length: size }, (_, i) => i));
-
-  indices.forEach((originalIndex, position) => {
-    assignments[originalIndex] = (position % groupCount) + 1;
-  });
-
-  return assignments;
 }
 
 function sanitizeRecordForDownload(record: any, mode: PreviewMode): any {
@@ -306,7 +303,7 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
 function StepperHeader({ currentStep }: { currentStep: Step }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
-      <div className="grid grid-cols-8 gap-2 sm:gap-3">
+      <div className="grid grid-cols-7 gap-2 sm:gap-3">
         {STEP_CONFIG.map((step) => {
           const isActive = step.id === currentStep;
           const isCompleted = step.id < currentStep;
@@ -343,65 +340,389 @@ function StepperHeader({ currentStep }: { currentStep: Step }) {
   );
 }
 
+function DetailTextModal({
+  isOpen,
+  title,
+  content,
+  onClose,
+}: {
+  isOpen: boolean;
+  title: string;
+  content: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">{title}</h4>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[65vh] overflow-y-auto px-5 py-4">
+          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-800">{content || '-'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionModalFrame({
+  isOpen,
+  title,
+  description,
+  confirmText,
+  isSubmitting,
+  onClose,
+  onConfirm,
+  children,
+}: {
+  isOpen: boolean;
+  title: string;
+  description: string;
+  confirmText: string;
+  isSubmitting?: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isSubmitting) {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">{title}</h4>
+          <p className="mt-1 text-sm text-gray-600">{description}</p>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">{children}</div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={Boolean(isSubmitting)}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={Boolean(isSubmitting)}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:bg-gray-400"
+          >
+            {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EvaluateModal({
+  isOpen,
+  provider,
+  onProviderChange,
+  onClose,
+  onConfirm,
+  isSubmitting,
+}: {
+  isOpen: boolean;
+  provider: AiProvider;
+  onProviderChange: (provider: AiProvider) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+  isSubmitting?: boolean;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Evaluate with AI"
+      description="Choose a model to evaluate all visible rows on this page."
+      confirmText="Confirm Evaluation"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
+        <select
+          value={provider}
+          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        >
+          <option value="gemini">Gemini</option>
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">Deepseek</option>
+        </select>
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function RefineModal({
+  isOpen,
+  provider,
+  scoreThreshold,
+  onProviderChange,
+  onScoreThresholdChange,
+  onClose,
+  onConfirm,
+  isSubmitting,
+}: {
+  isOpen: boolean;
+  provider: AiProvider;
+  scoreThreshold: number;
+  onProviderChange: (provider: AiProvider) => void;
+  onScoreThresholdChange: (value: number) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+  isSubmitting?: boolean;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Refine Data"
+      description="Choose a model and score threshold to refine all targeted visible rows."
+      confirmText="Confirm Refinement"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
+        <select
+          value={provider}
+          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        >
+          <option value="gemini">Gemini</option>
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">Deepseek</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">Refine items with overall &lt;=</label>
+        <input
+          type="number"
+          min={0}
+          max={10}
+          step={0.1}
+          value={scoreThreshold}
+          onChange={(e) => onScoreThresholdChange(Math.max(0, Math.min(10, Number(e.target.value) || 0)))}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        />
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function DeleteConfirmModal({
+  isOpen,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">Remove</h4>
+          <p className="mt-1 text-sm text-gray-600">Are you sure you want to remove this item?</p>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClampedTextCell({
+  text,
+  label,
+  onReadMore,
+}: {
+  text: string;
+  label: string;
+  onReadMore: (title: string, content: string) => void;
+}) {
+  const displayText = text || '-';
+  const textRef = useRef<HTMLParagraphElement | null>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    const evaluateOverflow = () => {
+      const node = textRef.current;
+      if (!node) {
+        return;
+      }
+      setIsOverflowing(node.scrollHeight > node.clientHeight + 1);
+    };
+
+    evaluateOverflow();
+    window.addEventListener('resize', evaluateOverflow);
+    return () => window.removeEventListener('resize', evaluateOverflow);
+  }, [displayText]);
+
+  return (
+    <div>
+      <p ref={textRef} className="whitespace-pre-wrap break-words line-clamp-3 text-gray-800">
+        {displayText}
+      </p>
+      {isOverflowing && (
+        <button
+          type="button"
+          onClick={() => onReadMore(label, displayText)}
+          className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-700"
+        >
+          Read more
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ConvertedDatasetTable({
   rows,
   mode,
   showEvaluationColumns,
   showEvaluationActions = true,
+  showRowSelection = true,
   evaluationMap,
   selectedManualRows,
   selectedRows,
   rowHighlightMap,
   editableSelectedRows = true,
-  clusterGroups,
-  evaluationGroupFilter,
-  onEvaluationGroupFilterChange,
   onEvaluate,
-  onEvaluateOpenAI,
-  onEvaluateDeepseek,
   onAccept,
   onReset,
   onToggleRow,
   onManualFieldChange,
   extraActions,
   isEvaluating,
-  isEvaluatingOpenAI,
-  isEvaluatingDeepseek,
   disableEvaluate,
   isAccepting,
   onVisibleRowsChange,
+  onRequestDeleteRow,
 }: {
   rows: DisplayRow[];
   mode: PreviewMode;
   showEvaluationColumns?: boolean;
   showEvaluationActions?: boolean;
+  showRowSelection?: boolean;
   evaluationMap?: Record<string, RowEvaluationEntry>;
   selectedManualRows?: Set<string>;
   selectedRows?: Set<string>;
   rowHighlightMap?: Record<string, 'refined'>;
   editableSelectedRows?: boolean;
-  clusterGroups?: ClusterGroup[];
-  evaluationGroupFilter?: 'all' | number;
-  onEvaluationGroupFilterChange?: (value: 'all' | number) => void;
   onEvaluate?: () => void;
-  onEvaluateOpenAI?: () => void;
-  onEvaluateDeepseek?: () => void;
   onAccept?: () => void;
   onReset?: () => void;
   onToggleRow?: (row: DisplayRow, checked: boolean) => void;
   onManualFieldChange?: (row: DisplayRow, field: string, value: string) => void;
   extraActions?: any;
   isEvaluating?: boolean;
-  isEvaluatingOpenAI?: boolean;
-  isEvaluatingDeepseek?: boolean;
   disableEvaluate?: boolean;
   isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
+  onRequestDeleteRow?: (row: DisplayRow) => void;
 }) {
-  const PAGE_SIZE_STEPS = [10, 20, 100, 250, 500];
+  const PAGE_SIZE_STEPS = [5, 10, 20, 100, 250, 500];
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_STEPS[0]);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState<boolean>(false);
+  const [detailModal, setDetailModal] = useState<{ title: string; content: string } | null>(null);
   const lastVisibleSignatureRef = useRef<string>('');
 
   useEffect(() => {
@@ -441,6 +762,8 @@ function ConvertedDatasetTable({
   };
 
   const hasRows = totalRows > 0;
+  const showDeleteAction = Boolean(onRequestDeleteRow);
+  const emptyColSpan = (showEvaluationColumns ? (showRowSelection ? 9 : 8) : 3) + (showDeleteAction ? 1 : 0);
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
   const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
@@ -495,23 +818,6 @@ function ConvertedDatasetTable({
               ))}
             </select>
 
-            {showEvaluationColumns && (
-              <select
-                value={evaluationGroupFilter === 'all' ? 'all' : String(evaluationGroupFilter)}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  onEvaluationGroupFilterChange?.(value === 'all' ? 'all' : Number(value));
-                }}
-                className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700"
-              >
-                <option value="all">All groups</option>
-                {(clusterGroups || []).map((group) => (
-                  <option key={group.groupId} value={group.groupId}>
-                    Group {group.groupId} - {group.label} ({group.count})
-                  </option>
-                ))}
-              </select>
-            )}
           </div>
 
           {showEvaluationColumns && showEvaluationActions && (
@@ -522,30 +828,8 @@ function ConvertedDatasetTable({
                 className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white text-xs font-semibold"
               >
                 {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                <span>Evaluate with Gemini</span>
+                <span>Evaluate with AI</span>
               </button>
-
-              {onEvaluateOpenAI && (
-                <button
-                  onClick={onEvaluateOpenAI}
-                  disabled={!hasRows || disableEvaluate || isEvaluatingOpenAI}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:bg-gray-400 text-white text-xs font-semibold"
-                >
-                  {isEvaluatingOpenAI ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                  <span>Evaluate with OpenAI</span>
-                </button>
-              )}
-
-              {onEvaluateDeepseek && (
-                <button
-                  onClick={onEvaluateDeepseek}
-                  disabled={!hasRows || disableEvaluate || isEvaluatingDeepseek}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white text-xs font-semibold"
-                >
-                  {isEvaluatingDeepseek ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                  <span>Evaluate with Deepseek</span>
-                </button>
-              )}
 
               {extraActions}
 
@@ -570,17 +854,29 @@ function ConvertedDatasetTable({
       </div>
 
       <div className="overflow-auto max-h-[680px]">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-sm table-fixed">
+          <colgroup>
+            {showEvaluationColumns && showRowSelection && <col className="w-[48px]" />}
+            <col className="w-[30%]" />
+            <col className="w-[20%]" />
+            <col className="w-[40%]" />
+            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="min-w-[280px]" />}
+            {showDeleteAction && <col className="w-[64px]" />}
+          </colgroup>
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
-              {showEvaluationColumns && <th className="px-4 py-3 w-[48px]" />}
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[26%]">
+              {showEvaluationColumns && showRowSelection && <th className="px-4 py-3 w-[48px]" />}
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'User' : 'Instruction'}
               </th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[18%]">
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? '<think>' : 'Input'}
               </th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[26%]">
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'Assistant' : 'Output'}
               </th>
               {showEvaluationColumns && (
@@ -590,6 +886,7 @@ function ConvertedDatasetTable({
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">overall</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700 min-w-[280px]">reason</th>
+                  {showDeleteAction && <th className="px-2 py-3" />}
                 </>
               )}
             </tr>
@@ -622,18 +919,32 @@ function ConvertedDatasetTable({
                         }`}
                     >
                       {pairIndex === 0 && (
-                        <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
-                          <input
-                            type="checkbox"
-                            checked={isManual}
-                            onChange={(e) => onToggleRow?.(row, e.target.checked)}
-                          />
-                        </td>
+                        showRowSelection ? (
+                          <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
+                            <input
+                              type="checkbox"
+                              checked={isManual}
+                              onChange={(e) => onToggleRow?.(row, e.target.checked)}
+                            />
+                          </td>
+                        ) : null
                       )}
 
-                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                      <td className="px-4 py-3 align-top">
+                        <ClampedTextCell
+                          text={pair.user || '-'}
+                          label="User"
+                          onReadMore={(title, content) => setDetailModal({ title, content })}
+                        />
+                      </td>
                       <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
-                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+                      <td className="px-4 py-3 align-top">
+                        <ClampedTextCell
+                          text={pair.assistant || '-'}
+                          label="Assistant"
+                          onReadMore={(title, content) => setDetailModal({ title, content })}
+                        />
+                      </td>
 
                       {pairIndex === 0 && (
                         <>
@@ -649,7 +960,7 @@ function ConvertedDatasetTable({
                                 className={metricInputClass}
                               />
                             ) : (
-                              score?.socratic ?? ''
+                              formatTableScore(score?.socratic)
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
@@ -664,7 +975,7 @@ function ConvertedDatasetTable({
                                 className={metricInputClass}
                               />
                             ) : (
-                              score?.encouragement ?? ''
+                              formatTableScore(score?.encouragement)
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
@@ -679,10 +990,10 @@ function ConvertedDatasetTable({
                                 className={metricInputClass}
                               />
                             ) : (
-                              score?.factuality ?? ''
+                              formatTableScore(score?.factuality)
                             )}
                           </td>
-                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{score?.overall ?? ''}</td>
+                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{formatTableScore(score?.overall)}</td>
                           <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
                             {isManual && editableSelectedRows ? (
                               <input
@@ -695,6 +1006,21 @@ function ConvertedDatasetTable({
                               score?.reason ?? ''
                             )}
                           </td>
+                          {showDeleteAction && (
+                            <td className="px-2 py-3 align-bottom" rowSpan={pairs.length}>
+                              <div className="flex h-full items-end justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => onRequestDeleteRow?.(row)}
+                                  className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                                  title="Delete sample"
+                                  aria-label="Delete sample"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          )}
                         </>
                       )}
                     </tr>
@@ -714,9 +1040,21 @@ function ConvertedDatasetTable({
                           : 'border-b border-b-gray-100'
                           } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
                       >
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={pair.user || '-'}
+                            label="User"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={pair.assistant || '-'}
+                            label="Assistant"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                       </tr>
                     ));
                   })
@@ -736,7 +1074,7 @@ function ConvertedDatasetTable({
                         className={`align-top ${row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
                           } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''} ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''}`}
                       >
-                        {showEvaluationColumns && (
+                        {showEvaluationColumns && showRowSelection && (
                           <td className="px-4 py-3">
                             <input
                               type="checkbox"
@@ -745,9 +1083,21 @@ function ConvertedDatasetTable({
                             />
                           </td>
                         )}
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.userText || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={row.userText || '-'}
+                            label="Instruction"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={row.assistantText || '-'}
+                            label="Output"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         {showEvaluationColumns && (
                           <>
                             <td className="px-4 py-3 text-gray-700">
@@ -762,7 +1112,7 @@ function ConvertedDatasetTable({
                                   className={metricInputClass}
                                 />
                               ) : (
-                                score?.accuracy ?? ''
+                                formatTableScore(score?.accuracy)
                               )}
                             </td>
                             <td className="px-4 py-3 text-gray-700">
@@ -777,7 +1127,7 @@ function ConvertedDatasetTable({
                                   className={metricInputClass}
                                 />
                               ) : (
-                                score?.clarity ?? ''
+                                formatTableScore(score?.clarity)
                               )}
                             </td>
                             <td className="px-4 py-3 text-gray-700">
@@ -792,10 +1142,10 @@ function ConvertedDatasetTable({
                                   className={metricInputClass}
                                 />
                               ) : (
-                                score?.completeness ?? ''
+                                formatTableScore(score?.completeness)
                               )}
                             </td>
-                            <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
+                            <td className="px-4 py-3 text-gray-700 font-semibold">{formatTableScore(score?.overall)}</td>
                             <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
                               {isManual && editableSelectedRows ? (
                                 <input
@@ -808,6 +1158,21 @@ function ConvertedDatasetTable({
                                 score?.reason ?? ''
                               )}
                             </td>
+                            {showDeleteAction && (
+                              <td className="px-2 py-3 align-bottom">
+                                <div className="flex h-full items-end justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => onRequestDeleteRow?.(row)}
+                                    className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                                    title="Delete sample"
+                                    aria-label="Delete sample"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            )}
                           </>
                         )}
                       </tr>
@@ -815,7 +1180,7 @@ function ConvertedDatasetTable({
                   })
             ) : (
               <tr>
-                <td colSpan={showEvaluationColumns ? 9 : 3} className="px-4 py-10 text-center text-gray-500">
+                <td colSpan={emptyColSpan} className="px-4 py-10 text-center text-gray-500">
                   No converted records to preview.
                 </td>
               </tr>
@@ -845,6 +1210,13 @@ function ConvertedDatasetTable({
           </button>
         </div>
       )}
+
+      <DetailTextModal
+        isOpen={Boolean(detailModal)}
+        title={detailModal?.title || ''}
+        content={detailModal?.content || ''}
+        onClose={() => setDetailModal(null)}
+      />
     </div>
   );
 }
@@ -1191,6 +1563,7 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
 export function ConversionPage() {
   const { uploadedFile, conversionOptions, projectName, setProjectName, updateConversionOptions } = useAppStore();
   const location = useLocation();
+  const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
@@ -1207,15 +1580,18 @@ export function ConversionPage() {
   const [clusterGroups, setClusterGroups] = useState<ClusterGroup[]>([]);
   const [rowClusterMap, setRowClusterMap] = useState<Record<string, number>>({});
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
-  const [classificationGroups, setClassificationGroups] = useState<ClusterGroup[]>([]);
-  const [rowClassificationMap, setRowClassificationMap] = useState<Record<string, number>>({});
-  const [recordGroupAssignments, setRecordGroupAssignments] = useState<number[]>([]);
-  const [evaluationGroupFilter, setEvaluationGroupFilter] = useState<'all' | number>('all');
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
   const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
   const [loadedProjectFileId, setLoadedProjectFileId] = useState<string | null>(null);
   const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[] } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
+  const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
+  const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
+  const [isRefineModalOpen, setIsRefineModalOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<DisplayRow | null>(null);
+  const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
+  const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
+  const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
   const loadHandledRef = useRef<boolean>(false);
 
   const { data: stats } = useQuery({
@@ -1236,36 +1612,25 @@ export function ConversionPage() {
     [allRows, rowClusterMap]
   );
 
-  const rowsWithClassificationGroups = useMemo(
-    () => allRows.map((row) => ({ ...row, groupId: rowClassificationMap[row.id] ?? row.groupId })),
-    [allRows, rowClassificationMap]
-  );
-
   const clusteredRows = useMemo(() => {
     if (!selectedClusterIds.length) return rowsWithClusterGroups;
     return rowsWithClusterGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
   }, [rowsWithClusterGroups, selectedClusterIds]);
 
-  const classifiedRows = useMemo(() => {
-    if (evaluationGroupFilter === 'all') return rowsWithClassificationGroups;
-    return rowsWithClassificationGroups.filter((row) => row.groupId === evaluationGroupFilter);
-  }, [rowsWithClassificationGroups, evaluationGroupFilter]);
-
   const evaluationRows = useMemo(() => {
     if (previewMode !== 'openai') {
-      return classifiedRows;
+      return rowsWithClusterGroups;
     }
 
     const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
     const groupByConversation = new Map<string, number | undefined>();
-    rowsWithClassificationGroups.forEach((row) => {
+    rowsWithClusterGroups.forEach((row) => {
       if (!groupByConversation.has(row.blockId)) {
         groupByConversation.set(row.blockId, row.groupId);
       }
     });
 
     return conversations
-      .filter((conv) => evaluationGroupFilter === 'all' || groupByConversation.get(String(conv.conversation_id)) === evaluationGroupFilter)
       .map((conv, index) => {
         const pairs: Array<{ user: string; assistant: string }> = [];
         for (let i = 0; i < conv.messages.length; i += 1) {
@@ -1290,10 +1655,12 @@ export function ConversionPage() {
           groupId: groupByConversation.get(String(conv.conversation_id)),
         } as DisplayRow;
       });
-  }, [classifiedRows, conversionResult?.data, evaluationGroupFilter, previewMode, rowsWithClassificationGroups]);
+  }, [conversionResult?.data, previewMode, rowsWithClusterGroups]);
 
   const averagedEvaluation = useMemo(() => {
-    const values = Object.values(evaluationMap).map((entry) => entry.scores);
+    const values = Object.values(evaluationMap)
+      .map((entry) => entry.scores)
+      .filter((score) => Number.isFinite(score.overall) && (score.overall as number) >= 0);
     if (!values.length) return null;
     const total = values.reduce(
       (acc, item) => ({
@@ -1335,10 +1702,8 @@ export function ConversionPage() {
       setClusterGroups([]);
       setRowClusterMap({});
       setSelectedClusterIds([]);
-      setClassificationGroups([]);
-      setRowClassificationMap({});
-      setRecordGroupAssignments([]);
-      setEvaluationGroupFilter('all');
+      setVisibleRowsInEvaluation([]);
+      setVisibleRowsInRefinement([]);
       if (mode === 'initial') {
         setOriginalConvertedResult(data);
         setCurrentStep(2);
@@ -1351,8 +1716,15 @@ export function ConversionPage() {
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: async (params: { provider: 'gemini' | 'openai' | 'deepseek'; rows: DisplayRow[]; skipManual: boolean }) => {
-      const rowsToEvaluate = params.rows.filter((row) => (params.skipManual ? !manualRowIds.has(row.id) : true));
+    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[]; excludeManualEvaluated: boolean }) => {
+      const rowsToEvaluate = params.rows.filter((row) => {
+        if (!params.excludeManualEvaluated) {
+          return true;
+        }
+        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+        return entry?.evaluatedBy !== 'manual';
+      });
+
       if (!rowsToEvaluate.length) throw new Error('No rows to evaluate.');
 
       const newMap: Record<string, RowEvaluationEntry> = {};
@@ -1367,10 +1739,10 @@ export function ConversionPage() {
           messages: convMessagesMap.get(convId) || [],
         }));
 
-        const evaluation = await apiService.evaluateData(conversationPayload, previewMode, undefined, params.provider);
+        const evaluation = await apiService.evaluateDataChunked(conversationPayload, previewMode, undefined, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const convId = convOrderedIds[idx];
-          if (!convId || !Number.isFinite(sample.scores.overall) || sample.scores.overall <= 0) return;
+          if (!convId || !Number.isFinite(sample.scores.overall)) return;
           const score: EvaluationScores = {
             socratic: sample.scores.socratic,
             encouragement: sample.scores.encouragement,
@@ -1384,10 +1756,10 @@ export function ConversionPage() {
         });
       } else {
         const payload = rowsToEvaluate.map((row) => ({ instruction: row.instruction, input: row.input, output: row.output }));
-        const evaluation = await apiService.evaluateData(payload, previewMode, undefined, params.provider);
+        const evaluation = await apiService.evaluateDataChunked(payload, previewMode, undefined, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const row = rowsToEvaluate[idx];
-          if (!row || !Number.isFinite(sample.scores.overall) || sample.scores.overall <= 0) return;
+          if (!row || !Number.isFinite(sample.scores.overall)) return;
           newMap[row.id] = {
             scores: {
               accuracy: sample.scores.accuracy,
@@ -1417,19 +1789,31 @@ export function ConversionPage() {
   });
 
   const refineMutation = useMutation({
-    mutationFn: async () => {
-      const candidateRows = evaluationRows.filter((row) => {
-        const score = evaluationMap[row.id]?.scores.overall;
-        return Number.isFinite(score) && (score || 0) < 8;
+    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[]; scoreThreshold: number }) => {
+      const candidateRows = params.rows.filter((row) => {
+        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+        const overall = entry?.scores?.overall;
+        return Number.isFinite(overall) && (overall as number) >= 0 && (overall as number) <= params.scoreThreshold;
       });
+
       if (!candidateRows.length) {
-        throw new Error('No rows with overall < 8 in the current filtered dataset.');
+        throw new Error(`No visible rows matched overall <= ${params.scoreThreshold.toFixed(1)}.`);
       }
+
+      const hasMissingReason = candidateRows.some((row) => {
+        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
+        return !String(entry?.scores?.reason || '').trim();
+      });
+
+      if (hasMissingReason) {
+        throw new Error('Please ensure all targeted items have a reason before refining.');
+      }
+
       const payload = candidateRows.map((row) => ({
         assistant: row.assistantText,
-        reason: evaluationMap[row.id]?.scores.reason || '',
+        reason: (evaluationMap[row.id] || evaluationMap[row.blockId])?.scores.reason || '',
       }));
-      const refined = await apiService.refineData(payload);
+      const refined = await apiService.refineDataChunked(payload, params.provider);
 
       setConversionResult((prev) => {
         if (!prev) return prev;
@@ -1482,9 +1866,12 @@ export function ConversionPage() {
       candidateRows.forEach((row) => selectable.add(row.id));
       setRefinementSelectedRowIds(selectable);
 
-      return candidateRows.length;
+      return { count: candidateRows.length, provider: params.provider };
     },
-    onSuccess: (count) => toast.success(`Refined ${count} rows using Gemini.`),
+    onSuccess: ({ count, provider }) => {
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
+      toast.success(`Refined ${count} rows using ${label}.`);
+    },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
   });
 
@@ -1505,17 +1892,17 @@ export function ConversionPage() {
           const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
           const defaultScores: EvaluationScores = previewMode === 'openai'
             ? {
-              socratic: -1,
-              encouragement: -1,
-              factuality: -1,
-              overall: -1,
+              socratic: null,
+              encouragement: null,
+              factuality: null,
+              overall: null,
               reason: '',
             }
             : {
-              accuracy: -1,
-              clarity: -1,
-              completeness: -1,
-              overall: -1,
+              accuracy: null,
+              clarity: null,
+              completeness: null,
+              overall: null,
               reason: '',
             };
           const resolvedScores = entry?.scores || defaultScores;
@@ -1526,16 +1913,21 @@ export function ConversionPage() {
               ? { messages: convMessagesMap.get(row.blockId) || [] }
               : { instruction: row.instruction, input: row.input, output: row.output },
             evaluatedBy: entry?.evaluatedBy || 'none',
-            results: {
-              accuracy: resolvedScores.accuracy,
-              clarity: resolvedScores.clarity,
-              completeness: resolvedScores.completeness,
-              socratic: resolvedScores.socratic,
-              encouragement: resolvedScores.encouragement,
-              factuality: resolvedScores.factuality,
-              overall: resolvedScores.overall,
-              reason: resolvedScores.reason,
-            },
+            results: previewMode === 'openai'
+              ? {
+                socratic: resolvedScores.socratic ?? null,
+                encouragement: resolvedScores.encouragement ?? null,
+                factuality: resolvedScores.factuality ?? null,
+                overall: resolvedScores.overall ?? null,
+                reason: resolvedScores.reason,
+              }
+              : {
+                accuracy: resolvedScores.accuracy ?? null,
+                clarity: resolvedScores.clarity ?? null,
+                completeness: resolvedScores.completeness ?? null,
+                overall: resolvedScores.overall ?? null,
+                reason: resolvedScores.reason,
+              },
             createdAt,
           };
         }) as Array<any>;
@@ -1622,13 +2014,12 @@ export function ConversionPage() {
     setConversionResult(originalConvertedResult);
     setClusterGroups([]);
     setRowClusterMap({});
-    setClassificationGroups([]);
-    setRowClassificationMap({});
-    setRecordGroupAssignments([]);
     setEvaluationMap({});
     setManualRowIds(new Set());
     setRefinedRowIds(new Set());
     setRefinementSelectedRowIds(new Set());
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
     toast.success('Dataset reset to original converted state.');
   };
 
@@ -1656,50 +2047,22 @@ export function ConversionPage() {
     }
   };
 
-  const handleClassify = () => {
-    if (!conversionResult?.data?.length) {
-      toast.error('No data available for classification.');
-      return;
-    }
-    const assignments = buildBalancedGroupAssignments(conversionResult.data.length, 8);
-    setRecordGroupAssignments(assignments);
-
-    const nextRowMap: Record<string, number> = {};
-    if (previewMode === 'openai') {
-      const conversations = normalizeOpenAIConversations(conversionResult.data || []);
-      const convToGroup = new Map<string, number>();
-      conversations.forEach((conv, idx) => convToGroup.set(String(conv.conversation_id), assignments[idx] || 1));
-      allRows.forEach((row) => {
-        nextRowMap[row.id] = convToGroup.get(row.blockId) || 1;
-      });
-    } else {
-      allRows.forEach((row, idx) => {
-        nextRowMap[row.id] = assignments[idx] || 1;
-      });
-    }
-    setRowClassificationMap(nextRowMap);
-
-    const groups = Array.from({ length: 8 }, (_, i) => {
-      const groupId = i + 1;
-      return {
-        groupId,
-        label: `Group ${groupId}`,
-        count: assignments.filter((g) => g === groupId).length,
-      };
-    });
-    setClassificationGroups(groups);
-    setEvaluationGroupFilter('all');
-    toast.success('Classification completed. Dataset is split into Group 1 to Group 8.');
-  };
-
   const handleDownloadTrainTestZip = async () => {
-    if (!conversionResult?.data?.length || !recordGroupAssignments.length) {
-      toast.error('Please run Classification first.');
+    if (!conversionResult?.data?.length || !clusterGroups.length) {
+      toast.error('Please run Clustering first.');
       return;
     }
+
+    const groupAssignments =
+      previewMode === 'openai'
+        ? normalizeOpenAIConversations(conversionResult.data || []).map((conv) => {
+            const row = rowsWithClusterGroups.find((item) => item.blockId === String(conv.conversation_id));
+            return row?.groupId ?? 1;
+          })
+        : allRows.map((row) => rowClusterMap[row.id] ?? row.groupId ?? 1);
 
     const byGroup = new Map<number, number[]>();
-    recordGroupAssignments.forEach((groupId, idx) => {
+    groupAssignments.forEach((groupId, idx) => {
       if (!byGroup.has(groupId)) byGroup.set(groupId, []);
       byGroup.get(groupId)!.push(idx);
     });
@@ -1736,7 +2099,7 @@ export function ConversionPage() {
       return;
     }
 
-    const qualifiedRows = rowsWithClassificationGroups.filter((row) => {
+    const qualifiedRows = rowsWithClusterGroups.filter((row) => {
       const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
       const overall = entry?.scores?.overall;
       return Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold;
@@ -1889,21 +2252,25 @@ export function ConversionPage() {
     setClusterGroups([]);
     setRowClusterMap({});
     setSelectedClusterIds([]);
-    setClassificationGroups([]);
-    setRowClassificationMap({});
-    setRecordGroupAssignments([]);
-    setEvaluationGroupFilter('all');
     setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
     setLoadedProjectFileId(payload.fileId || null);
     updateConversionOptions({ format: normalizedFormat });
     setProjectName(payload.projectName || formatDefaultProjectName());
-    setCurrentStep(6);
+    setCurrentStep(5);
     loadHandledRef.current = true;
-    toast.success('Project loaded. Continue evaluation at Step 6.');
-  }, [location.state, setProjectName, updateConversionOptions]);
+
+    // Clear consumed router state to avoid accidental re-processing on future renders.
+    navigate(location.pathname, { replace: true, state: null });
+
+    toast.success('Project loaded. Continue evaluation at Step 5.');
+  }, [location.pathname, location.state, navigate, setProjectName, updateConversionOptions]);
 
   useEffect(() => {
-    if (loadHandledRef.current && !uploadedFile?.fileId) {
+    const hasLoadProjectState = Boolean((location.state as { loadProject?: LoadProjectPayload } | null)?.loadProject);
+
+    // Do not run reset flow while restoring project from history.
+    if (hasLoadProjectState || loadHandledRef.current) {
       return;
     }
 
@@ -1918,23 +2285,19 @@ export function ConversionPage() {
     setClusterGroups([]);
     setRowClusterMap({});
     setSelectedClusterIds([]);
-    setClassificationGroups([]);
-    setRowClassificationMap({});
-    setRecordGroupAssignments([]);
-    setEvaluationGroupFilter('all');
     setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
     setLoadedProjectFileId(null);
     loadHandledRef.current = false;
     if (uploadedFile?.fileId) setProjectName(formatDefaultProjectName());
     else setProjectName('');
-  }, [uploadedFile?.fileId]);
+  }, [location.state, setProjectName, uploadedFile?.fileId]);
 
   const canMoveFromStep2 = !!conversionResult;
   const canMoveFromStep3 = !!visualizationResult;
   const canMoveFromStep4 = clusterGroups.length > 0;
-  const canMoveFromStep5 = classificationGroups.length === 8;
+  const canMoveFromStep5 = !!conversionResult;
   const canMoveFromStep6 = !!conversionResult;
-  const canMoveFromStep7 = !!conversionResult;
 
   const refinedHighlightMap = useMemo(() => {
     const map: Record<string, 'refined'> = {};
@@ -1943,6 +2306,141 @@ export function ConversionPage() {
     });
     return map;
   }, [refinedRowIds]);
+
+  const visibleRefinedRowsInStep6 = useMemo(
+    () => visibleRowsInRefinement.filter((row) => refinedRowIds.has(row.id) || refinedRowIds.has(row.blockId)),
+    [refinedRowIds, visibleRowsInRefinement]
+  );
+
+  const remapKeyAfterAlpacaDelete = (key: string, deletedIndex: number): string | null => {
+    const match = /^alpaca-(\d+)$/.exec(key);
+    if (!match) {
+      return key;
+    }
+    const index = Number(match[1]);
+    if (index === deletedIndex) {
+      return null;
+    }
+    if (index > deletedIndex) {
+      return `alpaca-${index - 1}`;
+    }
+    return key;
+  };
+
+  const remapRecordKeysAfterAlpacaDelete = <T,>(source: Record<string, T>, deletedIndex: number): Record<string, T> => {
+    return Object.entries(source).reduce((acc, [key, value]) => {
+      const nextKey = remapKeyAfterAlpacaDelete(key, deletedIndex);
+      if (nextKey) {
+        acc[nextKey] = value;
+      }
+      return acc;
+    }, {} as Record<string, T>);
+  };
+
+  const remapSetKeysAfterAlpacaDelete = (source: Set<string>, deletedIndex: number): Set<string> => {
+    const next = new Set<string>();
+    source.forEach((key) => {
+      const mapped = remapKeyAfterAlpacaDelete(key, deletedIndex);
+      if (mapped) {
+        next.add(mapped);
+      }
+    });
+    return next;
+  };
+
+  const buildGroupsFromData = (data: any[], clusterMap: Record<string, number>): ClusterGroup[] => {
+    const rows = buildDisplayRows(data, previewMode, conversionOptions.removeThinkTags ?? true);
+    const counts = new Map<number, number>();
+    rows.forEach((row) => {
+      const groupId = clusterMap[row.id] ?? row.groupId;
+      if (!Number.isFinite(groupId)) {
+        return;
+      }
+      const id = Number(groupId);
+      counts.set(id, (counts.get(id) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([groupId, count]) => ({ groupId, count, label: `Group ${groupId}` }));
+  };
+
+  const handleConfirmDeleteSample = () => {
+    if (!conversionResult || !itemToDelete) {
+      setItemToDelete(null);
+      return;
+    }
+
+    let nextData = conversionResult.data || [];
+    let nextEvaluationMap = { ...evaluationMap };
+    let nextManualRowIds = new Set(manualRowIds);
+    let nextRefinedRowIds = new Set(refinedRowIds);
+    let nextRefinementSelectedRowIds = new Set(refinementSelectedRowIds);
+    let nextRowClusterMap = { ...rowClusterMap };
+
+    if (previewMode === 'openai') {
+      const targetId = itemToDelete.blockId;
+      if (Array.isArray(conversionResult.data?.[0]?.messages)) {
+        const convs = normalizeOpenAIConversations(conversionResult.data || []);
+        const removeIndex = convs.findIndex((conv) => String(conv.conversation_id) === targetId);
+        if (removeIndex >= 0) {
+          nextData = conversionResult.data.filter((_, idx) => idx !== removeIndex);
+        }
+      } else {
+        nextData = (conversionResult.data || []).filter((item: any) => String(item?.conversation_id || '') !== targetId);
+      }
+
+      delete nextEvaluationMap[itemToDelete.id];
+      delete nextEvaluationMap[itemToDelete.blockId];
+      nextManualRowIds.delete(itemToDelete.id);
+      nextManualRowIds.delete(itemToDelete.blockId);
+      nextRefinedRowIds.delete(itemToDelete.id);
+      nextRefinedRowIds.delete(itemToDelete.blockId);
+      nextRefinementSelectedRowIds.delete(itemToDelete.id);
+      nextRefinementSelectedRowIds.delete(itemToDelete.blockId);
+      delete nextRowClusterMap[itemToDelete.id];
+      delete nextRowClusterMap[itemToDelete.blockId];
+    } else {
+      const match = /^alpaca-(\d+)$/.exec(itemToDelete.id);
+      const deleteIndex = match ? Number(match[1]) : -1;
+      if (deleteIndex >= 0) {
+        nextData = (conversionResult.data || []).filter((_, idx) => idx !== deleteIndex);
+        nextEvaluationMap = remapRecordKeysAfterAlpacaDelete(nextEvaluationMap, deleteIndex);
+        nextManualRowIds = remapSetKeysAfterAlpacaDelete(nextManualRowIds, deleteIndex);
+        nextRefinedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinedRowIds, deleteIndex);
+        nextRefinementSelectedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinementSelectedRowIds, deleteIndex);
+        nextRowClusterMap = remapRecordKeysAfterAlpacaDelete(nextRowClusterMap, deleteIndex);
+      }
+    }
+
+    const nextStats = {
+      ...conversionResult.stats,
+      totalConversations: nextData.length,
+      totalMessages: previewMode === 'openai'
+        ? normalizeOpenAIConversations(nextData).reduce((sum, conv) => sum + (Array.isArray(conv.messages) ? conv.messages.length : 0), 0)
+        : nextData.length,
+    };
+
+    const nextGroups = buildGroupsFromData(nextData, nextRowClusterMap);
+
+    setConversionResult({
+      ...conversionResult,
+      data: nextData,
+      output: JSON.stringify(nextData),
+      stats: nextStats,
+    });
+    setEvaluationMap(nextEvaluationMap);
+    setManualRowIds(nextManualRowIds);
+    setRefinedRowIds(nextRefinedRowIds);
+    setRefinementSelectedRowIds(nextRefinementSelectedRowIds);
+    setRowClusterMap(nextRowClusterMap);
+    setClusterGroups(nextGroups);
+    setSelectedClusterIds((prev) => prev.filter((id) => nextGroups.some((group) => group.groupId === id)));
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    setItemToDelete(null);
+    toast.success('Sample deleted successfully.');
+  };
 
   return (
     <div className="space-y-6">
@@ -2215,55 +2713,22 @@ export function ConversionPage() {
 
       {currentStep === 5 && (
         <div className="space-y-5">
-          <div className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Step 5 - Classification</h3>
-              <p className="text-sm text-gray-600">Preview current data and split randomly into Group 1..8 for downstream filtering.</p>
-            </div>
-            <button onClick={handleClassify} className="px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">Classify</button>
-          </div>
-
-          <ConvertedDatasetTable rows={classifiedRows} mode={previewMode} />
-
-          {classificationGroups.length > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {classificationGroups.map((group) => (
-                <div key={group.groupId} className="bg-indigo-50 border border-indigo-100 rounded-lg p-3">
-                  <div className="text-xs text-indigo-700">Group {group.groupId}</div>
-                  <div className="text-lg font-bold text-indigo-900">{group.count}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(4)} onNext={() => setCurrentStep(6)} nextDisabled={!canMoveFromStep5} />
-        </div>
-      )}
-
-      {currentStep === 6 && (
-        <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
             mode={previewMode}
             showEvaluationColumns
             evaluationMap={evaluationMap}
             selectedManualRows={manualRowIds}
-            clusterGroups={classificationGroups}
-            evaluationGroupFilter={evaluationGroupFilter}
-            onEvaluationGroupFilterChange={setEvaluationGroupFilter}
-            onEvaluate={() => evaluateMutation.mutate({ provider: 'gemini', rows: visibleRowsInEvaluation, skipManual: true })}
-            onEvaluateOpenAI={() => evaluateMutation.mutate({ provider: 'openai', rows: visibleRowsInEvaluation, skipManual: true })}
-            onEvaluateDeepseek={() => evaluateMutation.mutate({ provider: 'deepseek', rows: visibleRowsInEvaluation, skipManual: true })}
+            onEvaluate={() => setIsEvaluateModalOpen(true)}
             onAccept={() => acceptMutation.mutate()}
             onReset={handleResetEvaluation}
             onToggleRow={handleToggleManualRow}
             onManualFieldChange={handleManualFieldChange}
-            isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
-            isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
-            isEvaluatingDeepseek={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'deepseek'}
+            isEvaluating={evaluateMutation.isPending}
             disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
             isAccepting={acceptMutation.isPending}
             onVisibleRowsChange={setVisibleRowsInEvaluation}
+            onRequestDeleteRow={(row) => setItemToDelete(row)}
           />
 
           {averagedEvaluation && (
@@ -2277,48 +2742,26 @@ export function ConversionPage() {
             </div>
           )}
 
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(5)} onNext={() => setCurrentStep(7)} nextDisabled={!canMoveFromStep6} />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(4)} onNext={() => setCurrentStep(6)} nextDisabled={!canMoveFromStep5} />
         </div>
       )}
 
-      {currentStep === 7 && (
+      {currentStep === 6 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
             mode={previewMode}
             showEvaluationColumns
+            showRowSelection={false}
             evaluationMap={evaluationMap}
-            selectedRows={refinementSelectedRowIds}
             editableSelectedRows={false}
             rowHighlightMap={refinedHighlightMap}
-            clusterGroups={classificationGroups}
-            evaluationGroupFilter={evaluationGroupFilter}
-            onEvaluationGroupFilterChange={setEvaluationGroupFilter}
-            onEvaluate={() => {
-              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
-              evaluateMutation.mutate({ provider: 'gemini', rows, skipManual: false });
-            }}
-            onEvaluateOpenAI={() => {
-              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
-              evaluateMutation.mutate({ provider: 'openai', rows, skipManual: false });
-            }}
-            onEvaluateDeepseek={() => {
-              const rows = evaluationRows.filter((r) => refinementSelectedRowIds.has(r.id));
-              evaluateMutation.mutate({ provider: 'deepseek', rows, skipManual: false });
-            }}
+            onEvaluate={() => setIsEvaluateModalOpen(true)}
             onAccept={() => acceptMutation.mutate()}
             onReset={handleResetEvaluation}
-            onToggleRow={(row, checked) => {
-              setRefinementSelectedRowIds((prev) => {
-                const next = new Set(prev);
-                if (checked) next.add(row.id);
-                else next.delete(row.id);
-                return next;
-              });
-            }}
             extraActions={
               <button
-                onClick={() => refineMutation.mutate()}
+                onClick={() => setIsRefineModalOpen(true)}
                 disabled={refineMutation.isPending}
                 className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white text-xs font-semibold"
               >
@@ -2326,31 +2769,31 @@ export function ConversionPage() {
                 <span>Refine data</span>
               </button>
             }
-            isEvaluating={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'gemini'}
-            isEvaluatingOpenAI={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'openai'}
-            isEvaluatingDeepseek={evaluateMutation.isPending && evaluateMutation.variables?.provider === 'deepseek'}
-            disableEvaluate={!refinementSelectedRowIds.size}
+            isEvaluating={evaluateMutation.isPending}
+            disableEvaluate={!conversionResult || visibleRefinedRowsInStep6.length === 0}
             isAccepting={acceptMutation.isPending}
+            onVisibleRowsChange={setVisibleRowsInRefinement}
+            onRequestDeleteRow={(row) => setItemToDelete(row)}
           />
 
           <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
             Rows refined successfully are highlighted with a light-blue background. Their previous scores are preserved until you re-evaluate selected rows.
           </div>
 
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={() => setCurrentStep(8)} nextDisabled={!canMoveFromStep7} />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(5)} onNext={() => setCurrentStep(7)} nextDisabled={!canMoveFromStep6} />
         </div>
       )}
 
-      {currentStep === 8 && (
+      {currentStep === 7 && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={classifiedRows} mode={previewMode} showEvaluationColumns showEvaluationActions={false} evaluationMap={evaluationMap} />
+              <ConvertedDatasetTable rows={evaluationRows} mode={previewMode} showEvaluationColumns showEvaluationActions={false} evaluationMap={evaluationMap} />
             </div>
             <div className="space-y-4 lg:col-span-1">
               <button
                 onClick={handleDownloadTrainTestZip}
-                disabled={!conversionResult || classificationGroups.length !== 8}
+                disabled={!conversionResult || clusterGroups.length === 0}
                 className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-4 px-6 rounded-xl shadow-md"
               >
                 <Download className="w-5 h-5" />
@@ -2392,9 +2835,54 @@ export function ConversionPage() {
             </div>
           </div>
 
-          <StepNavigation showBack onBack={() => setCurrentStep(7)} />
+          <StepNavigation showBack onBack={() => setCurrentStep(6)} />
         </div>
       )}
+
+      <EvaluateModal
+        isOpen={isEvaluateModalOpen}
+        provider={evaluateProvider}
+        onProviderChange={setEvaluateProvider}
+        onClose={() => setIsEvaluateModalOpen(false)}
+        onConfirm={() => {
+          const sourceRows = currentStep === 6 ? visibleRefinedRowsInStep6 : visibleRowsInEvaluation;
+          if (sourceRows.length === 0) {
+            toast.error('No highlighted refined rows on this page to evaluate.');
+            return;
+          }
+          evaluateMutation.mutate({
+            provider: evaluateProvider,
+            rows: sourceRows,
+            excludeManualEvaluated: true,
+          });
+          setIsEvaluateModalOpen(false);
+        }}
+        isSubmitting={evaluateMutation.isPending}
+      />
+
+      <RefineModal
+        isOpen={isRefineModalOpen}
+        provider={refineProvider}
+        scoreThreshold={refineScoreThreshold}
+        onProviderChange={setRefineProvider}
+        onScoreThresholdChange={setRefineScoreThreshold}
+        onClose={() => setIsRefineModalOpen(false)}
+        onConfirm={() => {
+          refineMutation.mutate({
+            provider: refineProvider,
+            rows: visibleRowsInRefinement,
+            scoreThreshold: refineScoreThreshold,
+          });
+          setIsRefineModalOpen(false);
+        }}
+        isSubmitting={refineMutation.isPending}
+      />
+
+      <DeleteConfirmModal
+        isOpen={Boolean(itemToDelete)}
+        onClose={() => setItemToDelete(null)}
+        onConfirm={handleConfirmDeleteSample}
+      />
     </div>
   );
 }
