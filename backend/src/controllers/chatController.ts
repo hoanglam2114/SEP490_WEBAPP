@@ -3,11 +3,8 @@ import fetch from 'node-fetch'; // assuming node-fetch is available based on pac
 import { ChatHistory } from '../models/ChatHistory';
 
 const gpuServiceUrl = process.env.GPU_SERVICE_URL ? process.env.GPU_SERVICE_URL.replace(/\/$/, '') : 'http://localhost:5000';
-const gpuServiceUrl2 = process.env.GPU_SERVICE_URL_2 ? process.env.GPU_SERVICE_URL_2.replace(/\/$/, '') : gpuServiceUrl;
-
-const getGpuUrl = (instanceId?: number) => {
-    return instanceId === 2 ? gpuServiceUrl2 : gpuServiceUrl;
-};
+// Single Colab handles both slots via instance_id in body — GPU_SERVICE_URL_2 no longer needed.
+const getGpuUrl = (_instanceId?: number) => gpuServiceUrl;
 
 
 export const chatWithAI = async (req: Request, res: Response): Promise<void> => {
@@ -36,6 +33,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: actualMessage,
+        instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
@@ -75,6 +73,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       body: JSON.stringify({
         hf_model_id: hf_model_id,
         text_input: text_input,
+        instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
@@ -108,6 +107,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    console.log(`[chatWithAIStream] req.body.instanceId=${JSON.stringify(req.body.instanceId)}, slot=${instanceId ?? 1}`);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
@@ -118,6 +118,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: actualMessage,
+        instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
@@ -191,6 +192,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    console.log(`[inferWithAIStream] req.body.instanceId=${JSON.stringify(req.body.instanceId)}, slot=${instanceId ?? 1}`);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
@@ -201,6 +203,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       body: JSON.stringify({
         hf_model_id: hf_model_id,
         text_input: text_input,
+        instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
     });
@@ -311,6 +314,7 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    console.log(`[loadModel] req.body.instanceId=${JSON.stringify(req.body.instanceId)}, resolved slot=${instanceId ?? 1}, url=${targetUrl}`);
 
     const loadResponse = await fetch(`${targetUrl}/api/model/load`, {
       method: 'POST',
@@ -318,7 +322,7 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true' 
       },
-      body: JSON.stringify({ hf_model_id, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty })
+      body: JSON.stringify({ hf_model_id, instance_id: instanceId ?? 1, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty })
     });
 
     if (!loadResponse.ok) {

@@ -57,10 +57,10 @@ const JUDGE_MODELS = [
     recommended: false,
   },
   {
-    id: 'gpt-4o-mini',
-    name: 'GPT-4o Mini',
-    provider: 'OpenAI',
-    note: 'Cân bằng tốc độ/chất lượng',
+    id: 'deepseek-chat',
+    name: 'Deepseek Chat',
+    provider: 'Deepseek',
+    note: 'Chính xác, chi phí thấp',
     recommended: false,
   },
 ];
@@ -70,6 +70,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   Anthropic: 'bg-amber-50 text-amber-700 border-amber-200',
   Google: 'bg-sky-50 text-sky-700 border-sky-200',
   OpenAI: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  Deepseek: 'bg-purple-50 text-purple-700 border-purple-200',
 };
 
 // ─── ETA: khởi tạo 340 + N×15.5s; mỗi giây -=1; SSE tính lại theo stage ───────────────
