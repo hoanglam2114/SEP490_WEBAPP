@@ -329,7 +329,8 @@ function ChatPanel({
     const [loadError, setLoadError] = useState<string | null>(null);
 
     // Params: nếu có externalParams (compare mode) thì dùng, không thì dùng local
-    const [localParams, setLocalParams] = useState<InferenceParams>(DEFAULT_PARAMS);
+    //setLocalParams chỉ để giữ state của params trong single mode, tránh bị reset khi chuyển qua lại giữa compare và single
+    const [localParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const params: InferenceParams = externalParams ?? localParams;
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -377,11 +378,11 @@ function ChatPanel({
 
     const handleNewChat = () => { setMessages([]); setCurrentSessionId(null); };
 
-    const handleStopResponse = () => {
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
-        setLoading(false);
-    };
+    // const handleStopResponse = () => {
+    //     abortControllerRef.current?.abort();
+    //     abortControllerRef.current = null;
+    //     setLoading(false);
+    // };
 
     // sendMessage can be called externally (compare mode) or internally
     const sendMessage = useCallback(async (textOverride?: string) => {
@@ -499,9 +500,9 @@ function ChatPanel({
         }
     };
 
-    const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); }
-    };
+    // const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    //     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); }
+    // };
 
     // ── Model status badge ──
     const ModelStatus = () => {
