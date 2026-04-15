@@ -2253,10 +2253,19 @@ export function ConversionPage() {
         throw new Error('Please ensure all targeted items have a reason before refining.');
       }
 
-      const payload = candidateRows.map((row) => ({
-        assistant: row.assistantText,
-        reason: getLatestEvaluation(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)] || evaluationMap[row.id]))?.reason || '',
-      }));
+      const payload = candidateRows.map((row) => {
+        let assistantData: string | Record<string, string> = row.assistantText;
+        if (previewMode === 'openai' && Array.isArray(row.conversationPairs)) {
+          assistantData = {};
+          row.conversationPairs.forEach((pair, idx) => {
+            (assistantData as Record<string, string>)[idx + 1] = pair.assistant;
+          });
+        }
+        return {
+          assistant: assistantData,
+          reason: getLatestEvaluation(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)] || evaluationMap[row.id]))?.reason || '',
+        };
+      });
       const refined = await apiService.refineDataChunked(payload, params.provider);
 
       setConversionResult((prev) => {
@@ -2270,30 +2279,47 @@ export function ConversionPage() {
 
           candidateRows.forEach((row, idx) => {
             const targetIndex = convIdToIndex.get(row.blockId);
-            const refinedText = refined.items[idx]?.refinedOutput || row.assistantText;
-            if (targetIndex === undefined) return;
+            const refinedOutput = refined.items[idx]?.refinedOutput;
+            if (targetIndex === undefined || !refinedOutput) return;
             const record = nextData[targetIndex];
             if (Array.isArray(record?.messages)) {
-              const assistantIdx = [...record.messages]
+              const newRecord = { ...record };
+              newRecord.messages = [...record.messages];
+              const assistantIndices = newRecord.messages
                 .map((msg: any, i: number) => ({ role: String(msg?.role || ''), i }))
                 .filter((m: any) => m.role === 'assistant')
-                .map((m: any) => m.i)
-                .pop();
-              if (assistantIdx !== undefined) {
-                record.messages[assistantIdx] = {
-                  ...record.messages[assistantIdx],
-                  content: refinedText,
-                };
+                .map((m: any) => m.i);
+
+              if (typeof refinedOutput === 'object' && refinedOutput !== null) {
+                assistantIndices.forEach((msgIndex: number, turnIdx: number) => {
+                  const turnKey = String(turnIdx + 1);
+                  if (typeof (refinedOutput as Record<string, string>)[turnKey] === 'string') {
+                    newRecord.messages[msgIndex] = {
+                      ...newRecord.messages[msgIndex],
+                      content: (refinedOutput as Record<string, string>)[turnKey],
+                    };
+                  }
+                });
+              } else {
+                const lastIdx = assistantIndices.pop();
+                if (lastIdx !== undefined) {
+                  newRecord.messages[lastIdx] = {
+                    ...newRecord.messages[lastIdx],
+                    content: refinedOutput as string,
+                  };
+                }
               }
+              nextData[targetIndex] = newRecord;
             }
           });
         } else {
           candidateRows.forEach((row, idx) => {
             const rowIndex = allRows.findIndex((r) => r.id === row.id);
+            const refinedOutput = refined.items[idx]?.refinedOutput || row.assistantText;
             if (rowIndex >= 0 && nextData[rowIndex]) {
               nextData[rowIndex] = {
                 ...nextData[rowIndex],
-                output: refined.items[idx]?.refinedOutput || row.assistantText,
+                output: typeof refinedOutput === 'string' ? refinedOutput : '',
               };
             }
           });
@@ -2303,10 +2329,34 @@ export function ConversionPage() {
       });
 
       const refinedIds = new Set(refinedRowIds);
-      candidateRows.forEach((row) => refinedIds.add(row.id));
+      let actuallyRefinedCount = 0;
+      candidateRows.forEach((row, idx) => {
+        const refinedOutput = refined.items[idx]?.refinedOutput;
+        if (!refinedOutput) return;
+
+        let changed = false;
+        if (typeof refinedOutput === 'object' && refinedOutput !== null) {
+          if (Array.isArray(row.conversationPairs)) {
+            row.conversationPairs.forEach((pair, turnIdx) => {
+              const turnKey = String(turnIdx + 1);
+              const newText = (refinedOutput as Record<string, string>)[turnKey];
+              if (typeof newText === 'string' && newText !== pair.assistant) {
+                changed = true;
+              }
+            });
+          }
+        } else {
+          if (refinedOutput !== row.assistantText) changed = true;
+        }
+
+        if (changed) {
+          refinedIds.add(row.id);
+          actuallyRefinedCount++;
+        }
+      });
       setRefinedRowIds(refinedIds);
 
-      return { count: candidateRows.length, provider: params.provider };
+      return { count: actuallyRefinedCount, provider: params.provider };
     },
     onSuccess: ({ count, provider }) => {
       const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
@@ -3042,23 +3092,23 @@ export function ConversionPage() {
                 <ResponsiveContainer width="100%" height="90%">
                   <LineChart data={visualizationResult.elbow} margin={{ top: 20, right: 30, left: 20, bottom: 25 }}>
                     <CartesianGrid strokeDasharray="5 5" stroke="#ccc" />
-                    <XAxis 
-                      dataKey="k" 
-                      label={{ value: 'Số lượng cụm (K)', position: 'insideBottom', offset: -15 }} 
+                    <XAxis
+                      dataKey="k"
+                      label={{ value: 'Số lượng cụm (K)', position: 'insideBottom', offset: -15 }}
                       ticks={Array.from({ length: maxK }, (_, i) => i + 1)}
                     />
-                    <YAxis 
-                      label={{ value: 'WCSS (Inertia)', angle: -90, position: 'insideLeft', offset: 0 }} 
+                    <YAxis
+                      label={{ value: 'WCSS (Inertia)', angle: -90, position: 'insideLeft', offset: 0 }}
                     />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ borderRadius: '8px', border: '1px solid #ccc' }}
                     />
-                    <Line 
-                      type="linear" 
-                      dataKey="wcss" 
-                      stroke="blue" 
-                      strokeWidth={2} 
-                      dot={{ r: 5, fill: 'blue', stroke: 'blue' }} 
+                    <Line
+                      type="linear"
+                      dataKey="wcss"
+                      stroke="blue"
+                      strokeWidth={2}
+                      dot={{ r: 5, fill: 'blue', stroke: 'blue' }}
                       activeDot={{ r: 7 }}
                     />
                   </LineChart>

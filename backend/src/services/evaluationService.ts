@@ -45,13 +45,13 @@ export interface OpenAIConversationSample {
 export type EvaluationSample = AlpacaFormat | OpenAIConversationSample;
 
 export interface RefinementSample {
-    assistant: string;
+    assistant: string | Record<string, string>;
     reason: string;
 }
 
 export interface RefinementResultItem {
-    assistant: string;
-    refinedOutput: string;
+    assistant: string | Record<string, string>;
+    refinedOutput: string | Record<string, string>;
 }
 
 function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
@@ -247,7 +247,7 @@ export class EvaluationService {
         console.log(`[Evaluation] Lấy mẫu để chấm: population=${populationSize}, samples=${samples.length}`);
         const CHUNK_SIZE = 5;
         const results: SampleEvaluation[] = [];
-        
+
 
         console.log(`[Evaluation] Bắt đầu xử lý batching: ${Math.ceil(samples.length / CHUNK_SIZE)} chunk(s)`);
 
@@ -309,7 +309,7 @@ export class EvaluationService {
             const chunk = data.slice(i, i + CHUNK_SIZE);
             const payload = chunk.map((item, index) => ({
                 index,
-                assistant: String(item.assistant || ''),
+                assistant: typeof item.assistant === 'object' ? item.assistant : String(item.assistant || ''),
                 reason: String(item.reason || ''),
             }));
 
@@ -334,23 +334,25 @@ export class EvaluationService {
 
                 chunk.forEach((original, idx) => {
                     const responseItem = mapped.get(idx);
-                    const refinedOutput = String(responseItem?.refinedOutput || original.assistant || '').trim();
+                    if (!responseItem || !responseItem.refinedOutput) {
+                        throw new Error(`AI xử lý thất bại hoặc không trả về nội dung đã Refine cho mẫu (index = ${idx}).`);
+                    }
+                    const refinedOutput = typeof responseItem.refinedOutput === 'string' 
+                        ? String(responseItem.refinedOutput).trim() 
+                        : responseItem.refinedOutput;
+
                     results.push({
                         assistant: original.assistant,
                         refinedOutput,
                     });
                 });
-            } catch (error) {
-                chunk.forEach((original) => {
-                    results.push({
-                        assistant: original.assistant,
-                        refinedOutput: original.assistant,
-                    });
-                });
+            } catch (error: any) {
+                console.error("[RefineBatch] Lỗi khi refine dữ liệu:", error.message);
+                throw error;
             }
             if (i + CHUNK_SIZE < data.length) {
-        console.log(`[Evaluation] Đang nghỉ 4 giây để tránh lỗi 429...`);
-        await delay(4000);
+                console.log(`[Evaluation] Đang nghỉ 4 giây để tránh lỗi 429...`);
+                await delay(4000);
             }
         }
 

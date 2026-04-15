@@ -245,8 +245,9 @@ export class EvaluationController {
 
   async refine(req: Request, res: Response): Promise<void> {
     try {
-      const { data } = req.body as {
+      const { data, provider } = req.body as {
         data: RefinementSample[];
+        provider?: 'gemini' | 'openai' | 'deepseek';
       };
 
       if (!Array.isArray(data) || data.length === 0) {
@@ -254,7 +255,7 @@ export class EvaluationController {
         return;
       }
 
-      const service = new EvaluationService(new GeminiProvider());
+      const service = this.getService(provider);
       const samples = data.map((item) => ({
         assistant: String(item?.assistant || ''),
         reason: String(item?.reason || ''),

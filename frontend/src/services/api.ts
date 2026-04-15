@@ -247,18 +247,18 @@ export const apiService = {
   },
 
   refineData: async (
-    data: Array<{ assistant: string; reason: string }>,
+    data: Array<{ assistant: string | Record<string, string>; reason: string }>,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
-  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+  ): Promise<{ items: Array<{ assistant: string | Record<string, string>; refinedOutput: string | Record<string, string> }>; refined: number }> => {
     const response = await api.post('/evaluate/refine', { data, provider });
     return response.data;
   },
 
   refineDataChunked: async (
-    data: Array<{ assistant: string; reason: string }>,
+    data: Array<{ assistant: string | Record<string, string>; reason: string }>,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
     chunkSize = 100
-  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+  ): Promise<{ items: Array<{ assistant: string | Record<string, string>; refinedOutput: string | Record<string, string> }>; refined: number }> => {
     if (!Array.isArray(data) || data.length === 0) {
       return { items: [], refined: 0 };
     }

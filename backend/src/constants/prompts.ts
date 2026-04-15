@@ -84,7 +84,7 @@ Yêu cầu output:
       "encouragement": 8.0,
       "factuality": 8.5
     },
-    "reason": "Lý do ngắn gọn,nhận xét cho từng tiêu chí, tập trung điểm cần cải thiện"
+    "reason": "Lý do ,nhận xét cho từng tiêu chí, tập trung điểm cần cải thiện, chỉ rõ phần cần cải thiện là ở lượt nào"
   }
 ]`;
 
@@ -94,13 +94,16 @@ Bạn sẽ nhận JSON array có cấu trúc:
 [
   {
     "index": number,
-    "assistant": string,
+    "assistant": string | object, // Có thể là chuỗi (1 lượt) hoặc object {"1": "...", "2": "..."} cho nhiều lượt
     "reason": string
   }
 ]
 
 Nhiệm vụ:
 - Viết lại nội dung assistant để rõ ràng hơn, chính xác hơn, đầy đủ hơn dựa trên reason.
+- Nếu input "assistant" là một OBJECT nhiều lượt hội thoại:
+  + Nếu reason chỉ rõ phần cần cải thiện là ở lượt nào thì tập trung cải thiện ở lượt đó.
+  + Trả về toàn bộ nội dung của tất cả các lượt (cả lượt thay đổi và lượt giữ nguyên) dưới dạng OBJECT.
 - Giữ đúng ngôn ngữ và ý định giáo dục ban đầu.
 - Không thêm thông tin bịa đặt.
 
@@ -110,11 +113,13 @@ DỮ LIỆU CẦN TINH CHỈNH:
 Yêu cầu output:
 - CHỈ trả về JSON array hợp lệ.
 - Mỗi phần tử phải có: index, refinedOutput.
+- Nếu input "assistant" là một CHUỖI, "refinedOutput" cũng phải là CHUỖI chứa nội dung đã sửa.
+- Nếu input "assistant" là một OBJECT, "refinedOutput" cũng phải là OBJECT với các key tương tự (ví dụ: {"1": "...", "2": "..."}), chứa nội dung các lượt phản hồi của bot.
 
 Định dạng chính xác:
 [
   {
     "index": 0,
-    "refinedOutput": "Nội dung assistant đã tinh chỉnh"
+    "refinedOutput": "Nội dung assistant đã tinh chỉnh" // LƯU Ý: hoặc dạng Object (ví dụ: {"1": "...", "2": "..."}) nếu input assistant là Object
   }
 ]`;
