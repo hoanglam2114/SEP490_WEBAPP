@@ -12,7 +12,7 @@ export class GeminiProvider implements ILlmProvider {
             model: 'gemini-flash-latest',
             generationConfig: {
                 temperature: 0.1,
-                maxOutputTokens: 8192,
+                maxOutputTokens: 16384,
                 responseMimeType: "application/json",
             }
         });

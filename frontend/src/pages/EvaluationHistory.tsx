@@ -1,79 +1,78 @@
-﻿import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Toaster, toast } from 'react-hot-toast';
+import { Eye, Trash2 } from 'lucide-react';
+import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
 import { apiService } from '../services/api';
 
-type EvalFormat = 'openai' | 'alpaca';
-type EvaluatedBy = 'manual' | 'gemini';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
 type EvalResults = {
-  accuracy?: number;
-  clarity?: number;
-  completeness?: number;
-  socratic?: number;
-  encouragement?: number;
-  factuality?: number;
-  overall: number;
+  accuracy?: number | null;
+  clarity?: number | null;
+  completeness?: number | null;
+  socratic?: number | null;
+  encouragement?: number | null;
+  factuality?: number | null;
+  overall: number | null;
   reason: string;
 };
 
-type EvaluationHistoryItem = {
+type ProjectVersionSummary = {
   _id: string;
-  fileId: string;
-  projectName: string;
-  format: EvalFormat;
-  data: {
-    messages?: Array<{
-      role: string;
-      content: string;
-    }>;
-    userText?: string;
-    assistantText?: string;
-    instruction?: string;
-    input?: string;
-    output?: string;
-    [key: string]: any;
-  };
-  evaluatedBy: EvaluatedBy;
-  results: EvalResults;
+  versionName: string;
+  similarityThreshold: number;
+  totalSamples: number;
   createdAt: string;
-  updatedAt?: string;
+  evaluatedCount: number;
+  avgOverall: number | null;
 };
 
-type EvaluationProjectGroup = {
+type ProjectSummary = {
   projectName: string;
-  totalItems: number;
+  versionCount: number;
+  totalSamples: number;
   latestCreatedAt: string;
-  formats: EvalFormat[];
-  avgOverall: number;
-  items: EvaluationHistoryItem[];
+  versions: ProjectVersionSummary[];
 };
 
 type EvaluationHistoryResponse = {
-  projects: EvaluationProjectGroup[];
+  projects: ProjectSummary[];
   total: number;
   page: number;
   limit: number;
   totalPages: number;
 };
 
-type EditDraft = {
-  metricA: string;
-  metricB: string;
-  metricC: string;
-  reason: string;
+type VersionDetailItem = {
+  _id: string;
+  sampleId: string;
+  sampleKey: string;
+  data: Record<string, any>;
+  evaluatedBy: EvaluatedBy;
+  results: EvalResults;
+  evaluations?: Array<{
+    evaluatedBy: EvaluatedBy;
+    scores: EvalResults;
+    reason?: string;
+    timestamp?: string;
+  }>;
+  createdAt: string;
+  updatedAt?: string;
 };
 
-function clampScore(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(10, Math.max(0, value));
-}
-
-function normalizeScoreInput(value: string): number {
-  const n = Number(value);
-  return clampScore(n);
-}
+type VersionDetailResponse = {
+  datasetVersion: {
+    _id: string;
+    projectName: string;
+    versionName: string;
+    similarityThreshold: number;
+    totalSamples: number;
+    createdAt: string;
+  };
+  items: VersionDetailItem[];
+};
 
 function toDateTime(value?: string): string {
   if (!value) return '-';
@@ -91,33 +90,23 @@ function normalizeVietnamese(value: string): string {
     .trim();
 }
 
-function renderDataCell(item: EvaluationHistoryItem): React.ReactNode {
-  if (item.format === 'openai') {
+function isOpenAIData(data: Record<string, any>): boolean {
+  return Array.isArray(data?.messages);
+}
+
+function renderDataCell(item: VersionDetailItem): React.ReactNode {
+  if (isOpenAIData(item.data)) {
     const messages = Array.isArray(item.data.messages) ? item.data.messages : [];
-
-    if (messages.length > 0) {
-      return (
-        <div className="space-y-1.5">
-          {messages.map((msg, idx) => (
-            <div key={`${item._id}-msg-${idx}`} className="whitespace-pre-wrap break-words">
-              <span className="font-semibold text-slate-700">{msg.role || 'unknown'}:</span>{' '}
-              <span className="text-slate-800">{msg.content || '-'}</span>
-            </div>
-          ))}
-        </div>
-      );
-    }
-
     return (
       <div className="space-y-1.5">
-        <div className="whitespace-pre-wrap break-words">
-          <span className="font-semibold text-slate-700">user:</span>{' '}
-          <span className="text-slate-800">{item.data.userText || item.data.instruction || '-'}</span>
-        </div>
-        <div className="whitespace-pre-wrap break-words">
-          <span className="font-semibold text-slate-700">assistant:</span>{' '}
-          <span className="text-slate-800">{item.data.assistantText || item.data.output || '-'}</span>
-        </div>
+        {messages.length > 0 ? messages.map((msg, idx) => (
+          <div key={`${item._id}-msg-${idx}`} className="whitespace-pre-wrap break-words">
+            <span className="font-semibold text-slate-700">{String(msg?.role || 'unknown')}:</span>{' '}
+            <span className="text-slate-800">{String(msg?.content || '-')}</span>
+          </div>
+        )) : (
+          <div className="whitespace-pre-wrap break-words text-slate-700">-</div>
+        )}
       </div>
     );
   }
@@ -140,35 +129,116 @@ function renderDataCell(item: EvaluationHistoryItem): React.ReactNode {
   );
 }
 
-function metricKeys(format: EvalFormat): [keyof EvalResults, keyof EvalResults, keyof EvalResults] {
-  if (format === 'openai') {
-    return ['socratic', 'encouragement', 'factuality'];
-  }
-  return ['accuracy', 'clarity', 'completeness'];
+function formatScoreDisplay(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  if (Number.isFinite(n) && n === -1) return '';
+  if (!Number.isFinite(n)) return '';
+  return n.toFixed(2);
 }
 
-function metricLabels(format: EvalFormat): [string, string, string] {
-  if (format === 'openai') {
-    return ['socratic', 'encouragement', 'factuality'];
-  }
-  return ['accuracy', 'clarity', 'completeness'];
+function normalizeNullableScore(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
 }
 
-function buildDraft(item: EvaluationHistoryItem): EditDraft {
-  const [k1, k2, k3] = metricKeys(item.format);
+function getEntryTimestamp(entry?: { timestamp?: string }): number {
+  const ts = new Date(entry?.timestamp || 0).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function normalizeItemEvaluations(item: VersionDetailItem): Array<{
+  evaluatedBy: EvaluatedBy;
+  scores: EvalResults;
+  reason?: string;
+  timestamp?: string;
+}> {
+  if (item.evaluations && item.evaluations.length > 0) {
+    return [...item.evaluations];
+  }
+
+  return [
+    {
+      evaluatedBy: item.evaluatedBy,
+      scores: item.results,
+      reason: item.results.reason,
+      timestamp: item.updatedAt || item.createdAt,
+    },
+  ];
+}
+
+function getLatestEvaluationEntry(item: VersionDetailItem) {
+  const entries = normalizeItemEvaluations(item);
+  if (!entries.length) {
+    return null;
+  }
+  return [...entries].sort((a, b) => getEntryTimestamp(a) - getEntryTimestamp(b))[entries.length - 1] || null;
+}
+
+function getAverageEvaluationScores(item: VersionDetailItem): EvalResults {
+  const entries = normalizeItemEvaluations(item);
+  if (!entries.length) {
+    return { overall: null, reason: '' };
+  }
+
+  const count = entries.length;
+  const sum = entries.reduce(
+    (acc, entry) => ({
+      accuracy: acc.accuracy + (Number(entry.scores?.accuracy) || 0),
+      clarity: acc.clarity + (Number(entry.scores?.clarity) || 0),
+      completeness: acc.completeness + (Number(entry.scores?.completeness) || 0),
+      socratic: acc.socratic + (Number(entry.scores?.socratic) || 0),
+      encouragement: acc.encouragement + (Number(entry.scores?.encouragement) || 0),
+      factuality: acc.factuality + (Number(entry.scores?.factuality) || 0),
+      overall: acc.overall + (Number(entry.scores?.overall) || 0),
+    }),
+    {
+      accuracy: 0,
+      clarity: 0,
+      completeness: 0,
+      socratic: 0,
+      encouragement: 0,
+      factuality: 0,
+      overall: 0,
+    }
+  );
+
   return {
-    metricA: String(item.results[k1] ?? ''),
-    metricB: String(item.results[k2] ?? ''),
-    metricC: String(item.results[k3] ?? ''),
-    reason: item.results.reason ?? '',
+    accuracy: sum.accuracy / count,
+    clarity: sum.clarity / count,
+    completeness: sum.completeness / count,
+    socratic: sum.socratic / count,
+    encouragement: sum.encouragement / count,
+    factuality: sum.factuality / count,
+    overall: sum.overall / count,
+    reason: String(getLatestEvaluationEntry(item)?.reason || getLatestEvaluationEntry(item)?.scores?.reason || ''),
   };
 }
 
-function computeOverall(draft: EditDraft): number {
-  const a = normalizeScoreInput(draft.metricA || '0');
-  const b = normalizeScoreInput(draft.metricB || '0');
-  const c = normalizeScoreInput(draft.metricC || '0');
-  return Math.round(((a + b + c) / 3) * 10) / 10;
+function getEvaluatedBySummary(item: VersionDetailItem): string {
+  const providers = normalizeItemEvaluations(item)
+    .map((entry) => String(entry.evaluatedBy || '').trim())
+    .filter((provider) => provider && provider !== 'none');
+
+  if (!providers.length) {
+    return 'none';
+  }
+
+  return Array.from(new Set(providers)).join(', ');
+}
+
+function downloadJsonFile(filename: string, payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(objectUrl);
 }
 
 export const EvaluationHistory: React.FC = () => {
@@ -176,134 +246,172 @@ export const EvaluationHistory: React.FC = () => {
   const queryClient = useQueryClient();
 
   const [page, setPage] = useState(1);
-  const [selectedFormat, setSelectedFormat] = useState<'all formats' | EvalFormat>('all formats');
   const [projectSearch, setProjectSearch] = useState('');
   const [selectedProjectName, setSelectedProjectName] = useState<string | null>(null);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [projectMinOverallMap, setProjectMinOverallMap] = useState<Record<string, string>>({});
+  const [showUnaudited, setShowUnaudited] = useState(false);
+  const [deletedSampleIds, setDeletedSampleIds] = useState<Set<string>>(new Set());
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<EditDraft | null>(null);
-
-  const queryKey = ['evaluation-history', page, 20, selectedFormat];
+  const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
+  const [scoreHistoryModalTitle, setScoreHistoryModalTitle] = useState('Score History');
+  const [scoreHistoryItems, setScoreHistoryItems] = useState<ScoreHistoryEntry[]>([]);
 
   const historyQuery = useQuery<EvaluationHistoryResponse>({
-    queryKey,
-    queryFn: () =>
-      apiService.getEvaluationHistory({
-        page,
-        limit: 20,
-        format: selectedFormat === 'all formats' ? undefined : selectedFormat,
-      }),
+    queryKey: ['evaluation-history', page, projectSearch],
+    queryFn: () => apiService.getEvaluationHistory({ page, limit: 20, projectSearch }),
   });
 
-  const projectsFromServer = historyQuery.data?.projects ?? [];
+  const projects = historyQuery.data?.projects ?? [];
   const total = historyQuery.data?.total ?? 0;
   const totalPages = historyQuery.data?.totalPages ?? 1;
 
-  const projects = useMemo(() => {
-    const needle = normalizeVietnamese(projectSearch);
-    if (!needle) {
-      return projectsFromServer;
-    }
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.projectName === selectedProjectName) || null,
+    [projects, selectedProjectName]
+  );
 
-    return projectsFromServer.filter((project) =>
-      normalizeVietnamese(project.projectName).includes(needle)
-    );
-  }, [projectSearch, projectsFromServer]);
+  const selectedVersion = useMemo(
+    () => selectedProject?.versions.find((version) => version._id === selectedVersionId) || null,
+    [selectedProject, selectedVersionId]
+  );
 
-  const selectedProject = useMemo(() => {
-    if (!selectedProjectName) return null;
-    return projectsFromServer.find((project) => project.projectName === selectedProjectName) || null;
-  }, [projectsFromServer, selectedProjectName]);
+  const versionQuery = useQuery<VersionDetailResponse>({
+    queryKey: ['dataset-version-detail', selectedVersionId],
+    enabled: Boolean(selectedVersionId),
+    queryFn: () => apiService.getDatasetVersionDetail(selectedVersionId as string),
+  });
 
-  const saveMutation = useMutation({
-    mutationFn: async (item: EvaluationHistoryItem) => {
-      if (!draft) {
-        throw new Error('No edit draft found.');
-      }
+  useEffect(() => {
+    setDeletedSampleIds(new Set());
+  }, [selectedVersionId]);
 
-      const [k1, k2, k3] = metricKeys(item.format);
-      const results: EvalResults = {
-        ...item.results,
-        [k1]: normalizeScoreInput(draft.metricA || '0'),
-        [k2]: normalizeScoreInput(draft.metricB || '0'),
-        [k3]: normalizeScoreInput(draft.metricC || '0'),
-        overall: computeOverall(draft),
-        reason: draft.reason,
-      };
-
-      await apiService.updateEvaluationHistory(item._id, {
-        evaluatedBy: 'manual',
-        results,
+  const deleteMutation = useMutation({
+    mutationFn: (sampleId: string) => apiService.deleteDatasetVersionItem(sampleId),
+    onSuccess: async (_data, sampleId) => {
+      setDeletedSampleIds((prev) => {
+        const next = new Set(prev);
+        next.add(sampleId);
+        return next;
       });
-    },
-    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['dataset-version-detail', selectedVersionId] });
       await queryClient.invalidateQueries({ queryKey: ['evaluation-history'] });
-      setEditingId(null);
-      setDraft(null);
-      toast.success('Updated evaluation successfully.');
+      toast.success('Đã xóa mẫu dữ liệu thành công.');
     },
     onError: (error: any) => {
-      toast.error(error?.response?.data?.error || error.message || 'Failed to update evaluation.');
+      toast.error(error?.response?.data?.error || error.message || 'Xóa mẫu thất bại.');
     },
   });
 
-  const startEdit = (item: EvaluationHistoryItem) => {
-    setEditingId(item._id);
-    setDraft(buildDraft(item));
-  };
+  const detailItems = versionQuery.data?.items ?? [];
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setDraft(null);
-  };
+  const filteredProjects = useMemo(() => {
+    const needle = normalizeVietnamese(projectSearch);
+    if (!needle) return projects;
+    return projects.filter((project) => normalizeVietnamese(project.projectName).includes(needle));
+  }, [projectSearch, projects]);
 
-  const onChangeMetric = (field: 'metricA' | 'metricB' | 'metricC', value: string) => {
-    if (!draft) return;
-    if (value === '' || /^\d*\.?\d*$/.test(value)) {
-      setDraft({ ...draft, [field]: value });
-    }
-  };
+  const visibleItems = useMemo(() => {
+    const baseItems = detailItems.filter((item) => !deletedSampleIds.has(item.sampleId));
+    if (!baseItems.length) return [];
 
-  const getProjectVisibleItems = (project: EvaluationProjectGroup): EvaluationHistoryItem[] => {
-    const minOverallRaw = projectMinOverallMap[project.projectName] ?? '';
+    const minOverallRaw = projectMinOverallMap[selectedProjectName || ''] ?? '';
     const parsedMin = Number(minOverallRaw);
-    const minOverall = Number.isFinite(parsedMin) ? clampScore(parsedMin) : 0;
+    const minOverall = Number.isFinite(parsedMin) ? Math.min(10, Math.max(0, parsedMin)) : 0;
 
-    const byFormat = selectedFormat === 'all formats'
-      ? project.items
-      : project.items.filter((item) => item.format === selectedFormat);
+    return baseItems.filter((item) => {
+      const average = getAverageEvaluationScores(item);
+      const overall = average.overall;
+      const isUnaudited = !Number.isFinite(Number(overall)) || Number(overall) < 0;
+      if (isUnaudited) {
+        return showUnaudited;
+      }
+      return Number(overall) >= minOverall;
+    });
+  }, [deletedSampleIds, detailItems, projectMinOverallMap, selectedProjectName, showUnaudited]);
 
-    return byFormat.filter((item) => item.results.overall >= minOverall);
-  };
-
-  const selectedProjectItems = selectedProject ? getProjectVisibleItems(selectedProject) : [];
-  const detailMetricFormat: EvalFormat = useMemo(() => {
-    if (selectedFormat !== 'all formats') {
-      return selectedFormat;
-    }
-    return (selectedProjectItems[0]?.format ?? selectedProject?.items[0]?.format ?? 'alpaca') as EvalFormat;
-  }, [selectedFormat, selectedProjectItems, selectedProject]);
-  const [labelA, labelB, labelC] = metricLabels(detailMetricFormat);
-
-  const handleDownloadProject = (project: EvaluationProjectGroup) => {
-    const visibleItems = getProjectVisibleItems(project);
-    if (visibleItems.length === 0) {
-      toast.error('No visible data to download.');
+  const handleContinueEvaluation = () => {
+    if (!versionQuery.data?.datasetVersion || !visibleItems.length) {
+      toast.error('Không có version detail để tiếp tục đánh giá.');
       return;
     }
 
-    const blob = new Blob([JSON.stringify(visibleItems, null, 2)], {
-      type: 'application/json;charset=utf-8',
+    const format = visibleItems[0] && isOpenAIData(visibleItems[0].data) ? 'openai' : 'alpaca';
+    const evaluationMap = Object.fromEntries(
+      visibleItems.map((item) => {
+        const evaluations = normalizeItemEvaluations(item).map((entry) => ({
+          evaluatedBy: entry.evaluatedBy,
+          scores: {
+            accuracy: normalizeNullableScore(entry.scores?.accuracy),
+            clarity: normalizeNullableScore(entry.scores?.clarity),
+            completeness: normalizeNullableScore(entry.scores?.completeness),
+            socratic: normalizeNullableScore(entry.scores?.socratic),
+            encouragement: normalizeNullableScore(entry.scores?.encouragement),
+            factuality: normalizeNullableScore(entry.scores?.factuality),
+            overall: normalizeNullableScore(entry.scores?.overall),
+          },
+          reason: String(entry.reason || entry.scores?.reason || ''),
+          timestamp: entry.timestamp || item.updatedAt || item.createdAt,
+        }));
+
+        return [item.sampleKey, { evaluations }];
+      })
+    );
+
+    navigate('/chatbotconverter', {
+      state: {
+        loadProject: {
+          projectName: versionQuery.data.datasetVersion.projectName,
+          format,
+          data: format === 'openai'
+            ? visibleItems.map((item) => ({ conversation_id: item.sampleKey, messages: item.data.messages || [] }))
+            : visibleItems.map((item) => ({ id: item.sampleKey, ...item.data })),
+          evaluationMap,
+          datasetVersionId: versionQuery.data.datasetVersion._id,
+          sampleIdMap: Object.fromEntries(visibleItems.map((item) => [item.sampleKey, item.sampleId])),
+        },
+      },
     });
-    const objectUrl = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = objectUrl;
-    link.download = `${project.projectName.replace(/\s+/g, '_')}_${Date.now()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(objectUrl);
+  };
+
+  const handleDownloadVersion = () => {
+    if (!versionQuery.data?.datasetVersion) {
+      return;
+    }
+
+    downloadJsonFile(
+      `${versionQuery.data.datasetVersion.projectName.replace(/\s+/g, '_')}_${versionQuery.data.datasetVersion.versionName.replace(/\s+/g, '_')}.json`,
+      visibleItems
+    );
+  };
+
+  const handleOpenScoreHistory = (item: VersionDetailItem) => {
+    const rows = normalizeItemEvaluations(item).map((entry) => ({
+      evaluatedBy: entry.evaluatedBy,
+      scores: {
+        accuracy: entry.scores?.accuracy ?? null,
+        clarity: entry.scores?.clarity ?? null,
+        completeness: entry.scores?.completeness ?? null,
+        socratic: entry.scores?.socratic ?? null,
+        encouragement: entry.scores?.encouragement ?? null,
+        factuality: entry.scores?.factuality ?? null,
+        overall: entry.scores?.overall ?? null,
+      },
+      reason: entry.reason || entry.scores?.reason || '',
+      timestamp: entry.timestamp,
+    }));
+
+    setScoreHistoryItems(rows);
+    setScoreHistoryModalTitle(`Xem diem - ${item.sampleKey}`);
+    setScoreHistoryModalOpen(true);
+  };
+
+  const handleDeleteItem = (item: VersionDetailItem) => {
+    const ok = window.confirm('Xóa vĩnh viễn mẫu này?');
+    if (!ok) {
+      return;
+    }
+    deleteMutation.mutate(item.sampleId);
   };
 
   return (
@@ -324,12 +432,12 @@ export const EvaluationHistory: React.FC = () => {
             </button>
             <div>
               <h1 className="text-xl font-bold text-slate-800">Evaluation History</h1>
-              <p className="text-xs text-slate-500">Project-based evaluation records.</p>
+              <p className="text-xs text-slate-500">Project {'->'} Dataset Version {'->'} Item detail.</p>
             </div>
           </div>
 
           <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg">
-            {selectedProject ? 'Project Detail' : `${total} projects`}
+            {selectedVersion ? selectedVersion.versionName : `${total} projects`}
           </div>
         </div>
       </header>
@@ -337,22 +445,6 @@ export const EvaluationHistory: React.FC = () => {
       <main className="w-full max-w-none px-4 sm:px-6 lg:px-8 py-6 space-y-4">
         {!selectedProject && (
           <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-3 w-full">
-            <select
-              value={selectedFormat}
-              onChange={(e) => {
-                const next = e.target.value as 'all formats' | EvalFormat;
-                setSelectedFormat(next);
-                setPage(1);
-                setEditingId(null);
-                setDraft(null);
-              }}
-              className="px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            >
-              <option value="all formats">All formats</option>
-              <option value="openai">OpenAI</option>
-              <option value="alpaca">Alpaca</option>
-            </select>
-
             <input
               type="text"
               value={projectSearch}
@@ -360,7 +452,7 @@ export const EvaluationHistory: React.FC = () => {
                 setProjectSearch(e.target.value);
                 setPage(1);
               }}
-              placeholder="Search project name (khong dau / co dau)"
+              placeholder="Search project name"
               className="w-full max-w-md px-3 py-2 border border-slate-300 rounded-lg text-sm"
             />
 
@@ -371,52 +463,35 @@ export const EvaluationHistory: React.FC = () => {
               Refresh
             </button>
 
-            <div className="ml-auto text-xs text-slate-500">
-              {projects.length} matching project(s)
-            </div>
+            <div className="ml-auto text-xs text-slate-500">{filteredProjects.length} matching project(s)</div>
           </div>
         )}
 
         {!selectedProject && (
           historyQuery.isLoading ? (
-            <div className="bg-white border border-slate-200 rounded-xl px-4 py-10 text-center text-slate-500">
-              Loading projects...
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="bg-white border border-slate-200 rounded-xl px-4 py-10 text-center text-slate-500">
-              No project found.
-            </div>
+            <div className="bg-white border border-slate-200 rounded-xl px-4 py-10 text-center text-slate-500">Loading projects...</div>
+          ) : filteredProjects.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl px-4 py-10 text-center text-slate-500">No project found.</div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-              {projects.map((project) => (
+              {filteredProjects.map((project) => (
                 <section key={project.projectName} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow">
                   <button
                     onClick={() => {
                       setSelectedProjectName(project.projectName);
-                      setEditingId(null);
-                      setDraft(null);
+                      setSelectedVersionId(null);
                     }}
                     className="w-full h-full min-h-[170px] p-4 flex flex-col items-start justify-between text-left hover:bg-slate-50"
                   >
                     <div className="space-y-2 w-full">
                       <p className="text-base font-semibold text-slate-900 leading-snug break-words">{project.projectName}</p>
                       <div className="space-y-1 text-xs text-slate-500">
-                        <p>{project.totalItems} records</p>
-                        <p>Avg overall: {project.avgOverall.toFixed(2)}</p>
+                        <p>{project.versionCount} versions</p>
+                        <p>{project.totalSamples} samples</p>
                         <p>Updated: {toDateTime(project.latestCreatedAt)}</p>
                       </div>
                     </div>
-
-                    <div className="w-full flex items-end justify-between gap-2 pt-2 border-t border-slate-100">
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {project.formats.map((fmt) => (
-                          <span key={`${project.projectName}-${fmt}`} className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">
-                            {fmt}
-                          </span>
-                        ))}
-                      </div>
-                      <span className="text-slate-500 text-sm">Open</span>
-                    </div>
+                    <span className="text-slate-500 text-sm">Open</span>
                   </button>
                 </section>
               ))}
@@ -424,15 +499,14 @@ export const EvaluationHistory: React.FC = () => {
           )
         )}
 
-        {selectedProject && (
+        {selectedProject && !selectedVersion && (
           <section className="bg-white border border-slate-200 rounded-xl overflow-hidden w-full">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => {
                     setSelectedProjectName(null);
-                    setEditingId(null);
-                    setDraft(null);
+                    setSelectedVersionId(null);
                   }}
                   className="px-3 py-1.5 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
                 >
@@ -440,16 +514,70 @@ export const EvaluationHistory: React.FC = () => {
                 </button>
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{selectedProject.projectName}</p>
-                  <p className="text-xs text-slate-500">{selectedProject.totalItems} records • Updated: {toDateTime(selectedProject.latestCreatedAt)}</p>
+                  <p className="text-xs text-slate-500">{selectedProject.versionCount} versions • {selectedProject.totalSamples} samples</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {selectedProject.versions.map((version) => (
+                <button
+                  key={version._id}
+                  onClick={() => {
+                    setSelectedVersionId(version._id);
+                  }}
+                  className="text-left rounded-xl border border-slate-200 bg-slate-50 p-4 hover:bg-white hover:shadow-sm transition-shadow"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-slate-900">{version.versionName}</p>
+                      <p className="text-xs text-slate-500 mt-1">Threshold: {version.similarityThreshold.toFixed(2)}</p>
+                    </div>
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600">Open</span>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs text-slate-500">
+                    <p>{version.totalSamples} samples</p>
+                    <p>{version.evaluatedCount} evaluated</p>
+                    <p>Avg overall: {version.avgOverall === null ? '-' : version.avgOverall.toFixed(2)}</p>
+                    <p>Updated: {toDateTime(version.createdAt)}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {selectedProject && selectedVersion && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden w-full">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    setSelectedVersionId(null);
+                  }}
+                  className="px-3 py-1.5 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
+                >
+                  Back To Versions
+                </button>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{selectedProject.projectName}</p>
+                  <p className="text-xs text-slate-500">{selectedVersion.versionName} • Threshold {selectedVersion.similarityThreshold.toFixed(2)}</p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
-                {selectedProject.formats.map((fmt) => (
-                  <span key={`${selectedProject.projectName}-detail-${fmt}`} className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">
-                    {fmt}
-                  </span>
-                ))}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleDownloadVersion}
+                  className="px-3 py-2 text-sm font-semibold text-emerald-700 border border-emerald-300 rounded-lg bg-emerald-50 hover:bg-emerald-100"
+                >
+                  Download
+                </button>
+                <button
+                  onClick={handleContinueEvaluation}
+                  className="px-3 py-2 text-sm font-semibold text-indigo-700 border border-indigo-300 rounded-lg bg-indigo-50 hover:bg-indigo-100"
+                >
+                  Continue Evaluation
+                </button>
               </div>
             </div>
 
@@ -459,7 +587,7 @@ export const EvaluationHistory: React.FC = () => {
                 min={0}
                 max={10}
                 step="0.1"
-                value={projectMinOverallMap[selectedProject.projectName] ?? ''}
+                value={projectMinOverallMap[selectedProject.projectName] ?? '0'}
                 onChange={(e) =>
                   setProjectMinOverallMap((prev) => ({
                     ...prev,
@@ -470,165 +598,82 @@ export const EvaluationHistory: React.FC = () => {
                 className="w-44 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
               />
 
-              <button
-                onClick={() => handleDownloadProject(selectedProject)}
-                className="px-3 py-2 text-sm font-semibold text-emerald-700 border border-emerald-300 rounded-lg bg-emerald-50 hover:bg-emerald-100"
-              >
-                Download
-              </button>
+              <label className="inline-flex items-center gap-2 px-2 py-1 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showUnaudited}
+                  onChange={(e) => setShowUnaudited(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span>Hiển thị câu chưa chấm</span>
+              </label>
 
               <div className="ml-auto text-xs text-slate-500">
-                Showing {selectedProjectItems.length} / {selectedProject.items.length} records
+                Showing {visibleItems.length} / {detailItems.length} records
               </div>
             </div>
 
-            <div className="w-full overflow-hidden">
-              <table className="w-full text-sm table-auto">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Format</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Data</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">{labelA}</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">{labelB}</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">{labelC}</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Overall</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Reason</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Evaluated By</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Updated</th>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedProjectItems.map((item) => {
-                    const isEditing = editingId === item._id;
-                    const [k1, k2, k3] = metricKeys(item.format);
+            {versionQuery.isLoading ? (
+              <div className="px-4 py-10 text-center text-slate-500">Loading dataset version...</div>
+            ) : (
+              <div className="w-full overflow-hidden">
+                <table className="w-full text-sm table-auto">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Data</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Overall</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Reason</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Evaluated By</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Updated</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleItems.map((item) => {
+                      const averageScores = getAverageEvaluationScores(item);
+                      const latest = getLatestEvaluationEntry(item);
+                      const evaluatedBySummary = getEvaluatedBySummary(item);
 
-                    const scoreA = isEditing && draft ? draft.metricA : String(item.results[k1] ?? '');
-                    const scoreB = isEditing && draft ? draft.metricB : String(item.results[k2] ?? '');
-                    const scoreC = isEditing && draft ? draft.metricC : String(item.results[k3] ?? '');
-                    const overall = isEditing && draft ? computeOverall(draft) : item.results.overall;
-                    const reason = isEditing && draft ? draft.reason : item.results.reason;
-
-                    return (
-                      <tr
-                        key={item._id}
-                        className={`border-t border-slate-100 align-top transition-colors duration-300 ${isEditing
-                            ? 'bg-emerald-50/90 editing-row-glow ring-1 ring-inset ring-emerald-200'
-                            : 'hover:bg-slate-50'
-                          }`}
-                        onDoubleClick={() => startEdit(item)}
-                      >
+                      return (
+                      <tr key={item.sampleId} className="border-t border-slate-100 align-top hover:bg-slate-50">
+                        <td className="px-3 py-3 text-slate-800 align-top break-words">{renderDataCell(item)}</td>
+                        <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{formatScoreDisplay(averageScores.overall)}</td>
+                        <td className="px-3 py-3 text-slate-700 align-top break-words">{latest?.reason || latest?.scores?.reason || ''}</td>
+                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{evaluatedBySummary || latest?.evaluatedBy || 'none'}</td>
+                        <td className="px-3 py-3 text-slate-500 text-xs align-top whitespace-nowrap">{toDateTime(latest?.timestamp || item.updatedAt || item.createdAt)}</td>
                         <td className="px-3 py-3 align-top whitespace-nowrap">
-                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">
-                            {item.format}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-slate-800 align-top break-words">
-                          {renderDataCell(item)}
-                        </td>
-
-                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              min={0}
-                              max={10}
-                              step="any"
-                              value={scoreA}
-                              onChange={(e) => onChangeMetric('metricA', e.target.value)}
-                              className="w-20 px-2 py-1 border border-slate-300 rounded"
-                            />
-                          ) : (
-                            scoreA
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              min={0}
-                              max={10}
-                              step="any"
-                              value={scoreB}
-                              onChange={(e) => onChangeMetric('metricB', e.target.value)}
-                              className="w-20 px-2 py-1 border border-slate-300 rounded"
-                            />
-                          ) : (
-                            scoreB
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              min={0}
-                              max={10}
-                              step="any"
-                              value={scoreC}
-                              onChange={(e) => onChangeMetric('metricC', e.target.value)}
-                              className="w-20 px-2 py-1 border border-slate-300 rounded"
-                            />
-                          ) : (
-                            scoreC
-                          )}
-                        </td>
-
-                        <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{overall}</td>
-                        <td className="px-3 py-3 text-slate-700 align-top break-words">
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              value={reason}
-                              onChange={(e) => setDraft((prev) => (prev ? { ...prev, reason: e.target.value } : prev))}
-                              className="w-full px-2 py-1 border border-slate-300 rounded"
-                            />
-                          ) : (
-                            reason || '-'
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{isEditing ? 'manual' : item.evaluatedBy}</td>
-                        <td className="px-3 py-3 text-slate-500 text-xs align-top whitespace-nowrap">{toDateTime(item.updatedAt || item.createdAt)}</td>
-                        <td className="px-3 py-3 align-top whitespace-nowrap">
-                          {isEditing ? (
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => saveMutation.mutate(item)}
-                                disabled={saveMutation.isPending}
-                                className="px-2.5 py-1 text-xs font-semibold rounded border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-60"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={cancelEdit}
-                                disabled={saveMutation.isPending}
-                                className="px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
+                          <div className="flex items-center gap-2">
                             <button
-                              onClick={() => startEdit(item)}
-                              className="px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
+                              onClick={() => handleOpenScoreHistory(item)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
                             >
-                              Edit
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Xem diem</span>
                             </button>
-                          )}
+                            <button
+                              onClick={() => handleDeleteItem(item)}
+                              disabled={deleteMutation.isPending}
+                              className="inline-flex items-center justify-center p-1.5 rounded border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-60"
+                              title="Xoa mau"
+                              aria-label="Xoa mau"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
-                    );
-                  })}
+                      );
+                    })}
 
-                  {selectedProjectItems.length === 0 && (
-                    <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-slate-500">
-                        No records match this filter in this project.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    {visibleItems.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="px-4 py-8 text-center text-slate-500">No records match this filter in this version.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
 
@@ -641,9 +686,7 @@ export const EvaluationHistory: React.FC = () => {
             >
               Previous
             </button>
-            <div className="text-xs text-slate-600">
-              Page {page} / {totalPages}
-            </div>
+            <div className="text-xs text-slate-600">Page {page} / {totalPages}</div>
             <button
               onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
               disabled={page >= totalPages}
@@ -654,6 +697,13 @@ export const EvaluationHistory: React.FC = () => {
           </div>
         )}
       </main>
+
+      <ScoreHistoryModal
+        isOpen={scoreHistoryModalOpen}
+        title={scoreHistoryModalTitle}
+        evaluations={scoreHistoryItems}
+        onClose={() => setScoreHistoryModalOpen(false)}
+      />
     </div>
   );
 };

@@ -54,7 +54,8 @@ export const clusterData = async (req: Request, res: Response) => {
     }
 
     // Existing logic for OpenAI format (calling external service)
-    console.log(`[Backend] Clustering ${data.length} conversations → ${GPU_SERVICE_URL}/api/cluster`);
+    const { k, eps, min_samples } = req.body;
+    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${GPU_SERVICE_URL}/api/cluster`);
 
     const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster`, {
       method: 'POST',
@@ -62,7 +63,7 @@ export const clusterData = async (req: Request, res: Response) => {
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true',
       },
-      body: JSON.stringify({ data }),
+      body: JSON.stringify({ data, k, eps, min_samples }),
     });
 
     const responseText = await gpuResponse.text();
@@ -164,6 +165,60 @@ export const deleteClusterCache = async (_req: Request, res: Response) => {
     console.error('[Backend] deleteClusterCache error:', err);
     return res.status(500).json({
       error: err.message || 'Failed to clear cluster cache',
+    });
+  }
+};
+
+/**
+ * POST /api/cluster/visualize
+ *
+ * Forward dataset to GPU Service for Elbow & K-Distance computation.
+ * Uses SentenceTransformer embeddings + DBSCAN noise filtering + K-Means on Colab.
+ *
+ * Request body: { data: Array, max_k?: number }
+ * Response:     { elbow: [{k, wcss}], kDistance: [{rank, distance}], pointCount, noiseCount }
+ */
+export const clusterVisualize = async (req: Request, res: Response) => {
+  try {
+    const { data, max_k = 20, eps = 0.15, min_samples = 6 } = req.body;
+
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({ error: 'Missing or empty data array' });
+    }
+
+    console.log(
+      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${GPU_SERVICE_URL}/api/cluster/visualize`
+    );
+
+    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/visualize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+      },
+      body: JSON.stringify({ data, max_k, eps, min_samples }),
+    });
+
+    const responseText = await gpuResponse.text();
+    console.log(
+      `[Backend] Visualize response (${gpuResponse.status}): ${responseText.slice(0, 300)}`
+    );
+
+    let result: any;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      return res.status(502).json({
+        error: 'Visualize service returned non-JSON response',
+        raw: responseText.slice(0, 500),
+      });
+    }
+
+    return res.status(gpuResponse.status).json(result);
+  } catch (err: any) {
+    console.error('[Backend] clusterVisualize error:', err);
+    return res.status(500).json({
+      error: err.message || 'Failed to compute visualization data',
     });
   }
 };

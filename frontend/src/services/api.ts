@@ -19,6 +19,17 @@ const api = axios.create({
   }
 });
 
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) {
+    return [items];
+  }
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "") => {
     const response = await api.post("/chat", { text_input, hf_hub_id });
@@ -162,31 +173,124 @@ export const apiService = {
   evaluateData: async (
     data: any[],
     format?: string,
-    sampleSize?: number
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
       format,
-      sampleSize,
+      provider,
     });
     return response.data;
   },
 
+  evaluateDataChunked: async (
+    data: any[],
+    format?: string,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 100
+  ): Promise<EvaluationResult> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return {
+        sampleSize: 0,
+        evaluated: 0,
+        totalPopulation: 0,
+        avgScores: { overall: 0 },
+        passRate: 0,
+        samples: [],
+      };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.evaluateData(data, format, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(
+      chunks.map((chunk) => apiService.evaluateData(chunk, format, provider))
+    );
+
+    const samples = results.flatMap((item) => item.samples || []);
+    const evaluated = results.reduce((sum, item) => sum + (item.evaluated || 0), 0);
+    const totalPopulation = results.reduce((sum, item) => sum + (item.totalPopulation || 0), 0);
+    const totalPass = results.reduce((sum, item) => sum + ((item.passRate || 0) * (item.evaluated || 0)), 0);
+
+    const totals = samples.reduce(
+      (acc, sample) => ({
+        accuracy: acc.accuracy + (sample.scores.accuracy || 0),
+        clarity: acc.clarity + (sample.scores.clarity || 0),
+        completeness: acc.completeness + (sample.scores.completeness || 0),
+        socratic: acc.socratic + (sample.scores.socratic || 0),
+        encouragement: acc.encouragement + (sample.scores.encouragement || 0),
+        factuality: acc.factuality + (sample.scores.factuality || 0),
+        overall: acc.overall + (sample.scores.overall || 0),
+      }),
+      { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, encouragement: 0, factuality: 0, overall: 0 }
+    );
+
+    const divisor = Math.max(samples.length, 1);
+    return {
+      sampleSize: samples.length,
+      evaluated,
+      totalPopulation,
+      avgScores: {
+        accuracy: totals.accuracy / divisor,
+        clarity: totals.clarity / divisor,
+        completeness: totals.completeness / divisor,
+        socratic: totals.socratic / divisor,
+        encouragement: totals.encouragement / divisor,
+        factuality: totals.factuality / divisor,
+        overall: totals.overall / divisor,
+      },
+      passRate: evaluated > 0 ? totalPass / evaluated : 0,
+      samples,
+    };
+  },
+
+  refineData: async (
+    data: Array<{ assistant: string; reason: string }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
+  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+    const response = await api.post('/evaluate/refine', { data, provider });
+    return response.data;
+  },
+
+  refineDataChunked: async (
+    data: Array<{ assistant: string; reason: string }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 100
+  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return { items: [], refined: 0 };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.refineData(data, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(chunks.map((chunk) => apiService.refineData(chunk, provider)));
+
+    return {
+      items: results.flatMap((item) => item.items || []),
+      refined: results.reduce((sum, item) => sum + (item.refined || 0), 0),
+    };
+  },
+
   saveEvaluationResults: async (payload: {
-    fileId: string;
-    projectName: string;
+    fileId?: string;
+    projectName?: string;
+    datasetVersionId?: string;
     items: Array<{
-      format: string;
-      data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini';
+      sampleId: string;
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
       results: {
-        accuracy?: number;
-        clarity?: number;
-        completeness?: number;
-        socratic?: number;
-        encouragement?: number;
-        factuality?: number;
-        overall: number;
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
         reason: string;
       };
       createdAt: string;
@@ -196,37 +300,98 @@ export const apiService = {
     return response.data;
   },
 
+  createDatasetVersion: async (payload: {
+    projectName: string;
+    similarityThreshold: number;
+    format: 'openai' | 'alpaca';
+    data: Array<Record<string, any>>;
+  }): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      projectName: string;
+      versionName: string;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    sampleIdMap: Record<string, string>;
+  }> => {
+    const response = await api.post('/dataset-versions/create', payload);
+    return response.data;
+  },
+
+  getDatasetVersionDetail: async (id: string): Promise<{
+    datasetVersion: {
+      _id: string;
+      projectName: string;
+      versionName: string;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    items: Array<{
+      _id: string;
+      sampleId: string;
+      sampleKey: string;
+      data: Record<string, any>;
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+      results: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      evaluations?: Array<{
+        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+        scores: {
+          accuracy?: number | null;
+          clarity?: number | null;
+          completeness?: number | null;
+          socratic?: number | null;
+          encouragement?: number | null;
+          factuality?: number | null;
+          overall: number | null;
+          reason: string;
+        };
+        reason?: string;
+        timestamp?: string;
+      }>;
+      createdAt: string;
+      updatedAt?: string;
+    }>;
+  }> => {
+    const response = await api.get(`/dataset-versions/${id}`);
+    return response.data;
+  },
+
+  deleteDatasetVersionItem: async (sampleId: string): Promise<{ message: string; deletedSampleId: string }> => {
+    const response = await api.delete(`/dataset-versions/items/${sampleId}`);
+    return response.data;
+  },
+
   getEvaluationHistory: async (params: {
     page: number;
     limit: number;
-    format?: 'openai' | 'alpaca';
-    minOverall?: number;
+    projectSearch?: string;
   }): Promise<{
     projects: Array<{
       projectName: string;
-      totalItems: number;
+      versionCount: number;
+      totalSamples: number;
       latestCreatedAt: string;
-      formats: Array<'openai' | 'alpaca'>;
-      avgOverall: number;
-      items: Array<{
+      versions: Array<{
         _id: string;
-        fileId: string;
-        projectName: string;
-        format: 'openai' | 'alpaca';
-        data: Record<string, any>;
-        evaluatedBy: 'manual' | 'gemini';
-        results: {
-          accuracy?: number;
-          clarity?: number;
-          completeness?: number;
-          socratic?: number;
-          encouragement?: number;
-          factuality?: number;
-          overall: number;
-          reason: string;
-        };
+        versionName: string;
+        similarityThreshold: number;
+        totalSamples: number;
         createdAt: string;
-        updatedAt?: string;
+        evaluatedCount: number;
+        avgOverall: number | null;
       }>;
     }>;
     total: number;
@@ -238,8 +403,7 @@ export const apiService = {
       params: {
         page: params.page,
         limit: params.limit,
-        ...(params.format ? { format: params.format } : {}),
-        ...(Number.isFinite(params.minOverall) ? { minOverall: params.minOverall } : {}),
+        ...(params.projectSearch ? { projectSearch: params.projectSearch } : {}),
 
       },
     });
@@ -250,29 +414,39 @@ export const apiService = {
     id: string,
     payload: {
       results: {
-        accuracy?: number;
-        clarity?: number;
-        completeness?: number;
-        socratic?: number;
-        encouragement?: number;
-        factuality?: number;
-        overall: number;
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
         reason: string;
       };
-      evaluatedBy: 'manual' | 'gemini';
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
     }
   ): Promise<{ message: string; item: any }> => {
     const response = await api.patch(`/evaluate/history/${id}`, payload);
     return response.data;
   },
 
-  clusterData: (data: any[]): Promise<{
+  clusterData: (
+    data: any[],
+    k?: number,
+    eps?: number,
+    minSamples?: number
+  ): Promise<{
     data: any[];
     groups: any[];
     assignments: number[];
   }> =>
     api
-      .post('/cluster', { data })
+      .post('/cluster', {
+        data,
+        k,
+        eps,
+        min_samples: minSamples,
+      })
       .then((res) => res.data),
 
   clusterFilter: (
@@ -290,6 +464,21 @@ export const apiService = {
   deleteClusterCache: (): Promise<any> =>
     api
       .delete('/cluster/cache')
+      .then((res) => res.data),
+
+  clusterVisualize: (
+    data: any[],
+    maxK: number = 20,
+    eps: number = 0.15,
+    minSamples: number = 6
+  ): Promise<{
+    elbow: Array<{ k: number; wcss: number }>;
+    kDistance: Array<{ rank: number; distance: number }>;
+    pointCount: number;
+    noiseCount?: number;
+  }> =>
+    api
+      .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
       .then((res) => res.data),
 
   getChatSessions: async (limit = 30): Promise<any[]> => {

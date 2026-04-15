@@ -1,43 +1,58 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
   Download,
+  Eye,
   Loader2,
-  RotateCcw,
+  MoreVertical,
+  Pencil,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Wand2,
   Zap,
 } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import toast from 'react-hot-toast';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import { FileUploader } from '../components/FileUploader';
 import { ConversionOptions } from '../components/ConversionOptions';
 import { Preview } from '../components/Preview';
 import { HuggingFaceUpload } from '../components/HuggingFaceUpload';
+import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
+import { SystemPromptPage } from './SystemPromptPage.tsx';
 import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type PreviewMode = 'alpaca' | 'openai';
+type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type EvaluationScores = {
-  accuracy?: number;
-  clarity?: number;
-  completeness?: number;
-  socratic?: number;
-  encouragement?: number;
-  factuality?: number;
-  overall: number;
-  reason: string;
+  accuracy?: number | null;
+  clarity?: number | null;
+  completeness?: number | null;
+  socratic?: number | null;
+  encouragement?: number | null;
+  factuality?: number | null;
+  overall: number | null;
 };
 
-type EvaluatedBy = 'manual' | 'gemini';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+
+type EvaluationRecord = {
+  evaluatedBy: EvaluatedBy;
+  scores: EvaluationScores;
+  reason: string;
+  timestamp: string;
+};
 
 type RowEvaluationEntry = {
-  scores: EvaluationScores;
-  evaluatedBy: EvaluatedBy;
+  evaluations: EvaluationRecord[];
 };
 
 type DisplayRow = {
@@ -59,6 +74,16 @@ type ClusterGroup = {
   groupId: number;
   count: number;
   label: string;
+};
+
+type LoadProjectPayload = {
+  fileId?: string;
+  projectName: string;
+  format: 'openai' | 'alpaca';
+  data: any[];
+  evaluationMap: Record<string, RowEvaluationEntry>;
+  datasetVersionId?: string;
+  sampleIdMap?: Record<string, string>;
 };
 
 function clampScore(value: string | number): number {
@@ -83,9 +108,184 @@ function parseOptionalScore(value: string): number | undefined {
   return Math.min(10, Math.max(0, n));
 }
 
+function formatTableScore(value: number | null | undefined): string {
+  if (value === null || value === undefined || value === -1) {
+    return '';
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return '';
+  }
+  return parsed.toFixed(2);
+}
+
 function calculateOverallFromThree(a: number, b: number, c: number): number {
   return Math.round(((a + b + c) / 3) * 10) / 10;
 }
+
+function normalizeNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+  return n;
+}
+
+function resolveEvaluationKey(row: DisplayRow): string {
+  return row.blockId || row.id;
+}
+
+function toIsoTimestamp(value?: string): string {
+  const raw = value ? new Date(value).getTime() : NaN;
+  if (!Number.isFinite(raw)) {
+    return new Date().toISOString();
+  }
+  return new Date(raw).toISOString();
+}
+
+function normalizeEvaluationEntry(raw: any): RowEvaluationEntry {
+  if (Array.isArray(raw?.evaluations)) {
+    const evaluations = raw.evaluations.map((item: any) => ({
+      evaluatedBy: (item?.evaluatedBy || 'none') as EvaluatedBy,
+      scores: {
+        accuracy: normalizeNullableNumber(item?.scores?.accuracy),
+        clarity: normalizeNullableNumber(item?.scores?.clarity),
+        completeness: normalizeNullableNumber(item?.scores?.completeness),
+        socratic: normalizeNullableNumber(item?.scores?.socratic),
+        encouragement: normalizeNullableNumber(item?.scores?.encouragement),
+        factuality: normalizeNullableNumber(item?.scores?.factuality),
+        overall: normalizeNullableNumber(item?.scores?.overall),
+      },
+      reason: String(item?.reason || ''),
+      timestamp: toIsoTimestamp(item?.timestamp),
+    }));
+
+    return { evaluations };
+  }
+
+  if (raw?.scores) {
+    return {
+      evaluations: [
+        {
+          evaluatedBy: (raw.evaluatedBy || 'none') as EvaluatedBy,
+          scores: {
+            accuracy: normalizeNullableNumber(raw.scores.accuracy),
+            clarity: normalizeNullableNumber(raw.scores.clarity),
+            completeness: normalizeNullableNumber(raw.scores.completeness),
+            socratic: normalizeNullableNumber(raw.scores.socratic),
+            encouragement: normalizeNullableNumber(raw.scores.encouragement),
+            factuality: normalizeNullableNumber(raw.scores.factuality),
+            overall: normalizeNullableNumber(raw.scores.overall),
+          },
+          reason: String(raw.scores.reason || ''),
+          timestamp: toIsoTimestamp(raw.timestamp),
+        },
+      ],
+    };
+  }
+
+  return { evaluations: [] };
+}
+
+function getLatestEvaluation(entry?: RowEvaluationEntry): EvaluationRecord | null {
+  if (!entry?.evaluations?.length) {
+    return null;
+  }
+  return [...entry.evaluations].sort((a, b) => {
+    const ta = new Date(a.timestamp || 0).getTime();
+    const tb = new Date(b.timestamp || 0).getTime();
+    return ta - tb;
+  })[entry.evaluations.length - 1] || null;
+}
+
+function getEvaluatedBySummary(entry?: RowEvaluationEntry): string {
+  if (!entry?.evaluations?.length) {
+    return '';
+  }
+
+  const providers = entry.evaluations
+    .map((item) => String(item?.evaluatedBy || '').trim())
+    .filter((provider) => provider && provider !== 'none');
+
+  if (!providers.length) {
+    return 'none';
+  }
+
+  return Array.from(new Set(providers)).join(', ');
+}
+
+function getAveragedScores(entry: RowEvaluationEntry | undefined, mode: PreviewMode): EvaluationScores | null {
+  const evaluations = entry?.evaluations || [];
+  if (!evaluations.length) {
+    return null;
+  }
+
+  const count = evaluations.length;
+  const sum = evaluations.reduce(
+    (acc, item) => ({
+      accuracy: acc.accuracy + (Number(item.scores.accuracy) || 0),
+      clarity: acc.clarity + (Number(item.scores.clarity) || 0),
+      completeness: acc.completeness + (Number(item.scores.completeness) || 0),
+      socratic: acc.socratic + (Number(item.scores.socratic) || 0),
+      encouragement: acc.encouragement + (Number(item.scores.encouragement) || 0),
+      factuality: acc.factuality + (Number(item.scores.factuality) || 0),
+      overall: acc.overall + (Number(item.scores.overall) || 0),
+    }),
+    {
+      accuracy: 0,
+      clarity: 0,
+      completeness: 0,
+      socratic: 0,
+      encouragement: 0,
+      factuality: 0,
+      overall: 0,
+    }
+  );
+
+  const avg = {
+    accuracy: sum.accuracy / count,
+    clarity: sum.clarity / count,
+    completeness: sum.completeness / count,
+    socratic: sum.socratic / count,
+    encouragement: sum.encouragement / count,
+    factuality: sum.factuality / count,
+    overall: sum.overall / count,
+  };
+
+  return {
+    accuracy: mode === 'alpaca' ? avg.accuracy : null,
+    clarity: mode === 'alpaca' ? avg.clarity : null,
+    completeness: mode === 'alpaca' ? avg.completeness : null,
+    socratic: mode === 'openai' ? avg.socratic : null,
+    encouragement: mode === 'openai' ? avg.encouragement : null,
+    factuality: mode === 'openai' ? avg.factuality : null,
+    overall: avg.overall,
+  };
+}
+
+function isMongoObjectId(value: string): boolean {
+  return /^[a-f\d]{24}$/i.test(String(value || ''));
+}
+
+function mergeEvaluationUpdates(
+  base: Record<string, RowEvaluationEntry>,
+  updates: Record<string, EvaluationRecord>
+): Record<string, RowEvaluationEntry> {
+  const merged = { ...base };
+
+  Object.entries(updates).forEach(([key, evaluation]) => {
+    const normalized = normalizeEvaluationEntry(merged[key]);
+    merged[key] = {
+      evaluations: [...normalized.evaluations, evaluation],
+    };
+  });
+
+  return merged;
+}
+
 function formatDefaultProjectName(date = new Date()): string {
   const dd = String(date.getDate()).padStart(2, '0');
   const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -97,10 +297,57 @@ function formatDefaultProjectName(date = new Date()): string {
 const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 1, label: 'Upload & Convert' },
   { id: 2, label: 'Clean Data' },
-  { id: 3, label: 'Clustering Data' },
-  { id: 4, label: 'Evaluation' },
-  { id: 5, label: 'Finish' },
+  { id: 3, label: 'Visualization' },
+  { id: 4, label: 'Clustering Data' },
+  { id: 5, label: 'Evaluation' },
+  { id: 6, label: 'Data Refinement' },
+  { id: 7, label: 'System Prompt' },
+  { id: 8, label: 'Finish' },
 ];
+
+type VisualizationResult = {
+  elbow: Array<{ k: number; wcss: number }>;
+  kDistance: Array<{ rank: number; distance: number }>;
+  pointCount: number;
+  noiseCount?: number;
+};
+
+// NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
+// computeElbow, computeKDistance, buildFeatureVectors) have been removed.
+// Step 3 now uses GPU Service API for semantic embedding-based computation.
+
+function shuffle<T>(arr: T[]): T[] {
+  const next = [...arr];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
+
+function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptText?: string): any {
+  const trimmedSystemPrompt = String(systemPromptText || '').trim();
+
+  if (mode === 'openai') {
+    const messages = Array.isArray(record?.messages) ? record.messages : [];
+    const normalizedMessages = messages.map((msg: any) => ({
+      role: String(msg?.role || ''),
+      content: String(msg?.content || ''),
+    }));
+
+    return {
+      messages: trimmedSystemPrompt
+        ? [{ role: 'system', content: trimmedSystemPrompt }, ...normalizedMessages]
+        : normalizedMessages,
+    };
+  }
+
+  return {
+    instruction: String(record?.instruction ?? record?.query ?? ''),
+    input: String(record?.input ?? record?.context ?? ''),
+    output: String(record?.output ?? record?.answer ?? record?.response ?? ''),
+  };
+}
 
 const METRIC_TOOLTIPS: Record<string, string> = {
   socratic:
@@ -223,11 +470,12 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
     const instruction = String(item?.instruction ?? item?.query ?? item?.question ?? '');
     const input = String(item?.input ?? item?.context ?? '');
     const output = String(item?.output ?? item?.answer ?? item?.response ?? '');
+    const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
 
     return {
-      id: `alpaca-${index}`,
-      blockId: `alpaca-${index}`,
-      blockLabel: `Record ${index + 1}`,
+      id: rowId,
+      blockId: rowId,
+      blockLabel: item?.id ? String(item.id) : `Record ${index + 1}`,
       isBlockLast: true,
       instruction,
       input,
@@ -243,15 +491,26 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
 function StepperHeader({ currentStep }: { currentStep: Step }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div
+        className="grid gap-2 sm:gap-3"
+        style={{ gridTemplateColumns: `repeat(${STEP_CONFIG.length}, minmax(0, 1fr))` }}
+      >
         {STEP_CONFIG.map((step) => {
           const isActive = step.id === currentStep;
           const isCompleted = step.id < currentStep;
 
           return (
-            <div key={step.id} className="flex items-center gap-3">
+            <div
+              key={step.id}
+              className={`h-full min-h-[92px] rounded-xl border px-2 py-2 text-center ${isCompleted
+                ? 'border-green-200 bg-green-50'
+                : isActive
+                  ? 'border-primary-200 bg-primary-50'
+                  : 'border-gray-200 bg-white'
+                }`}
+            >
               <div
-                className={`w-9 h-9 rounded-full border flex items-center justify-center text-sm font-semibold ${isCompleted
+                className={`mx-auto w-7 h-7 sm:w-8 sm:h-8 rounded-full border flex items-center justify-center text-[11px] sm:text-xs font-semibold ${isCompleted
                   ? 'bg-green-600 border-green-600 text-white'
                   : isActive
                     ? 'bg-primary-600 border-primary-600 text-white'
@@ -260,16 +519,437 @@ function StepperHeader({ currentStep }: { currentStep: Step }) {
               >
                 {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : step.id}
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Step {step.id}</p>
-                <p className={`text-sm font-semibold ${isActive ? 'text-primary-700' : 'text-gray-800'}`}>
-                  {step.label}
-                </p>
-              </div>
+              <p className="mt-1 text-[10px] sm:text-[11px] text-gray-500">Step {step.id}</p>
+              <p className={`text-[11px] sm:text-xs font-semibold leading-tight ${isActive ? 'text-primary-700' : 'text-gray-800'}`}>
+                {step.label}
+              </p>
             </div>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function DetailTextModal({
+  isOpen,
+  title,
+  content,
+  onClose,
+}: {
+  isOpen: boolean;
+  title: string;
+  content: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-3xl rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">{title}</h4>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[65vh] overflow-y-auto px-5 py-4">
+          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-800">{content || '-'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionModalFrame({
+  isOpen,
+  title,
+  description,
+  confirmText,
+  isSubmitting,
+  onClose,
+  onConfirm,
+  children,
+}: {
+  isOpen: boolean;
+  title: string;
+  description: string;
+  confirmText: string;
+  isSubmitting?: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isSubmitting) {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isSubmitting, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">{title}</h4>
+          <p className="mt-1 text-sm text-gray-600">{description}</p>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">{children}</div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={Boolean(isSubmitting)}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={Boolean(isSubmitting)}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:bg-gray-400"
+          >
+            {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {confirmText}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EvaluateModal({
+  isOpen,
+  provider,
+  onProviderChange,
+  onClose,
+  onConfirm,
+  isSubmitting,
+}: {
+  isOpen: boolean;
+  provider: AiProvider;
+  onProviderChange: (provider: AiProvider) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+  isSubmitting?: boolean;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Evaluate with AI"
+      description="Choose a model to evaluate all visible rows on the current page."
+      confirmText="Confirm Evaluation"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
+        <select
+          value={provider}
+          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        >
+          <option value="gemini">Gemini</option>
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">Deepseek</option>
+        </select>
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function RefineModal({
+  isOpen,
+  provider,
+  scoreThreshold,
+  onProviderChange,
+  onScoreThresholdChange,
+  onClose,
+  onConfirm,
+  isSubmitting,
+}: {
+  isOpen: boolean;
+  provider: AiProvider;
+  scoreThreshold: number;
+  onProviderChange: (provider: AiProvider) => void;
+  onScoreThresholdChange: (value: number) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+  isSubmitting?: boolean;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Refine Data"
+      description="Choose a model and score threshold to refine all targeted visible rows."
+      confirmText="Confirm Refinement"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
+        <select
+          value={provider}
+          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        >
+          <option value="gemini">Gemini</option>
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">Deepseek</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">Refine items with overall &lt;=</label>
+        <input
+          type="number"
+          min={0}
+          max={10}
+          step={0.1}
+          value={scoreThreshold}
+          onChange={(e) => onScoreThresholdChange(Math.max(0, Math.min(10, Number(e.target.value) || 0)))}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        />
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function ManualEvaluateModal({
+  isOpen,
+  mode,
+  metricA,
+  metricB,
+  metricC,
+  reason,
+  isSubmitting,
+  onChange,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  mode: PreviewMode;
+  metricA: string;
+  metricB: string;
+  metricC: string;
+  reason: string;
+  isSubmitting?: boolean;
+  onChange: (field: 'metricA' | 'metricB' | 'metricC' | 'reason', value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const labelA = mode === 'openai' ? 'socratic' : 'accuracy';
+  const labelB = mode === 'openai' ? 'encouragement' : 'clarity';
+  const labelC = mode === 'openai' ? 'factuality' : 'completeness';
+
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Add evaluate by manual"
+      description="Fill in the evaluation metrics and reason."
+      confirmText="Save Evaluation"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelA}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricA}
+            onChange={(e) => onChange('metricA', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelB}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricB}
+            onChange={(e) => onChange('metricB', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelC}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricC}
+            onChange={(e) => onChange('metricC', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">reason</label>
+        <textarea
+          value={reason}
+          onChange={(e) => onChange('reason', e.target.value)}
+          rows={4}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          placeholder="Nhap ly do danh gia"
+        />
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function DeleteConfirmModal({
+  isOpen,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h4 className="text-base font-semibold text-gray-900">Remove</h4>
+          <p className="mt-1 text-sm text-gray-600">Are you sure you want to remove this item?</p>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClampedTextCell({
+  text,
+  label,
+  onReadMore,
+}: {
+  text: string;
+  label: string;
+  onReadMore: (title: string, content: string) => void;
+}) {
+  const displayText = text || '-';
+  const textRef = useRef<HTMLParagraphElement | null>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    const evaluateOverflow = () => {
+      const node = textRef.current;
+      if (!node) {
+        return;
+      }
+      setIsOverflowing(node.scrollHeight > node.clientHeight + 1);
+    };
+
+    evaluateOverflow();
+    window.addEventListener('resize', evaluateOverflow);
+    return () => window.removeEventListener('resize', evaluateOverflow);
+  }, [displayText]);
+
+  return (
+    <div>
+      <p ref={textRef} className="whitespace-pre-wrap break-words line-clamp-3 text-gray-800">
+        {displayText}
+      </p>
+      {isOverflowing && (
+        <button
+          type="button"
+          onClick={() => onReadMore(label, displayText)}
+          className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-700"
+        >
+          Read more
+        </button>
+      )}
     </div>
   );
 }
@@ -280,43 +960,44 @@ function ConvertedDatasetTable({
   showEvaluationColumns,
   showEvaluationActions = true,
   evaluationMap,
-  selectedManualRows,
-  clusterGroups,
-  evaluationGroupFilter,
-  onEvaluationGroupFilterChange,
+  rowHighlightMap,
   onEvaluate,
-  onAccept,
   onReset,
-  onToggleManualRow,
-  onManualFieldChange,
+  extraActions,
   isEvaluating,
   disableEvaluate,
-  isAccepting,
   onVisibleRowsChange,
+  onRequestViewHistory,
+  onRequestManualEvaluate,
+  onRequestDeleteRow,
+  isFinishPreview = false,
+  systemPromptText,
 }: {
   rows: DisplayRow[];
   mode: PreviewMode;
   showEvaluationColumns?: boolean;
   showEvaluationActions?: boolean;
   evaluationMap?: Record<string, RowEvaluationEntry>;
-  selectedManualRows?: Set<string>;
-  clusterGroups?: ClusterGroup[];
-  evaluationGroupFilter?: 'all' | number;
-  onEvaluationGroupFilterChange?: (value: 'all' | number) => void;
+  rowHighlightMap?: Record<string, 'refined'>;
   onEvaluate?: () => void;
-  onAccept?: () => void;
   onReset?: () => void;
-  onToggleManualRow?: (row: DisplayRow, checked: boolean) => void;
-  onManualFieldChange?: (row: DisplayRow, field: string, value: string) => void;
+  extraActions?: any;
   isEvaluating?: boolean;
   disableEvaluate?: boolean;
-  isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
+  onRequestViewHistory?: (row: DisplayRow) => void;
+  onRequestManualEvaluate?: (row: DisplayRow) => void;
+  onRequestDeleteRow?: (row: DisplayRow) => void;
+  isFinishPreview?: boolean;
+  systemPromptText?: string;
 }) {
-  const PAGE_SIZE_STEPS = [10, 20, 100, 250, 500];
+  const PAGE_SIZE_STEPS = [5, 10, 20, 100, 250, 500];
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_STEPS[0]);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState<boolean>(false);
+  const [detailModal, setDetailModal] = useState<{ title: string; content: string } | null>(null);
+  const [openActionMenuKey, setOpenActionMenuKey] = useState<string | null>(null);
+  const lastVisibleSignatureRef = useRef<string>('');
 
   useEffect(() => {
     setCurrentPage(1);
@@ -331,7 +1012,17 @@ function ConvertedDatasetTable({
   const visibleRows = rows.slice(startIndex, endIndexExclusive);
 
   useEffect(() => {
-    onVisibleRowsChange?.(visibleRows);
+    if (!onVisibleRowsChange) {
+      return;
+    }
+
+    const signature = `${startIndex}:${endIndexExclusive}:${visibleRows.map((row) => row.id).join('|')}`;
+    if (signature === lastVisibleSignatureRef.current) {
+      return;
+    }
+
+    lastVisibleSignatureRef.current = signature;
+    onVisibleRowsChange(visibleRows);
   }, [onVisibleRowsChange, visibleRows]);
 
   const currentStepIndex = PAGE_SIZE_STEPS.indexOf(pageSize);
@@ -345,6 +1036,14 @@ function ConvertedDatasetTable({
   };
 
   const hasRows = totalRows > 0;
+  const showDeleteAction = Boolean(onRequestDeleteRow);
+  const showActionMenu = Boolean(showDeleteAction || onRequestManualEvaluate || onRequestViewHistory);
+  const showSystemColumn = isFinishPreview;
+  const hideOpenAIMetricBreakdown = Boolean(isFinishPreview && mode === 'openai');
+  const scoreColumnCount = showEvaluationColumns
+    ? (hideOpenAIMetricBreakdown ? 1 : 4) + 2
+    : 0;
+  const emptyColSpan = 3 + (showSystemColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
   const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
@@ -357,6 +1056,75 @@ function ConvertedDatasetTable({
       </span>
     </span>
   );
+
+  const renderActionMenuCell = (row: DisplayRow, rowSpan?: number) => {
+    if (!showActionMenu) {
+      return null;
+    }
+
+    const rowKey = resolveEvaluationKey(row);
+    const isOpen = openActionMenuKey === rowKey;
+
+    return (
+      <td className="px-2 py-3 align-bottom" rowSpan={rowSpan}>
+        <div className="relative flex h-full items-end justify-end">
+          <button
+            type="button"
+            onClick={() => setOpenActionMenuKey((prev) => (prev === rowKey ? null : rowKey))}
+            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            title="Actions"
+            aria-label="Actions"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+
+          {isOpen && (
+            <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+              {onRequestViewHistory && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestViewHistory(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>All evaluate mark</span>
+                </button>
+              )}
+              {onRequestManualEvaluate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestManualEvaluate(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  <span>Evaluate manual</span>
+                </button>
+              )}
+              {showDeleteAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestDeleteRow?.(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete </span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </td>
+    );
+  };
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -399,23 +1167,6 @@ function ConvertedDatasetTable({
               ))}
             </select>
 
-            {showEvaluationColumns && (
-              <select
-                value={evaluationGroupFilter === 'all' ? 'all' : String(evaluationGroupFilter)}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  onEvaluationGroupFilterChange?.(value === 'all' ? 'all' : Number(value));
-                }}
-                className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-xs font-semibold text-gray-700"
-              >
-                <option value="all">All groups</option>
-                {(clusterGroups || []).map((group) => (
-                  <option key={group.groupId} value={group.groupId}>
-                    Group {group.groupId} - {group.label} ({group.count})
-                  </option>
-                ))}
-              </select>
-            )}
           </div>
 
           {showEvaluationColumns && showEvaluationActions && (
@@ -426,50 +1177,65 @@ function ConvertedDatasetTable({
                 className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white text-xs font-semibold"
               >
                 {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                <span>Evaluate with Gemini</span>
+                <span>Evaluate with AI</span>
               </button>
 
-              <button
-                onClick={onAccept}
-                disabled={!hasRows || isAccepting}
-                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-              >
-                Accept
-              </button>
+              {extraActions}
 
-              <button
-                onClick={onReset}
-                disabled={!hasRows}
-                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-              >
-                Reset
-              </button>
+              {onReset && (
+                <button
+                  onClick={onReset}
+                  disabled={!hasRows}
+                  className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+                >
+                  Reset
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
 
       <div className="overflow-auto max-h-[680px]">
-        <table className="min-w-full text-sm">
+        <table className="min-w-full text-sm table-fixed">
+          <colgroup>
+            {showSystemColumn && <col className="w-[16%]" />}
+            <col className="w-[30%]" />
+            <col className="w-[20%]" />
+            <col className="w-[40%]" />
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && <col className="min-w-[280px]" />}
+            {showEvaluationColumns && <col className="w-[120px]" />}
+            {showActionMenu && <col className="w-[64px]" />}
+          </colgroup>
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
-              {showEvaluationColumns && <th className="px-4 py-3 w-[48px]" />}
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[26%]">
+              {showSystemColumn && <th className="text-left px-4 py-3 font-semibold text-gray-700">System</th>}
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'User' : 'Instruction'}
               </th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[18%]">
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? '<think>' : 'Input'}
               </th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-700 w-[26%]">
+              <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'Assistant' : 'Output'}
               </th>
               {showEvaluationColumns && (
                 <>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricA)}</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricB)}</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
+                  {!hideOpenAIMetricBreakdown && (
+                    <>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricA)}</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricB)}</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
+                    </>
+                  )}
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">overall</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700 min-w-[280px]">reason</th>
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">evaluated by</th>
+                  {showActionMenu && <th className="px-2 py-3" />}
                 </>
               )}
             </tr>
@@ -478,13 +1244,11 @@ function ConvertedDatasetTable({
             {visibleRows.length > 0 ? (
               showEvaluationColumns && mode === 'openai'
                 ? visibleRows.flatMap((row, index) => {
-                  const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
-                  const score = entry?.scores;
-                  const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
-                  const metricInputClass =
-                    'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
-                  const reasonInputClass =
-                    'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                  const key = resolveEvaluationKey(row);
+                  const entry = normalizeEvaluationEntry(evaluationMap?.[key] || evaluationMap?.[row.id]);
+                  const averagedScores = getAveragedScores(entry, mode);
+                  const latestEvaluation = getLatestEvaluation(entry);
+                  const evaluatedBySummary = getEvaluatedBySummary(entry);
 
                   const pairs = row.conversationPairs && row.conversationPairs.length > 0
                     ? row.conversationPairs
@@ -496,83 +1260,56 @@ function ConvertedDatasetTable({
                       className={`align-top ${pairIndex === pairs.length - 1
                         ? 'border-b-4 border-b-gray-200'
                         : 'border-b border-b-gray-100'
-                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''
+                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
+                        } ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''
                         }`}
                     >
-                      {pairIndex === 0 && (
+                      {showSystemColumn && pairIndex === 0 && (
                         <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
-                          <input
-                            type="checkbox"
-                            checked={isManual}
-                            onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
-                          />
+                          <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                            {systemPromptText?.trim() || '-'}
+                          </p>
                         </td>
                       )}
-
-                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                      <td className="px-4 py-3 align-top">
+                        <ClampedTextCell
+                          text={pair.user || '-'}
+                          label="User"
+                          onReadMore={(title, content) => setDetailModal({ title, content })}
+                        />
+                      </td>
                       <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
-                      <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+                      <td className="px-4 py-3 align-top">
+                        <ClampedTextCell
+                          text={pair.assistant || '-'}
+                          label="Assistant"
+                          onReadMore={(title, content) => setDetailModal({ title, content })}
+                        />
+                      </td>
 
                       {pairIndex === 0 && (
                         <>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.socratic ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'socratic', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              score?.socratic ?? ''
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.encouragement ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'encouragement', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              score?.encouragement ?? ''
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.factuality ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'factuality', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              score?.factuality ?? ''
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{score?.overall ?? ''}</td>
+                          {!hideOpenAIMetricBreakdown && (
+                            <>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.socratic)}
+                              </td>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.encouragement)}
+                              </td>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.factuality)}
+                              </td>
+                            </>
+                          )}
+                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{formatTableScore(averagedScores?.overall)}</td>
                           <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
-                            {isManual ? (
-                              <input
-                                type="text"
-                                value={score?.reason ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
-                                className={reasonInputClass}
-                              />
-                            ) : (
-                              score?.reason ?? ''
-                            )}
+                            {latestEvaluation?.reason ?? ''}
                           </td>
+                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                            {evaluatedBySummary || latestEvaluation?.evaluatedBy || ''}
+                          </td>
+                          {renderActionMenuCell(row, pairs.length)}
                         </>
                       )}
                     </tr>
@@ -592,99 +1329,81 @@ function ConvertedDatasetTable({
                           : 'border-b border-b-gray-100'
                           } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
                       >
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.user || '-'}</td>
+                        {showSystemColumn && (
+                          <td className="px-4 py-3 align-top">
+                            <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                              {systemPromptText?.trim() || '-'}
+                            </p>
+                          </td>
+                        )}
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={pair.user || '-'}
+                            label="User"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{pair.assistant || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={pair.assistant || '-'}
+                            label="Assistant"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                       </tr>
                     ));
                   })
                   : visibleRows.map((row, index) => {
-                    const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
-                    const score = entry?.scores;
-                    const isManual = selectedManualRows?.has(row.id) || selectedManualRows?.has(row.blockId) || false;
-                    const metricInputClass =
-                      'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
-                    const reasonInputClass =
-                      'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                    const key = resolveEvaluationKey(row);
+                    const entry = normalizeEvaluationEntry(evaluationMap?.[key] || evaluationMap?.[row.id]);
+                    const averagedScores = getAveragedScores(entry, mode);
+                    const latestEvaluation = getLatestEvaluation(entry);
+                    const evaluatedBySummary = getEvaluatedBySummary(entry);
 
                     return (
                       <tr
                         key={row.id}
                         className={`align-top ${row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
-                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''}`}
+                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''}`}
                       >
-                        {showEvaluationColumns && (
-                          <td className="px-4 py-3">
-                            <input
-                              type="checkbox"
-                              checked={isManual}
-                              onChange={(e) => onToggleManualRow?.(row, e.target.checked)}
-                            />
+                        {showSystemColumn && (
+                          <td className="px-4 py-3 align-top">
+                            <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                              {systemPromptText?.trim() || '-'}
+                            </p>
                           </td>
                         )}
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.userText || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={row.userText || '-'}
+                            label="Instruction"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
-                        <td className="px-4 py-3 text-gray-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
+                        <td className="px-4 py-3 align-top">
+                          <ClampedTextCell
+                            text={row.assistantText || '-'}
+                            label="Output"
+                            onReadMore={(title, content) => setDetailModal({ title, content })}
+                          />
+                        </td>
                         {showEvaluationColumns && (
                           <>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.accuracy ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'accuracy', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                score?.accuracy ?? ''
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.clarity ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'clarity', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                score?.clarity ?? ''
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.completeness ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'completeness', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                score?.completeness ?? ''
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700 font-semibold">{score?.overall ?? ''}</td>
+                            {!hideOpenAIMetricBreakdown && (
+                              <>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.accuracy)}</td>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.clarity)}</td>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.completeness)}</td>
+                              </>
+                            )}
+                            <td className="px-4 py-3 text-gray-700 font-semibold">{formatTableScore(averagedScores?.overall)}</td>
                             <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
-                              {isManual ? (
-                                <input
-                                  type="text"
-                                  value={score?.reason ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
-                                  className={reasonInputClass}
-                                />
-                              ) : (
-                                score?.reason ?? ''
-                              )}
+                              {latestEvaluation?.reason ?? ''}
                             </td>
+                            <td className="px-4 py-3 text-gray-700">{evaluatedBySummary || latestEvaluation?.evaluatedBy || ''}</td>
+                            {renderActionMenuCell(row)}
                           </>
                         )}
                       </tr>
@@ -692,7 +1411,7 @@ function ConvertedDatasetTable({
                   })
             ) : (
               <tr>
-                <td colSpan={showEvaluationColumns ? 9 : 3} className="px-4 py-10 text-center text-gray-500">
+                <td colSpan={emptyColSpan} className="px-4 py-10 text-center text-gray-500">
                   No converted records to preview.
                 </td>
               </tr>
@@ -722,6 +1441,13 @@ function ConvertedDatasetTable({
           </button>
         </div>
       )}
+
+      <DetailTextModal
+        isOpen={Boolean(detailModal)}
+        title={detailModal?.title || ''}
+        content={detailModal?.content || ''}
+        onClose={() => setDetailModal(null)}
+      />
     </div>
   );
 }
@@ -1066,24 +1792,51 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
 }
 
 export function ConversionPage() {
-  const { uploadedFile, conversionOptions, projectName, setProjectName } = useAppStore();
+  const { uploadedFile, conversionOptions, projectName, setProjectName, updateConversionOptions } = useAppStore();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [conversionResult, setConversionResult] = useState<ConversionResult | null>(null);
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
-  const [minOverallScore, setMinOverallScore] = useState<number>(0);
+  const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null);
+  const [maxK, setMaxK] = useState<number>(20);
+  const [dbscanEps, setDbscanEps] = useState<number>(0.15);
+  const [dbscanMinSamples, setDbscanMinSamples] = useState<number>(6);
+  const [clusterK, setClusterK] = useState<number>(8);
+  const [isVisualizing, setIsVisualizing] = useState<boolean>(false);
   const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
-  const [manualRowIds, setManualRowIds] = useState<Set<string>>(new Set());
+  const [refinedRowIds, setRefinedRowIds] = useState<Set<string>>(new Set());
   const [clusterGroups, setClusterGroups] = useState<ClusterGroup[]>([]);
   const [rowClusterMap, setRowClusterMap] = useState<Record<string, number>>({});
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
-  const [evaluationGroupFilter, setEvaluationGroupFilter] = useState<'all' | number>('all');
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
-  const [clusteredResult, setClusteredResult] = useState<{
-    data: any[];
-    assignments: number[];
-    groups: ClusterGroup[];
-  } | null>(null);
+  const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
+  const [downloadTestPercentage, setDownloadTestPercentage] = useState<number>(10);
+  const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
+  const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
+  const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[] } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
+  const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
+  const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
+  const [isRefineModalOpen, setIsRefineModalOpen] = useState(false);
+  const [isManualEvalModalOpen, setIsManualEvalModalOpen] = useState(false);
+  const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
+  const [scoreHistoryModalTitle, setScoreHistoryModalTitle] = useState<string>('Score History');
+  const [scoreHistoryItems, setScoreHistoryItems] = useState<ScoreHistoryEntry[]>([]);
+  const [manualTargetRow, setManualTargetRow] = useState<DisplayRow | null>(null);
+  const [manualDraft, setManualDraft] = useState<{ metricA: string; metricB: string; metricC: string; reason: string }>({
+    metricA: '',
+    metricB: '',
+    metricC: '',
+    reason: '',
+  });
+  const [isManualSaving, setIsManualSaving] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<DisplayRow | null>(null);
+  const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
+  const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
+  const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
+  const [systemPromptText, setSystemPromptText] = useState<string>('');
+  const loadHandledRef = useRef<boolean>(false);
 
   const { data: stats } = useQuery({
     queryKey: ['stats', uploadedFile?.fileId],
@@ -1098,114 +1851,229 @@ export function ConversionPage() {
     [conversionResult?.data, conversionOptions.removeThinkTags, previewMode]
   );
 
-  const rowsWithGroups = useMemo(
-    () =>
-      allRows.map((row) => ({
-        ...row,
-        groupId: rowClusterMap[row.id] !== undefined ? rowClusterMap[row.id] : row.groupId,
-      })),
+  const rowsWithClusterGroups = useMemo(
+    () => allRows.map((row) => ({ ...row, groupId: rowClusterMap[row.id] ?? row.groupId })),
     [allRows, rowClusterMap]
   );
 
   const clusteredRows = useMemo(() => {
-    if (currentStep === 3 && selectedClusterIds.length > 0) {
-      return rowsWithGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
-    }
-
-    if (currentStep >= 4 && evaluationGroupFilter !== 'all') {
-      return rowsWithGroups.filter((row) => row.groupId === evaluationGroupFilter);
-    }
-
-    return rowsWithGroups;
-  }, [currentStep, rowsWithGroups, selectedClusterIds, evaluationGroupFilter]);
+    if (!selectedClusterIds.length) return rowsWithClusterGroups;
+    return rowsWithClusterGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
+  }, [rowsWithClusterGroups, selectedClusterIds]);
 
   const evaluationRows = useMemo(() => {
-    if (currentStep !== 4 || previewMode !== 'openai') {
-      return clusteredRows;
+    if (previewMode !== 'openai') {
+      return rowsWithClusterGroups;
     }
 
     const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
     const groupByConversation = new Map<string, number | undefined>();
-
-    rowsWithGroups.forEach((row) => {
+    rowsWithClusterGroups.forEach((row) => {
       if (!groupByConversation.has(row.blockId)) {
         groupByConversation.set(row.blockId, row.groupId);
       }
     });
 
-    const filteredConversations = conversations.filter((conv) => {
-      if (evaluationGroupFilter === 'all') {
-        return true;
-      }
-      return groupByConversation.get(String(conv.conversation_id)) === evaluationGroupFilter;
-    });
-
-    return filteredConversations.map((conv, index) => {
-      const pairs: Array<{ user: string; assistant: string }> = [];
-
-      for (let i = 0; i < conv.messages.length; i += 1) {
-        const current = conv.messages[i];
-        if (current.role !== 'user') {
-          continue;
+    return conversations
+      .map((conv, index) => {
+        const pairs: Array<{ user: string; assistant: string }> = [];
+        for (let i = 0; i < conv.messages.length; i += 1) {
+          if (conv.messages[i].role !== 'user') continue;
+          const nextAssistant = conv.messages.slice(i + 1).find((msg) => msg.role === 'assistant');
+          pairs.push({ user: String(conv.messages[i].content || '').trim(), assistant: String(nextAssistant?.content || '').trim() });
         }
+        const firstUser = conv.messages.find((msg) => msg.role === 'user')?.content || '';
+        const lastAssistant = [...conv.messages].reverse().find((msg) => msg.role === 'assistant')?.content || '';
+        return {
+          id: String(conv.conversation_id),
+          blockId: String(conv.conversation_id),
+          blockLabel: `Conversation ${index + 1}`,
+          isBlockLast: true,
+          instruction: firstUser,
+          input: '',
+          output: lastAssistant,
+          userText: pairs.map((p) => p.user).join('\n\n') || firstUser || '-',
+          thinkText: '-',
+          assistantText: pairs.map((p) => p.assistant).join('\n\n') || lastAssistant || '-',
+          conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
+          groupId: groupByConversation.get(String(conv.conversation_id)),
+        } as DisplayRow;
+      });
+  }, [conversionResult?.data, previewMode, rowsWithClusterGroups]);
 
-        const nextAssistant = conv.messages.slice(i + 1).find((msg) => msg.role === 'assistant');
-        pairs.push({
-          user: String(current.content || '').trim(),
-          assistant: String(nextAssistant?.content || '').trim(),
-        });
-      }
-
-      const users = pairs.map((pair) => pair.user).filter(Boolean).join('\n\n');
-      const assistants = pairs.map((pair) => pair.assistant || '-').join('\n\n');
-
-      const firstUser = conv.messages.find((msg) => msg.role === 'user')?.content || '';
-      const lastAssistant = [...conv.messages].reverse().find((msg) => msg.role === 'assistant')?.content || '';
-
-      return {
-        id: String(conv.conversation_id),
-        blockId: String(conv.conversation_id),
-        blockLabel: `Conversation ${index + 1}`,
-        isBlockLast: true,
-        instruction: firstUser,
-        input: '',
-        output: lastAssistant,
-        userText: users || firstUser || '-',
-        thinkText: '-',
-        assistantText: assistants || lastAssistant || '-',
-        conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
-        groupId: groupByConversation.get(String(conv.conversation_id)),
-      } as DisplayRow;
-    });
-  }, [
-    clusteredRows,
-    conversionResult?.data,
-    currentStep,
-    evaluationGroupFilter,
-    previewMode,
-    rowsWithGroups,
-  ]);
-
-  const averagedEvaluation = useMemo(() => {
-    const values = Object.values(evaluationMap).map((entry) => entry.scores);
-    if (values.length === 0) {
+  const buildDatasetVersionPayload = (): {
+    projectName: string;
+    similarityThreshold: number;
+    format: 'openai' | 'alpaca';
+    data: Array<{ sourceKey: string; data: Record<string, any> }>;
+  } | null => {
+    if (!conversionResult) {
       return null;
     }
 
-    const total = values.reduce(
-      (acc, item) => {
-        acc.accuracy += item.accuracy || 0;
-        acc.clarity += item.clarity || 0;
-        acc.completeness += item.completeness || 0;
-        acc.socratic += item.socratic || 0;
-        acc.encouragement += item.encouragement || 0;
-        acc.factuality += item.factuality || 0;
-        acc.overall += item.overall || 0;
-        return acc;
-      },
+    const data = allRows.map((row) => {
+      if (previewMode === 'openai') {
+        const messages = (row.conversationPairs || []).flatMap((pair) => ([
+          { role: 'user', content: String(pair.user || '') },
+          { role: 'assistant', content: String(pair.assistant || '') },
+        ])).filter((message) => String(message.content || '').trim() !== '');
+
+        return {
+          sourceKey: resolveEvaluationKey(row),
+          data: {
+            messages,
+          },
+        };
+      }
+
+      return {
+        sourceKey: resolveEvaluationKey(row),
+        data: {
+          instruction: row.instruction,
+          input: row.input,
+          output: row.output,
+        },
+      };
+    });
+
+    return {
+      projectName: projectName.trim() || formatDefaultProjectName(),
+      similarityThreshold: filterThreshold,
+      format: conversionResult.format === 'openai' ? 'openai' : 'alpaca',
+      data: data as Array<{ sourceKey: string; data: Record<string, any> }>,
+    };
+  };
+
+  const ensureSampleIdMapForKeys = async (keys: string[]): Promise<Record<string, string>> => {
+    const nextMap = { ...sampleIdMap };
+    const findMissing = () => keys.filter((key) => !nextMap[key] && !isMongoObjectId(key));
+
+    let missing = findMissing();
+    if (!missing.length) {
+      return nextMap;
+    }
+
+    if (currentDatasetVersionId) {
+      const detail = await apiService.getDatasetVersionDetail(currentDatasetVersionId);
+      detail.items.forEach((item) => {
+        nextMap[item.sampleKey] = item.sampleId;
+      });
+      setSampleIdMap((prev) => ({ ...prev, ...nextMap }));
+      missing = findMissing();
+    }
+
+    if (!missing.length) {
+      return nextMap;
+    }
+
+    const payload = buildDatasetVersionPayload();
+    if (!payload || !payload.data.length) {
+      throw new Error('Cannot resolve sample mapping to save evaluation.');
+    }
+
+    const created = await apiService.createDatasetVersion(payload);
+    setCurrentDatasetVersionId(created.datasetVersion._id);
+    setSampleIdMap(created.sampleIdMap || {});
+
+    return { ...nextMap, ...(created.sampleIdMap || {}) };
+  };
+
+  const persistEvaluationsForKeys = async (
+    keys: string[],
+    sourceMap: Record<string, RowEvaluationEntry>
+  ): Promise<number> => {
+    if (!conversionResult) {
+      return 0;
+    }
+
+    const targetKeys = Array.from(new Set(keys));
+    const items: Array<{
+      sampleId: string;
+      evaluatedBy: EvaluatedBy;
+      results: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      createdAt: string;
+    }> = [];
+
+    const resolvedMap = await ensureSampleIdMapForKeys(targetKeys);
+
+    targetKeys.forEach((key) => {
+      const entry = normalizeEvaluationEntry(sourceMap[key]);
+      const latest = getLatestEvaluation(entry);
+      if (!latest) {
+        return;
+      }
+
+      const persistedSampleId = resolvedMap[key] || key;
+
+      if (previewMode === 'openai') {
+        items.push({
+          sampleId: persistedSampleId,
+          evaluatedBy: latest.evaluatedBy,
+          results: {
+            socratic: latest.scores.socratic ?? null,
+            encouragement: latest.scores.encouragement ?? null,
+            factuality: latest.scores.factuality ?? null,
+            overall: latest.scores.overall ?? null,
+            reason: latest.reason,
+          },
+          createdAt: latest.timestamp,
+        });
+        return;
+      }
+
+      items.push({
+        sampleId: persistedSampleId,
+        evaluatedBy: latest.evaluatedBy,
+        results: {
+          accuracy: latest.scores.accuracy ?? null,
+          clarity: latest.scores.clarity ?? null,
+          completeness: latest.scores.completeness ?? null,
+          overall: latest.scores.overall ?? null,
+          reason: latest.reason,
+        },
+        createdAt: latest.timestamp,
+      });
+    });
+
+    if (!items.length) {
+      return 0;
+    }
+
+    await apiService.saveEvaluationResults({
+      projectName: projectName.trim() || formatDefaultProjectName(),
+      datasetVersionId: currentDatasetVersionId || undefined,
+      items,
+    });
+
+    return items.length;
+  };
+
+  const averagedEvaluation = useMemo(() => {
+    const values = Object.values(evaluationMap)
+      .map((entry) => getAveragedScores(normalizeEvaluationEntry(entry), previewMode))
+      .filter((score): score is EvaluationScores => Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= 0));
+    if (!values.length) return null;
+    const total = values.reduce<{ accuracy: number; clarity: number; completeness: number; socratic: number; encouragement: number; factuality: number; overall: number }>(
+      (acc, item) => ({
+        accuracy: acc.accuracy + (item.accuracy || 0),
+        clarity: acc.clarity + (item.clarity || 0),
+        completeness: acc.completeness + (item.completeness || 0),
+        socratic: acc.socratic + (item.socratic || 0),
+        encouragement: acc.encouragement + (item.encouragement || 0),
+        factuality: acc.factuality + (item.factuality || 0),
+        overall: acc.overall + (item.overall || 0),
+      }),
       { accuracy: 0, clarity: 0, completeness: 0, socratic: 0, encouragement: 0, factuality: 0, overall: 0 }
     );
-
     const size = values.length;
     return {
       count: size,
@@ -1217,653 +2085,824 @@ export function ConversionPage() {
       factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
-  }, [evaluationMap]);
+  }, [evaluationMap, previewMode]);
 
   const convertMutation = useMutation({
     mutationFn: (mode: 'initial' | 'clean') => {
-      const options =
-        mode === 'initial'
-          ? { ...conversionOptions, enableCleaning: false }
-          : conversionOptions;
+      const options = mode === 'initial' ? { ...conversionOptions, enableCleaning: false } : conversionOptions;
       return apiService.convertData(uploadedFile!.fileId, options);
     },
     onSuccess: (data, mode) => {
       setConversionResult(data);
       setEvaluationMap({});
-      setManualRowIds(new Set());
+      setRefinedRowIds(new Set());
+      setSystemPromptText('');
+      setCurrentDatasetVersionId(null);
+      setSampleIdMap({});
+      setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
       setSelectedClusterIds([]);
-      setEvaluationGroupFilter('all');
-
+      setVisibleRowsInEvaluation([]);
+      setVisibleRowsInRefinement([]);
       if (mode === 'initial') {
         setOriginalConvertedResult(data);
         setCurrentStep(2);
         toast.success('Conversion completed. Continue to cleaning.');
-        return;
+      } else {
+        toast.success('Cleaning rules applied to the converted dataset.');
+      }
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || 'Conversion failed'),
+  });
+
+  const createDatasetVersionMutation = useMutation({
+    mutationFn: async () => {
+      const payload = buildDatasetVersionPayload();
+      if (!payload || !payload.data.length) {
+        throw new Error('No converted rows available to version.');
       }
 
-      toast.success('Cleaning rules applied to the converted dataset.');
+      return apiService.createDatasetVersion({
+        projectName: payload.projectName,
+        similarityThreshold: payload.similarityThreshold,
+        format: payload.format,
+        data: payload.data,
+      });
+    },
+    onSuccess: (response) => {
+      setCurrentDatasetVersionId(response.datasetVersion._id);
+      setSampleIdMap(response.sampleIdMap || {});
+      setCurrentStep(5);
+      toast.success(`Created ${response.datasetVersion.versionName} for ${response.datasetVersion.projectName}.`);
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Conversion failed');
+      toast.error(error?.response?.data?.error || error.message || 'Create dataset version failed');
     },
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: async () => {
-      const rowsToEvaluate = visibleRowsInEvaluation.filter((row) => !manualRowIds.has(row.id));
-      if (!rowsToEvaluate.length) {
-        throw new Error('No visible rows to evaluate.');
-      }
+    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[] }) => {
+      const rowsToEvaluate = params.rows;
+      if (!rowsToEvaluate.length) throw new Error('No rows to evaluate.');
 
-      const newMap: Record<string, RowEvaluationEntry> = {};
-
+      const updates: Record<string, EvaluationRecord> = {};
       if (previewMode === 'openai') {
-        const convOrderedIds: string[] = [];
-        const rowsByConv = new Map<string, DisplayRow[]>();
-        for (const row of rowsToEvaluate) {
-          if (!rowsByConv.has(row.blockId)) {
-            rowsByConv.set(row.blockId, []);
-            convOrderedIds.push(row.blockId);
-          }
-          rowsByConv.get(row.blockId)!.push(row);
-        }
-
-        // Look up the full messages array from conversionResult.data for each conv
         const normalizedConvs = normalizeOpenAIConversations(conversionResult?.data || []);
         const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
-        normalizedConvs.forEach((conv) => {
-          convMessagesMap.set(String(conv.conversation_id), conv.messages);
-        });
+        normalizedConvs.forEach((conv) => convMessagesMap.set(String(conv.conversation_id), conv.messages));
 
+        const convOrderedIds = Array.from(new Set(rowsToEvaluate.map((row) => row.blockId)));
         const conversationPayload = convOrderedIds.map((convId) => ({
           conversation_id: convId,
           messages: convMessagesMap.get(convId) || [],
         }));
 
-        const evaluation = await apiService.evaluateData(conversationPayload, previewMode);
-
+        const evaluation = await apiService.evaluateDataChunked(conversationPayload, previewMode, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const convId = convOrderedIds[idx];
-          if (!convId) return;
-
-          const isSuccess =
-            Number.isFinite(sample.scores.overall) &&
-            sample.scores.overall > 0;
-
-          if (!isSuccess) return;
-
-          const score: EvaluationScores = {
-            socratic: sample.scores.socratic,
-            encouragement: sample.scores.encouragement,
-            factuality: sample.scores.factuality,
-            overall: sample.scores.overall,
+          if (!convId || !Number.isFinite(sample.scores.overall)) return;
+          updates[convId] = {
+            evaluatedBy: params.provider,
+            scores: {
+              socratic: sample.scores.socratic,
+              encouragement: sample.scores.encouragement,
+              factuality: sample.scores.factuality,
+              overall: sample.scores.overall,
+            },
             reason: sample.reason,
+            timestamp: new Date().toISOString(),
           };
-
-          const convRows = rowsByConv.get(convId) || [];
-          for (const row of convRows) {
-            newMap[row.id] = {
-              scores: score,
-              evaluatedBy: 'gemini',
-            };
-          }
         });
-
       } else {
-        const payload = rowsToEvaluate.map((row) => ({
-          instruction: row.instruction,
-          input: row.input,
-          output: row.output,
-        }));
-
-        const evaluation = await apiService.evaluateData(payload, previewMode);
-
+        const payload = rowsToEvaluate.map((row) => ({ instruction: row.instruction, input: row.input, output: row.output }));
+        const evaluation = await apiService.evaluateDataChunked(payload, previewMode, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const row = rowsToEvaluate[idx];
-          if (!row) return;
-
-          const isSuccess =
-            Number.isFinite(sample.scores.overall) &&
-            sample.scores.overall > 0;
-
-          if (!isSuccess) return;
-
-          newMap[row.id] = {
+          if (!row || !Number.isFinite(sample.scores.overall)) return;
+          updates[resolveEvaluationKey(row)] = {
+            evaluatedBy: params.provider,
             scores: {
               accuracy: sample.scores.accuracy,
               clarity: sample.scores.clarity,
               completeness: sample.scores.completeness,
               overall: sample.scores.overall,
-              reason: sample.reason,
             },
-            evaluatedBy: 'gemini',
+            reason: sample.reason,
+            timestamp: new Date().toISOString(),
           };
         });
       }
 
-      setEvaluationMap((prev) => ({ ...prev, ...newMap }));
-      return Object.keys(newMap).length;
+      return { updates, provider: params.provider };
     },
-    onSuccess: (evaluatedCount) => {
-      toast.success(`Evaluation completed. ${evaluatedCount} rows scored by Gemini.`);
+    onSuccess: async ({ updates, provider }) => {
+      const updateKeys = Object.keys(updates);
+      if (!updateKeys.length) {
+        toast.error('No rows were evaluated.');
+        return;
+      }
+
+      const mergedMap = mergeEvaluationUpdates(evaluationMap, updates);
+      setEvaluationMap(mergedMap);
+      let isAutoSaved = true;
+
+      try {
+        await persistEvaluationsForKeys(updateKeys, mergedMap);
+      } catch (error: any) {
+        isAutoSaved = false;
+        toast.error(error?.response?.data?.error || error.message || 'Auto-save failed after evaluation.');
+      }
+
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
+      if (isAutoSaved) {
+        toast.success(`Evaluation completed. ${updateKeys.length} rows scored by ${label} and saved to database.`);
+      }
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Evaluation failed');
+      const backendError = error?.response?.data;
+      const message = backendError?.details
+        ? `${backendError.error}: ${backendError.details}`
+        : (backendError?.error || error.message || 'Evaluation failed');
+      toast.error(message);
     },
   });
 
-  const acceptMutation = useMutation({
-    mutationFn: async () => {
-      if (!uploadedFile) {
-        throw new Error('No uploaded file found.');
-      }
-
-      if (!conversionResult) {
-        throw new Error('No converted data available to save.');
-      }
-
-      const createdAt = new Date().toISOString();
-
-      const toResultPayload = (entry: RowEvaluationEntry) => ({
-        accuracy: entry.scores.accuracy,
-        clarity: entry.scores.clarity,
-        completeness: entry.scores.completeness,
-        socratic: entry.scores.socratic,
-        encouragement: entry.scores.encouragement,
-        factuality: entry.scores.factuality,
-        overall: entry.scores.overall,
-        reason: entry.scores.reason,
+  const refineMutation = useMutation({
+    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[]; scoreThreshold: number }) => {
+      const candidateRows = params.rows.filter((row) => {
+        const key = resolveEvaluationKey(row);
+        const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+        const averagedScores = getAveragedScores(entry, previewMode);
+        const overall = averagedScores?.overall;
+        return Number.isFinite(overall) && (overall as number) >= 0 && (overall as number) <= params.scoreThreshold;
       });
 
-      let records: Array<{
-        format: string;
-        data: Record<string, any>;
-        evaluatedBy: EvaluatedBy;
-        results: {
-          accuracy?: number;
-          clarity?: number;
-          completeness?: number;
-          socratic?: number;
-          encouragement?: number;
-          factuality?: number;
-          overall: number;
-          reason: string;
-        };
-        createdAt: string;
-      }> = [];
-
-      if (previewMode === 'openai') {
-        const conversations = normalizeOpenAIConversations(conversionResult.data || []);
-        const messagesByConversation = new Map<string, Array<{ role: string; content: string }>>();
-        conversations.forEach((conv) => {
-          messagesByConversation.set(String(conv.conversation_id), conv.messages);
-        });
-
-        const rowsByConversation = new Map<string, DisplayRow[]>();
-        rowsWithGroups.forEach((row) => {
-          if (!rowsByConversation.has(row.blockId)) {
-            rowsByConversation.set(row.blockId, []);
-          }
-          rowsByConversation.get(row.blockId)!.push(row);
-        });
-
-        records = Array.from(rowsByConversation.entries())
-          .map(([conversationId, rows]) => {
-            const conversationEntry = evaluationMap[conversationId];
-            const evaluatedRows = rows.filter((row) => !!evaluationMap[row.id] || !!evaluationMap[row.blockId]);
-            if (!conversationEntry && evaluatedRows.length === 0) {
-              return null;
-            }
-
-            const preferredRow =
-              evaluatedRows.find((row) => {
-                const rowEntry = evaluationMap[row.id] || evaluationMap[row.blockId];
-                return rowEntry?.evaluatedBy === 'manual';
-              }) || evaluatedRows[0];
-
-            const entry = conversationEntry || (preferredRow
-              ? (evaluationMap[preferredRow.id] || evaluationMap[preferredRow.blockId])
-              : undefined);
-            if (!entry) {
-              return null;
-            }
-
-            const fallbackMessages = rows
-              .flatMap((row) => [
-                { role: 'user', content: row.userText || row.instruction || '' },
-                { role: 'assistant', content: row.assistantText || row.output || '' },
-              ])
-              .filter((msg) => msg.content.trim() !== '');
-
-            const messages = (messagesByConversation.get(conversationId) || fallbackMessages).map((msg) => ({
-              role: String(msg.role || ''),
-              content: String(msg.content || ''),
-            }));
-
-            return {
-              format: 'openai',
-              data: {
-                messages,
-              },
-              evaluatedBy: entry.evaluatedBy,
-              results: toResultPayload(entry),
-              createdAt,
-            };
-          })
-          .filter(Boolean) as typeof records;
-      } else {
-        records = rowsWithGroups
-          .map((row) => {
-            const entry = evaluationMap[row.id];
-            if (!entry) {
-              return null;
-            }
-
-            return {
-              format: 'alpaca',
-              data: {
-                instruction: row.instruction,
-                input: row.input,
-                output: row.output,
-              },
-              evaluatedBy: entry.evaluatedBy,
-              results: toResultPayload(entry),
-              createdAt,
-            };
-          })
-          .filter(Boolean) as typeof records;
+      if (!candidateRows.length) {
+        throw new Error(`No visible rows matched overall <= ${params.scoreThreshold.toFixed(1)}.`);
       }
 
-      if (!records.length) {
-        throw new Error('No evaluated rows to save.');
+      const hasMissingReason = candidateRows.some((row) => {
+        const key = resolveEvaluationKey(row);
+        const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+        const latest = getLatestEvaluation(entry);
+        return !String(latest?.reason || '').trim();
+      });
+
+      if (hasMissingReason) {
+        throw new Error('Please ensure all targeted items have a reason before refining.');
       }
 
-      await apiService.saveEvaluationResults({
-        fileId: uploadedFile.fileId,
-        projectName: projectName.trim() || formatDefaultProjectName(),
-        items: records,
-      });
+      const payload = candidateRows.map((row) => ({
+        assistant: row.assistantText,
+        reason: getLatestEvaluation(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)] || evaluationMap[row.id]))?.reason || '',
+      }));
+      const refined = await apiService.refineDataChunked(payload, params.provider);
 
-      return records.length;
-    },
-    onSuccess: (savedCount) => {
-      toast.success(`Accepted and saved ${savedCount} records to MongoDB.`);
-    },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Accept failed');
-    },
-  });
+      setConversionResult((prev) => {
+        if (!prev) return prev;
+        const nextData = [...prev.data];
 
-  const handleToggleManualRow = (row: DisplayRow, checked: boolean) => {
-    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
-    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
+        if (previewMode === 'openai') {
+          const convs = normalizeOpenAIConversations(prev.data || []);
+          const convIdToIndex = new Map<string, number>();
+          convs.forEach((conv, idx) => convIdToIndex.set(String(conv.conversation_id), idx));
 
-    if (checked) {
-      setManualRowIds((prev) => {
-        const next = new Set(prev);
-        next.add(row.id);
-        return next;
-      });
-
-      setEvaluationMap((prev) => {
-        const existing = prev[row.id]?.scores;
-
-        // Keep the latest visible score if it already exists; only initialize when missing.
-        if (existing) {
-          return {
-            ...prev,
-            [row.id]: {
-              ...prev[row.id],
-              evaluatedBy: 'manual',
-            },
-          };
+          candidateRows.forEach((row, idx) => {
+            const targetIndex = convIdToIndex.get(row.blockId);
+            const refinedText = refined.items[idx]?.refinedOutput || row.assistantText;
+            if (targetIndex === undefined) return;
+            const record = nextData[targetIndex];
+            if (Array.isArray(record?.messages)) {
+              const assistantIdx = [...record.messages]
+                .map((msg: any, i: number) => ({ role: String(msg?.role || ''), i }))
+                .filter((m: any) => m.role === 'assistant')
+                .map((m: any) => m.i)
+                .pop();
+              if (assistantIdx !== undefined) {
+                record.messages[assistantIdx] = {
+                  ...record.messages[assistantIdx],
+                  content: refinedText,
+                };
+              }
+            }
+          });
+        } else {
+          candidateRows.forEach((row, idx) => {
+            const rowIndex = allRows.findIndex((r) => r.id === row.id);
+            if (rowIndex >= 0 && nextData[rowIndex]) {
+              nextData[rowIndex] = {
+                ...nextData[rowIndex],
+                output: refined.items[idx]?.refinedOutput || row.assistantText,
+              };
+            }
+          });
         }
 
-        const m1 = clampScore((existing as any)?.[metric1] ?? 0);
-        const m2 = clampScore((existing as any)?.[metric2] ?? 0);
-        const m3 = clampScore((existing as any)?.[metric3] ?? 0);
-        const overall = calculateOverallFromThree(m1, m2, m3);
-
-        return {
-          ...prev,
-          [row.id]: {
-            scores: {
-              [metric1]: m1,
-              [metric2]: m2,
-              [metric3]: m3,
-              overall,
-              reason: '',
-            },
-            evaluatedBy: 'manual',
-          },
-        };
+        return { ...prev, data: nextData };
       });
-      return;
-    }
 
-    setManualRowIds((prev) => {
-      const next = new Set(prev);
-      next.delete(row.id);
-      return next;
-    });
-  };
+      const refinedIds = new Set(refinedRowIds);
+      candidateRows.forEach((row) => refinedIds.add(row.id));
+      setRefinedRowIds(refinedIds);
 
-  const handleManualFieldChange = (row: DisplayRow, field: string, value: string) => {
-    if (!manualRowIds.has(row.id)) {
-      return;
-    }
-
-    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
-    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
-
-    setEvaluationMap((prev) => {
-      const existing = prev[row.id]?.scores || { overall: 0, reason: '' };
-      const nextScores: EvaluationScores = { ...existing };
-
-      if (field === 'reason') {
-        nextScores.reason = value;
-      } else {
-        (nextScores as any)[field] = parseOptionalScore(value);
-      }
-
-      const v1 = clampScore((nextScores as any)[metric1] ?? 0);
-      const v2 = clampScore((nextScores as any)[metric2] ?? 0);
-      const v3 = clampScore((nextScores as any)[metric3] ?? 0);
-      nextScores.overall = calculateOverallFromThree(v1, v2, v3);
-
-      return {
-        ...prev,
-        [row.id]: {
-          scores: nextScores,
-          evaluatedBy: 'manual',
-        },
-      };
-    });
-  };
-
-  const handleResetEvaluation = () => {
-    setEvaluationMap({});
-    setManualRowIds(new Set());
-    toast.success('Evaluation results have been reset.');
-  };
-
-  useEffect(() => {
-    setCurrentStep(1);
-    setConversionResult(null);
-    setOriginalConvertedResult(null);
-    setEvaluationMap({});
-    setManualRowIds(new Set());
-    setClusterGroups([]);
-    setRowClusterMap({});
-    setSelectedClusterIds([]);
-    setClusteredResult(null);
-    setEvaluationGroupFilter('all');
-    setVisibleRowsInEvaluation([]);
-    if (uploadedFile?.fileId) {
-      setProjectName(formatDefaultProjectName());
-    } else {
-      setProjectName('');
-    }
-  }, [uploadedFile?.fileId]);
-
-  const canMoveFromStep2 = !!conversionResult;
-  const canMoveFromStep3 = clusterGroups.length > 0;
-  const canMoveFromStep4 = !!conversionResult;
-
-  const handleDownload = () => {
-    if (!conversionResult) {
-      return;
-    }
-
-    const { data, filename } = conversionResult;
-    const isJsonl = filename.endsWith('.jsonl');
-
-    let output: string;
-    const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
-
-    if (isJsonl) {
-      // JSONL format: mỗi dòng là một JSON object
-      output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
-    } else {
-      // JSON format: array of objects
-      output = JSON.stringify(cleanData, null, 2);
-    }
-
-    const blob = new Blob([output], {
-      type: isJsonl ? 'application/x-ndjson' : 'application/json',
-    });
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    toast.success('File downloaded.');
-  };
-
-  const handleDownloadFilteredByScore = () => {
-    if (!conversionResult) {
-      return;
-    }
-
-    const threshold = Math.round(minOverallScore * 10) / 10;
-    let filtered: any[] = [];
-
-    if (previewMode === 'openai') {
-      const conversations = normalizeOpenAIConversations(conversionResult.data || []);
-
-      filtered = conversations
-        .map((conv) => {
-          const conversationId = String(conv.conversation_id);
-          const fromConversation = evaluationMap[conversationId];
-          const fromRows = rowsWithGroups.find(
-            (row) => row.blockId === conversationId && !!evaluationMap[row.id]
-          );
-          const entry = fromConversation || (fromRows ? evaluationMap[fromRows.id] : undefined);
-
-          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
-            return null;
-          }
-
-          return {
-            messages: conv.messages,
-          };
-        })
-        .filter(Boolean) as any[];
-    } else {
-      filtered = rowsWithGroups
-        .map((row) => {
-          const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-          if (!entry || !Number.isFinite(entry.scores.overall) || entry.scores.overall < threshold) {
-            return null;
-          }
-
-          return {
-            instruction: row.instruction,
-            input: row.input,
-            output: row.output,
-          };
-        })
-        .filter(Boolean) as any[];
-    }
-
-    if (filtered.length === 0) {
-      toast.error('No evaluated samples match the selected overall score.');
-      return;
-    }
-
-    const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `filtered_${previewMode}_overall_gte_${threshold.toFixed(1)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    toast.success(`Downloaded ${filtered.length} samples with overall >= ${threshold.toFixed(1)}.`);
-  };
-
-  const handleResetCleaning = () => {
-    if (!originalConvertedResult) {
-      return;
-    }
-
-    setConversionResult(originalConvertedResult);
-    setEvaluationMap({});
-    setManualRowIds(new Set());
-    setClusterGroups([]);
-    setRowClusterMap({});
-    setSelectedClusterIds([]);
-    setEvaluationGroupFilter('all');
-    setClusteredResult(null);
-    toast.success('Dataset reset to original converted state.');
-  };
+      return { count: candidateRows.length, provider: params.provider };
+    },
+    onSuccess: ({ count, provider }) => {
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
+      toast.success(`Refined ${count} rows using ${label}.`);
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
+  });
 
   const clusterMutation = useMutation({
     mutationFn: async () => {
-      if (!conversionResult?.data || conversionResult.data.length === 0) {
-        throw new Error('No converted data to cluster.');
-      }
-      return apiService.clusterData(conversionResult.data);
+      if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
+      return apiService.clusterData(conversionResult.data, clusterK, dbscanEps, dbscanMinSamples);
     },
     onSuccess: (result) => {
       setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
       setClusteredResult(result);
-      setClusterGroups(result.groups);
-
-      // Restore old mapping method for UI
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
-        // Map assignments từ Python (theo index conversation) sang row IDs
-        const conversations = normalizeOpenAIConversations(conversionResult!.data);
-        let assignmentIdx = 0;
-        conversations.forEach((conv) => {
-          const groupId = result.assignments[assignmentIdx] ?? 0;
-          // Tìm tất cả rows thuộc conversation này
-          rowsWithGroups.forEach((row) => {
+        const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
+        conversations.forEach((conv, idx) => {
+          const groupId = result.assignments[idx] ?? 0;
+          rowsWithClusterGroups.forEach((row) => {
             if (row.blockId === String(conv.conversation_id)) {
               nextMap[row.id] = groupId;
             }
           });
-          assignmentIdx++;
         });
       } else {
-        // Alpaca mode: 1 dataset item = 1 row
-        allRows.forEach((row, index) => {
-          nextMap[row.id] = result.assignments[index] ?? 0;
+        allRows.forEach((row, idx) => {
+          nextMap[row.id] = result.assignments[idx] ?? 0;
         });
       }
-
-      // Recompute group counts dựa trên display rows (QA pairs) thay vì conversations
-      const rowCountByGroup = new Map<number, number>();
-      Object.values(nextMap).forEach((gId) => {
-        rowCountByGroup.set(gId, (rowCountByGroup.get(gId) || 0) + 1);
-      });
-
-      const groupsWithRowCounts = result.groups.map((g: any) => ({
-        ...g,
-        count: rowCountByGroup.get(g.groupId) ?? g.count,
-      }));
-
       setRowClusterMap(nextMap);
-      setClusterGroups(groupsWithRowCounts);
+      setClusterGroups(result.groups);
       setSelectedClusterIds([]);
-      setEvaluationGroupFilter('all');
-
-      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
-      const itemsCount = previewMode === 'openai'
-        ? normalizeOpenAIConversations(conversionResult!.data).length
-        : conversionResult!.data.length;
-      toast.success(`Clustered ${itemsCount} ${countLabel} into ${result.groups.length} groups.`);
+      toast.success(`Clustered data into ${result.groups.length} groups.`);
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Clustering failed');
-    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Clustering failed'),
   });
 
   const filterMutation = useMutation({
     mutationFn: async () => {
-      if (!conversionResult?.data || conversionResult.data.length === 0) {
-        throw new Error('No clustered data to filter.');
-      }
+      if (!conversionResult?.data?.length) throw new Error('No clustered data to filter.');
       return apiService.clusterFilter(conversionResult.data, filterThreshold);
     },
     onSuccess: (result) => {
       setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
       setClusterGroups(result.groups);
-
-      // Synchronize mapping for filtered data
+      setCurrentDatasetVersionId(null);
+      setSampleIdMap({});
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
-        const conversations = normalizeOpenAIConversations(result.data);
-        conversations.forEach((conv, idx) => {
-          const groupId = result.assignments[idx] ?? 0;
-          // Note: Since allRows will refresh after setConversionResult,
-          // we use nextMap keys that match the conversation IDs used as row IDs.
-          nextMap[String(conv.conversation_id)] = groupId;
+        normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
+          nextMap[String(conv.conversation_id)] = result.assignments[idx] ?? 0;
         });
       } else {
-        // Alpaca uses indices directly
         result.data.forEach((item, idx) => {
           nextMap[`alpaca-${idx}`] = (item as any).cluster ?? result.assignments[idx] ?? 0;
         });
       }
-
       setRowClusterMap(nextMap);
       setSelectedClusterIds([]);
-      setEvaluationGroupFilter('all');
-
-      const countLabel = previewMode === 'openai' ? 'conversations' : 'records';
-      toast.success(`Filtered dataset down to ${result.data.length} ${countLabel}.`);
+      toast.success(`Filtered dataset down to ${result.data.length} records.`);
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || error.message || 'Filtering failed');
-    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Filtering failed'),
   });
 
   const handleResetFiltering = () => {
     if (!clusteredResult) return;
-
-    setConversionResult((prev) => prev ? { ...prev, data: clusteredResult.data } : null);
+    setConversionResult((prev) => (prev ? { ...prev, data: clusteredResult.data } : null));
     setClusterGroups(clusteredResult.groups);
-
-    const nextMap: Record<string, number> = {};
-    if (previewMode === 'openai') {
-      const conversations = normalizeOpenAIConversations(clusteredResult.data);
-      conversations.forEach((conv, idx) => {
-        const groupId = clusteredResult.assignments[idx] ?? 0;
-        allRows.forEach((row) => {
-          if (row.blockId === String(conv.conversation_id)) {
-            nextMap[row.id] = groupId;
-          }
-        });
-      });
-    } else {
-      allRows.forEach((row, idx) => {
-        nextMap[row.id] = clusteredResult.assignments[idx] ?? 0;
-      });
-    }
-
-    setRowClusterMap(nextMap);
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
     setSelectedClusterIds([]);
-    setEvaluationGroupFilter('all');
     toast.success('Reset to pre-filter clustered state.');
   };
 
-  const toggleClusterSelection = (groupId: number) => {
-    setSelectedClusterIds((prev) =>
-      prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]
+  const handleResetCleaning = () => {
+    if (!originalConvertedResult) return;
+    setConversionResult(originalConvertedResult);
+    setClusterGroups([]);
+    setRowClusterMap({});
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
+    setEvaluationMap({});
+    setRefinedRowIds(new Set());
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    toast.success('Dataset reset to original converted state.');
+  };
+
+  const handleVisualize = async () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available for visualization.');
+      return;
+    }
+    setIsVisualizing(true);
+    try {
+      const result = await apiService.clusterVisualize(conversionResult.data, maxK, dbscanEps, dbscanMinSamples);
+      setVisualizationResult({
+        elbow: result.elbow,
+        kDistance: result.kDistance,
+        pointCount: result.pointCount,
+        noiseCount: result.noiseCount,
+      });
+      toast.success(`GPU Visualization complete — ${result.pointCount} points analyzed.`);
+    } catch (err: any) {
+      console.error('Visualize error:', err);
+      const msg = err?.response?.data?.error || err?.message || 'Failed to compute visualization.';
+      toast.error(msg);
+    } finally {
+      setIsVisualizing(false);
+    }
+  };
+
+  const resolvePersistedSampleIdForRow = async (row: DisplayRow): Promise<string | null> => {
+    const key = resolveEvaluationKey(row);
+    const directCandidates = [
+      sampleIdMap[key],
+      sampleIdMap[row.blockId],
+      sampleIdMap[row.id],
+      key,
+      row.blockId,
+      row.id,
+    ].filter((value): value is string => Boolean(value));
+
+    const directMatch = directCandidates.find((value) => isMongoObjectId(value));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    if (!currentDatasetVersionId) {
+      return null;
+    }
+
+    try {
+      const detail = await apiService.getDatasetVersionDetail(currentDatasetVersionId);
+      const nextMap = detail.items.reduce<Record<string, string>>((acc, item) => {
+        acc[item.sampleKey] = item.sampleId;
+        return acc;
+      }, {});
+
+      setSampleIdMap((prev) => ({ ...prev, ...nextMap }));
+
+      const hydratedCandidates = [
+        nextMap[key],
+        nextMap[row.blockId],
+        nextMap[row.id],
+      ].filter((value): value is string => Boolean(value));
+
+      return hydratedCandidates.find((value) => isMongoObjectId(value)) || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleDownloadTrainTestZip = async () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available to split train/test.');
+      return;
+    }
+
+    const totalCount = conversionResult.data.length;
+    const allIndices = Array.from({ length: totalCount }, (_, idx) => idx);
+    const shuffled = shuffle(allIndices);
+    const safePercentage = Math.min(100, Math.max(0, downloadTestPercentage));
+    let testCount = Math.round(totalCount * (safePercentage / 100));
+    if (safePercentage > 0 && testCount === 0) {
+      testCount = 1;
+    }
+    if (safePercentage < 100 && testCount === totalCount && totalCount > 0) {
+      testCount = totalCount - 1;
+    }
+
+    const testIndexSet = new Set<number>();
+    shuffled.slice(0, testCount).forEach((idx) => testIndexSet.add(idx));
+
+    const trainData: any[] = [];
+    const testData: any[] = [];
+    conversionResult.data.forEach((record, idx) => {
+      const payload = sanitizeRecordForDownload(record, previewMode, systemPromptText);
+      if (testIndexSet.has(idx)) {
+        testData.push(payload);
+      } else {
+        trainData.push(payload);
+      }
+    });
+
+    const zip = new JSZip();
+    zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
+    zip.file('test_dataset.json', JSON.stringify(testData, null, 2));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
+    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records (test ${safePercentage.toFixed(0)}%).`);
+  };
+
+  const handleDownloadByScore = () => {
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available to download.');
+      return;
+    }
+
+    const qualifiedRows = rowsWithClusterGroups.filter((row) => {
+      const key = resolveEvaluationKey(row);
+      const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+      const overall = getAveragedScores(entry, previewMode)?.overall;
+      return Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold;
+    });
+
+    if (!qualifiedRows.length) {
+      toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+      return;
+    }
+
+    const filteredData: any[] = [];
+    if (previewMode === 'openai') {
+      const selectedConversationIds = new Set(qualifiedRows.map((row) => row.blockId));
+      const normalized = normalizeOpenAIConversations(conversionResult.data || []);
+      normalized.forEach((conv, idx) => {
+        if (selectedConversationIds.has(String(conv.conversation_id)) && conversionResult.data[idx]) {
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode, systemPromptText));
+        }
+      });
+    } else {
+      const selectedRowIds = new Set(qualifiedRows.map((row) => row.id));
+      allRows.forEach((row, idx) => {
+        if (selectedRowIds.has(row.id) && conversionResult.data[idx]) {
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode, systemPromptText));
+        }
+      });
+    }
+
+    if (!filteredData.length) {
+      toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+      return;
+    }
+
+    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
+    const blob = new Blob([JSON.stringify(filteredData, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}.json`);
+    toast.success(`Downloaded ${filteredData.length} samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+  };
+
+  const handleOpenManualEvaluate = (row: DisplayRow) => {
+    const key = resolveEvaluationKey(row);
+    const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+    const latest = getLatestEvaluation(entry);
+    const score = latest?.scores;
+    const labelA = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const labelB = previewMode === 'openai' ? 'encouragement' : 'clarity';
+    const labelC = previewMode === 'openai' ? 'factuality' : 'completeness';
+
+    setManualTargetRow(row);
+    setManualDraft({
+      metricA: String((score as any)?.[labelA] ?? ''),
+      metricB: String((score as any)?.[labelB] ?? ''),
+      metricC: String((score as any)?.[labelC] ?? ''),
+      reason: latest?.reason || '',
+    });
+    setIsManualEvalModalOpen(true);
+  };
+
+  const handleOpenScoreHistory = (row: DisplayRow) => {
+    const key = resolveEvaluationKey(row);
+    const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+    setScoreHistoryItems(
+      (entry.evaluations || []).map((item) => ({
+        evaluatedBy: item.evaluatedBy,
+        scores: item.scores,
+        reason: item.reason,
+        timestamp: item.timestamp,
+      }))
     );
+    setScoreHistoryModalTitle(`Lich su diem - ${row.blockLabel}`);
+    setScoreHistoryModalOpen(true);
+  };
+
+  const handleManualDraftChange = (field: 'metricA' | 'metricB' | 'metricC' | 'reason', value: string) => {
+    if (field !== 'reason' && value !== '' && !/^\d*\.?\d*$/.test(value)) {
+      return;
+    }
+    setManualDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleConfirmManualEvaluate = async () => {
+    if (!manualTargetRow) {
+      return;
+    }
+
+    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
+    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
+    const m1 = clampScore(parseOptionalScore(manualDraft.metricA) ?? 0);
+    const m2 = clampScore(parseOptionalScore(manualDraft.metricB) ?? 0);
+    const m3 = clampScore(parseOptionalScore(manualDraft.metricC) ?? 0);
+    const key = resolveEvaluationKey(manualTargetRow);
+
+    const update: EvaluationRecord = {
+      evaluatedBy: 'manual',
+      scores: {
+        [metric1]: m1,
+        [metric2]: m2,
+        [metric3]: m3,
+        overall: calculateOverallFromThree(m1, m2, m3),
+      },
+      reason: manualDraft.reason.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    const mergedMap = mergeEvaluationUpdates(evaluationMap, { [key]: update });
+    setEvaluationMap(mergedMap);
+    setIsManualSaving(true);
+
+    try {
+      await persistEvaluationsForKeys([key], mergedMap);
+      toast.success('Manual evaluation saved.');
+      setIsManualEvalModalOpen(false);
+      setManualTargetRow(null);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error.message || 'Failed to auto-save manual evaluation.');
+    } finally {
+      setIsManualSaving(false);
+    }
+  };
+
+  const toggleClusterSelection = (groupId: number) => {
+    setSelectedClusterIds((prev) => (prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]));
+  };
+
+  useEffect(() => {
+    const payload = (location.state as { loadProject?: LoadProjectPayload } | null)?.loadProject;
+    if (!payload || loadHandledRef.current) {
+      return;
+    }
+
+    const normalizedFormat: PreviewMode = payload.format === 'alpaca' ? 'alpaca' : 'openai';
+    const safeData = Array.isArray(payload.data) ? payload.data : [];
+    const safeEvaluationMap = payload.evaluationMap && typeof payload.evaluationMap === 'object'
+      ? Object.fromEntries(
+        Object.entries(payload.evaluationMap).map(([key, value]) => [key, normalizeEvaluationEntry(value)])
+      )
+      : {};
+
+    const restoredResult: ConversionResult = {
+      data: safeData,
+      format: normalizedFormat,
+      output: JSON.stringify(safeData),
+      filename: `${payload.projectName || 'reloaded_project'}.json`,
+      stats: {
+        totalConversations: safeData.length,
+        totalMessages: normalizedFormat === 'openai'
+          ? safeData.reduce((sum, item) => sum + (Array.isArray(item?.messages) ? item.messages.length : 0), 0)
+          : safeData.length,
+        totalTokensEstimate: 0,
+      },
+    };
+
+    setConversionResult(restoredResult);
+    setOriginalConvertedResult(restoredResult);
+    setVisualizationResult(null);
+    setEvaluationMap(safeEvaluationMap);
+    setRefinedRowIds(new Set());
+    setSystemPromptText('');
+    setCurrentDatasetVersionId(payload.datasetVersionId || null);
+    setSampleIdMap(payload.sampleIdMap || {});
+    setClusterGroups([]);
+    setRowClusterMap({});
+    setSelectedClusterIds([]);
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    updateConversionOptions({ format: normalizedFormat });
+    setProjectName(payload.projectName || formatDefaultProjectName());
+    setCurrentStep(5);
+    loadHandledRef.current = true;
+
+    // Clear consumed router state to avoid accidental re-processing on future renders.
+    navigate(location.pathname, { replace: true, state: null });
+
+    toast.success('Project loaded. Continue evaluation at Step 5.');
+  }, [location.pathname, location.state, navigate, setProjectName, updateConversionOptions]);
+
+  useEffect(() => {
+    const hasLoadProjectState = Boolean((location.state as { loadProject?: LoadProjectPayload } | null)?.loadProject);
+
+    // Do not run reset flow while restoring project from history.
+    if (hasLoadProjectState || loadHandledRef.current) {
+      return;
+    }
+
+    setCurrentStep(1);
+    setConversionResult(null);
+    setOriginalConvertedResult(null);
+    setVisualizationResult(null);
+    setEvaluationMap({});
+    setRefinedRowIds(new Set());
+    setSystemPromptText('');
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
+    setClusterGroups([]);
+    setRowClusterMap({});
+    setSelectedClusterIds([]);
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    loadHandledRef.current = false;
+    if (uploadedFile?.fileId) setProjectName(formatDefaultProjectName());
+    else setProjectName('');
+  }, [location.state, setProjectName, uploadedFile?.fileId]);
+
+  const canMoveFromStep2 = !!conversionResult;
+  const canMoveFromStep3 = !!visualizationResult;
+  const canMoveFromStep4 = clusterGroups.length > 0;
+  const canMoveFromStep5 = !!conversionResult;
+  const canMoveFromStep6 = !!conversionResult;
+  const canMoveFromStep7 = !!conversionResult;
+
+  const systemPromptPreviewJson = useMemo(() => {
+    if (!conversionResult?.data?.length) {
+      return null;
+    }
+
+    if (previewMode === 'openai') {
+      return sanitizeRecordForDownload(conversionResult.data[0], previewMode, systemPromptText);
+    }
+
+    const first = conversionResult.data[0] || {};
+    const userParts = [String(first?.instruction ?? first?.query ?? ''), String(first?.input ?? first?.context ?? '')]
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const assistant = String(first?.output ?? first?.answer ?? first?.response ?? '').trim();
+    const baseMessages = [
+      { role: 'user', content: userParts.join('\n\n') || '-' },
+      { role: 'assistant', content: assistant || '-' },
+    ];
+
+    const trimmedSystemPrompt = String(systemPromptText || '').trim();
+    return {
+      messages: trimmedSystemPrompt
+        ? [{ role: 'system', content: trimmedSystemPrompt }, ...baseMessages]
+        : baseMessages,
+    };
+  }, [conversionResult?.data, previewMode, systemPromptText]);
+
+  const handleProceedFromClusterStep = () => {
+    if (!canMoveFromStep4 || createDatasetVersionMutation.isPending) {
+      return;
+    }
+    createDatasetVersionMutation.mutate();
+  };
+
+  const refinedHighlightMap = useMemo(() => {
+    const map: Record<string, 'refined'> = {};
+    refinedRowIds.forEach((id) => {
+      map[id] = 'refined';
+    });
+    return map;
+  }, [refinedRowIds]);
+
+  const remapKeyAfterAlpacaDelete = (key: string, deletedIndex: number): string | null => {
+    const match = /^alpaca-(\d+)$/.exec(key);
+    if (!match) {
+      return key;
+    }
+    const index = Number(match[1]);
+    if (index === deletedIndex) {
+      return null;
+    }
+    if (index > deletedIndex) {
+      return `alpaca-${index - 1}`;
+    }
+    return key;
+  };
+
+  const remapRecordKeysAfterAlpacaDelete = <T,>(source: Record<string, T>, deletedIndex: number): Record<string, T> => {
+    return Object.entries(source).reduce((acc, [key, value]) => {
+      const nextKey = remapKeyAfterAlpacaDelete(key, deletedIndex);
+      if (nextKey) {
+        acc[nextKey] = value;
+      }
+      return acc;
+    }, {} as Record<string, T>);
+  };
+
+  const remapSetKeysAfterAlpacaDelete = (source: Set<string>, deletedIndex: number): Set<string> => {
+    const next = new Set<string>();
+    source.forEach((key) => {
+      const mapped = remapKeyAfterAlpacaDelete(key, deletedIndex);
+      if (mapped) {
+        next.add(mapped);
+      }
+    });
+    return next;
+  };
+
+  const buildGroupsFromData = (data: any[], clusterMap: Record<string, number>): ClusterGroup[] => {
+    const rows = buildDisplayRows(data, previewMode, conversionOptions.removeThinkTags ?? true);
+    const counts = new Map<number, number>();
+    rows.forEach((row) => {
+      const groupId = clusterMap[row.id] ?? row.groupId;
+      if (!Number.isFinite(groupId)) {
+        return;
+      }
+      const id = Number(groupId);
+      counts.set(id, (counts.get(id) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([groupId, count]) => ({ groupId, count, label: `Group ${groupId}` }));
+  };
+
+  const handleConfirmDeleteSample = async () => {
+    if (!conversionResult || !itemToDelete) {
+      setItemToDelete(null);
+      return;
+    }
+
+    const persistedSampleId = await resolvePersistedSampleIdForRow(itemToDelete);
+    if (!persistedSampleId) {
+      toast.error('Khong tim thay sampleId trong database, khong the xoa.');
+      return;
+    }
+
+    try {
+      await apiService.deleteDatasetVersionItem(persistedSampleId);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error.message || 'Xoa mau du lieu that bai.');
+      return;
+    }
+
+    let nextData = conversionResult.data || [];
+    let nextEvaluationMap = { ...evaluationMap };
+    let nextRefinedRowIds = new Set(refinedRowIds);
+    let nextRowClusterMap = { ...rowClusterMap };
+    const nextSampleIdMap = { ...sampleIdMap };
+
+    delete nextSampleIdMap[resolveEvaluationKey(itemToDelete)];
+    delete nextSampleIdMap[itemToDelete.blockId];
+    delete nextSampleIdMap[itemToDelete.id];
+
+    if (previewMode === 'openai') {
+      const targetId = itemToDelete.blockId;
+      if (Array.isArray(conversionResult.data?.[0]?.messages)) {
+        const convs = normalizeOpenAIConversations(conversionResult.data || []);
+        const removeIndex = convs.findIndex((conv) => String(conv.conversation_id) === targetId);
+        if (removeIndex >= 0) {
+          nextData = conversionResult.data.filter((_, idx) => idx !== removeIndex);
+        }
+      } else {
+        nextData = (conversionResult.data || []).filter((item: any) => String(item?.conversation_id || '') !== targetId);
+      }
+
+      delete nextEvaluationMap[itemToDelete.id];
+      delete nextEvaluationMap[itemToDelete.blockId];
+      nextRefinedRowIds.delete(itemToDelete.id);
+      nextRefinedRowIds.delete(itemToDelete.blockId);
+      delete nextRowClusterMap[itemToDelete.id];
+      delete nextRowClusterMap[itemToDelete.blockId];
+    } else {
+      const match = /^alpaca-(\d+)$/.exec(itemToDelete.id);
+      const deleteIndex = match ? Number(match[1]) : -1;
+      if (deleteIndex >= 0) {
+        nextData = (conversionResult.data || []).filter((_, idx) => idx !== deleteIndex);
+        nextEvaluationMap = remapRecordKeysAfterAlpacaDelete(nextEvaluationMap, deleteIndex);
+        nextRefinedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinedRowIds, deleteIndex);
+        nextRowClusterMap = remapRecordKeysAfterAlpacaDelete(nextRowClusterMap, deleteIndex);
+      }
+    }
+
+    const nextStats = {
+      ...conversionResult.stats,
+      totalConversations: nextData.length,
+      totalMessages: previewMode === 'openai'
+        ? normalizeOpenAIConversations(nextData).reduce((sum, conv) => sum + (Array.isArray(conv.messages) ? conv.messages.length : 0), 0)
+        : nextData.length,
+    };
+
+    const nextGroups = buildGroupsFromData(nextData, nextRowClusterMap);
+
+    setConversionResult({
+      ...conversionResult,
+      data: nextData,
+      output: JSON.stringify(nextData),
+      stats: nextStats,
+    });
+    setEvaluationMap(nextEvaluationMap);
+    setSampleIdMap(nextSampleIdMap);
+    setRefinedRowIds(nextRefinedRowIds);
+    setRowClusterMap(nextRowClusterMap);
+    setClusterGroups(nextGroups);
+    setSelectedClusterIds((prev) => prev.filter((id) => nextGroups.some((group) => group.groupId === id)));
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    setItemToDelete(null);
+    toast.success('Sample deleted successfully (database + UI).');
   };
 
   return (
@@ -1873,13 +2912,10 @@ export function ConversionPage() {
       {currentStep === 1 && (
         <div className="space-y-6">
           <FileUploader />
-
           {uploadedFile && (
             <>
               <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
-                <label htmlFor="projectName" className="block text-sm font-semibold text-gray-800">
-                  Project Name
-                </label>
+                <label htmlFor="projectName" className="block text-sm font-semibold text-gray-800">Project Name</label>
                 <input
                   id="projectName"
                   type="text"
@@ -1888,30 +2924,16 @@ export function ConversionPage() {
                   placeholder={formatDefaultProjectName()}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-200"
                 />
-                <p className="text-xs text-gray-500">
-                  Gợi ý: {formatDefaultProjectName()}.
-                </p>
               </div>
               <FileStatisticsCard stats={stats} />
               <Preview />
               <ConversionOptions />
-
               <button
                 onClick={() => convertMutation.mutate('initial')}
                 disabled={convertMutation.isPending}
                 className="w-full bg-primary-600 hover:bg-primary-700 disabled:bg-gray-400 text-white font-bold py-4 px-6 rounded-xl shadow-lg shadow-primary-200 transition-all active:scale-[0.98] flex items-center justify-center gap-3 text-lg"
               >
-                {convertMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    <span>Processing Dataset...</span>
-                  </>
-                ) : (
-                  <>
-                    <Wand2 className="w-6 h-6" />
-                    <span>Convert Dataset</span>
-                  </>
-                )}
+                {convertMutation.isPending ? <><Loader2 className="w-6 h-6 animate-spin" /><span>Processing Dataset...</span></> : <><Wand2 className="w-6 h-6" /><span>Convert Dataset</span></>}
               </button>
             </>
           )}
@@ -1922,60 +2944,188 @@ export function ConversionPage() {
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />
+              <ConvertedDatasetTable rows={allRows} mode={previewMode} />
             </div>
-
             <div className="space-y-4 lg:col-span-1">
               <PostConversionSummary result={conversionResult} />
-              <CleaningPipelineOptions
-                onAccept={() => convertMutation.mutate('clean')}
-                isLoading={convertMutation.isPending}
-              />
-
-              <div className="flex justify-end mt-2">
-                <button
-                  onClick={handleResetCleaning}
-                  disabled={!originalConvertedResult || convertMutation.isPending}
-                  className="px-4 py-2 text-xs rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
-                >
-                  Reset to Original
-                </button>
-              </div>
+              <CleaningPipelineOptions onAccept={() => convertMutation.mutate('clean')} isLoading={convertMutation.isPending} />
+              <button
+                onClick={handleResetCleaning}
+                disabled={!originalConvertedResult || convertMutation.isPending}
+                className="px-4 py-2 text-xs rounded-lg border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-60 font-semibold text-gray-700"
+              >
+                Reset to Original
+              </button>
             </div>
           </div>
-
-          <StepNavigation
-            showBack
-            showNext
-            onBack={() => setCurrentStep(1)}
-            onNext={() => setCurrentStep(3)}
-            nextDisabled={!canMoveFromStep2}
-          />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(1)} onNext={() => setCurrentStep(3)} nextDisabled={!canMoveFromStep2} />
         </div>
       )}
 
       {currentStep === 3 && (
         <div className="space-y-5">
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Step 3 - Visualization</h3>
+                <p className="text-sm text-gray-600">Send dataset to GPU Service to compute Elbow &amp; K-Distance curves using semantic embeddings.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">Max K:</label>
+                  <input
+                    type="number"
+                    min={2}
+                    max={50}
+                    value={maxK}
+                    onChange={(e) => setMaxK(Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 20)))}
+                    className="w-16 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">EPS:</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="1.0"
+                    value={dbscanEps}
+                    onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.15)}
+                    className="w-20 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium text-gray-700">Min Samples:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={dbscanMinSamples}
+                    onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 6)}
+                    className="w-16 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  />
+                </div>
+                <button
+                  onClick={handleVisualize}
+                  disabled={isVisualizing || !conversionResult?.data?.length}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-xl text-sm font-bold shadow-lg transition-colors"
+                >
+                  {isVisualizing ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Computing...
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5" />
+                      Visualize (GPU)
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {visualizationResult && (
+            <>
+              <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 flex items-center gap-3 text-sm text-blue-800">
+                <Sparkles className="w-5 h-5 text-blue-500 flex-shrink-0" />
+                <span>
+                  <strong>{visualizationResult.pointCount}</strong> points analyzed
+                  {typeof visualizationResult.noiseCount === 'number' && (
+                    <>, <strong>{visualizationResult.noiseCount}</strong> noise points filtered by DBSCAN</>
+                  )}
+                </span>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-xl p-6 h-[600px]">
+                <h4 className="text-base font-bold text-gray-800 mb-4 text-center">Phương pháp Khuỷu tay (Elbow Method) để tìm K tối ưu</h4>
+                <ResponsiveContainer width="100%" height="90%">
+                  <LineChart data={visualizationResult.elbow} margin={{ top: 20, right: 30, left: 20, bottom: 25 }}>
+                    <CartesianGrid strokeDasharray="5 5" stroke="#ccc" />
+                    <XAxis 
+                      dataKey="k" 
+                      label={{ value: 'Số lượng cụm (K)', position: 'insideBottom', offset: -15 }} 
+                      ticks={Array.from({ length: maxK }, (_, i) => i + 1)}
+                    />
+                    <YAxis 
+                      label={{ value: 'WCSS (Inertia)', angle: -90, position: 'insideLeft', offset: 0 }} 
+                    />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '8px', border: '1px solid #ccc' }}
+                    />
+                    <Line 
+                      type="linear" 
+                      dataKey="wcss" 
+                      stroke="blue" 
+                      strokeWidth={2} 
+                      dot={{ r: 5, fill: 'blue', stroke: 'blue' }} 
+                      activeDot={{ r: 7 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(2)} onNext={() => setCurrentStep(4)} nextDisabled={!canMoveFromStep3} />
+        </div>
+      )}
+
+      {currentStep === 4 && (
+        <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />
             </div>
-
             <div className="space-y-4 lg:col-span-1">
-              <button
-                onClick={() => clusterMutation.mutate()}
-                disabled={!conversionResult || clusterMutation.isPending}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
-              >
-                {clusterMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Clustering...</span>
-                  </>
-                ) : (
-                  <span>Cluster</span>
-                )}
-              </button>
+              <div className="p-4 bg-white border border-gray-200 rounded-xl space-y-4">
+                <h4 className="text-sm font-semibold text-gray-900 border-b border-gray-100 pb-2">Clustering Parameters</h4>
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Target K (Clusters)</label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={50}
+                      value={clusterK}
+                      onChange={(e) => setClusterK(Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 8)))}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">DBSCAN EPS</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        max="1.0"
+                        value={dbscanEps}
+                        onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.15)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Min Samples</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max={20}
+                        value={dbscanMinSamples}
+                        onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 6)}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => clusterMutation.mutate()}
+                  disabled={!conversionResult || clusterMutation.isPending}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
+                >
+                  {clusterMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Clustering...</span></> : <><Zap className="w-4 h-4" /><span>Cluster</span></>}
+                </button>
+              </div>
 
               {clusterGroups.length > 0 && (
                 <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
@@ -1983,86 +3133,33 @@ export function ConversionPage() {
                     <label className="text-sm font-semibold text-gray-700">Similarity Threshold</label>
                     <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(2)}</span>
                   </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={filterThreshold}
-                    onChange={(e) => setFilterThreshold(parseFloat(e.target.value))}
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-green-600"
-                  />
-                  <p className="text-[10px] text-gray-500 leading-tight">
-                    Higher threshold (e.g. 0.95) keeps more samples. Lower threshold filters more aggressively.
-                  </p>
+                  <input type="range" min="0" max="1" step="0.01" value={filterThreshold} onChange={(e) => setFilterThreshold(parseFloat(e.target.value))} className="w-full" />
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => filterMutation.mutate()}
-                      disabled={filterMutation.isPending}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
-                    >
-                      {filterMutation.isPending ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Filtering Noise...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-4 h-4" />
-                          <span>Filter Noise</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={handleResetFiltering}
-                      disabled={filterMutation.isPending}
-                      className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold transition-colors flex items-center gap-2"
-                      title="Reset noise filter"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      <span>Reset Filter</span>
-                    </button>
+                    <button onClick={() => filterMutation.mutate()} disabled={filterMutation.isPending} className="flex-1 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold">Filter Noise</button>
+                    <button onClick={handleResetFiltering} disabled={filterMutation.isPending} className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold">Reset Filter</button>
                   </div>
                 </div>
               )}
-
-              {/* Removed restrictive OpenAI-only message */}
 
               {clusterGroups.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
                     <h3 className="text-sm font-semibold text-gray-900">Cluster Statistics</h3>
-                    <p className="text-xs text-gray-600 mt-1">Select groups to filter preview table.</p>
                   </div>
-                  <div className="max-h-[420px] overflow-auto">
+                  <div className="max-h-[320px] overflow-auto">
                     <table className="min-w-full text-sm">
                       <thead className="bg-gray-50 sticky top-0">
                         <tr>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Select</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Group</th>
-                          <th className="px-4 py-2 text-left font-semibold text-gray-700">Label</th>
                           <th className="px-4 py-2 text-left font-semibold text-gray-700">Count</th>
                         </tr>
                       </thead>
                       <tbody>
                         {clusterGroups.map((group) => (
                           <tr key={group.groupId} className="border-t border-gray-100">
-                            <td className="px-4 py-2">
-                              <input
-                                type="checkbox"
-                                checked={selectedClusterIds.includes(group.groupId)}
-                                onChange={() => toggleClusterSelection(group.groupId)}
-                              />
-                            </td>
+                            <td className="px-4 py-2"><input type="checkbox" checked={selectedClusterIds.includes(group.groupId)} onChange={() => toggleClusterSelection(group.groupId)} /></td>
                             <td className="px-4 py-2 font-medium text-gray-800">Group {group.groupId}</td>
-                            <td className="px-4 py-2 text-gray-700">
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${group.label === 'Chuyên môn'
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-green-100 text-green-800'
-                                }`}>
-                                {group.label === 'Chuyên môn' ? '📘' : '💬'} {group.label}
-                              </span>
-                            </td>
                             <td className="px-4 py-2 text-gray-700">{group.count}</td>
                           </tr>
                         ))}
@@ -2073,37 +3170,30 @@ export function ConversionPage() {
               )}
             </div>
           </div>
-
           <StepNavigation
             showBack
             showNext
-            onBack={() => setCurrentStep(2)}
-            onNext={() => setCurrentStep(4)}
-            nextDisabled={!canMoveFromStep3}
+            onBack={() => setCurrentStep(3)}
+            onNext={handleProceedFromClusterStep}
+            nextDisabled={!canMoveFromStep4 || createDatasetVersionMutation.isPending}
           />
         </div>
       )}
 
-      {currentStep === 4 && (
+      {currentStep === 5 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
             mode={previewMode}
             showEvaluationColumns
             evaluationMap={evaluationMap}
-            selectedManualRows={manualRowIds}
-            clusterGroups={clusterGroups}
-            evaluationGroupFilter={evaluationGroupFilter}
-            onEvaluationGroupFilterChange={setEvaluationGroupFilter}
-            onEvaluate={() => evaluateMutation.mutate()}
-            onAccept={() => acceptMutation.mutate()}
-            onReset={handleResetEvaluation}
-            onToggleManualRow={handleToggleManualRow}
-            onManualFieldChange={handleManualFieldChange}
+            onEvaluate={() => setIsEvaluateModalOpen(true)}
             isEvaluating={evaluateMutation.isPending}
             disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
-            isAccepting={acceptMutation.isPending}
             onVisibleRowsChange={setVisibleRowsInEvaluation}
+            onRequestViewHistory={handleOpenScoreHistory}
+            onRequestManualEvaluate={handleOpenManualEvaluate}
+            onRequestDeleteRow={(row) => setItemToDelete(row)}
           />
 
           {averagedEvaluation && (
@@ -2117,91 +3207,203 @@ export function ConversionPage() {
             </div>
           )}
 
-          <StepNavigation
-            showBack
-            showNext
-            onBack={() => setCurrentStep(3)}
-            onNext={() => setCurrentStep(5)}
-            nextDisabled={!canMoveFromStep4}
-          />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(4)} onNext={() => setCurrentStep(6)} nextDisabled={!canMoveFromStep5} />
         </div>
       )}
 
-      {currentStep === 5 && (
+      {currentStep === 6 && (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <ConvertedDatasetTable
-                rows={clusteredRows}
-                mode={previewMode}
-                showEvaluationColumns
-                showEvaluationActions={false}
-                evaluationMap={evaluationMap}
+          <ConvertedDatasetTable
+            rows={evaluationRows}
+            mode={previewMode}
+            showEvaluationColumns
+            evaluationMap={evaluationMap}
+            rowHighlightMap={refinedHighlightMap}
+            onEvaluate={() => setIsEvaluateModalOpen(true)}
+            extraActions={
+              <button
+                onClick={() => setIsRefineModalOpen(true)}
+                disabled={refineMutation.isPending}
+                className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white text-xs font-semibold"
+              >
+                {refineMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                <span>Refine data</span>
+              </button>
+            }
+            isEvaluating={evaluateMutation.isPending}
+            disableEvaluate={!conversionResult || visibleRowsInRefinement.length === 0}
+            onVisibleRowsChange={setVisibleRowsInRefinement}
+            onRequestViewHistory={handleOpenScoreHistory}
+            onRequestManualEvaluate={handleOpenManualEvaluate}
+            onRequestDeleteRow={(row) => setItemToDelete(row)}
+          />
+
+          <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+            Rows refined successfully are highlighted with a light-blue background. Their previous scores are preserved until you re-evaluate visible rows on the current page.
+          </div>
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(5)} onNext={() => setCurrentStep(7)} nextDisabled={!canMoveFromStep6} />
+        </div>
+      )}
+
+      {currentStep === 7 && (
+        <div className="space-y-5">
+          <SystemPromptPage
+            systemPromptText={systemPromptText}
+            onSystemPromptTextChange={setSystemPromptText}
+            previewJson={systemPromptPreviewJson}
+          />
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={() => setCurrentStep(8)} nextDisabled={!canMoveFromStep7} />
+        </div>
+      )}
+
+      {currentStep === 8 && (
+        <div className="space-y-5">
+          <ConvertedDatasetTable
+            rows={evaluationRows}
+            mode={previewMode}
+            showEvaluationColumns
+            showEvaluationActions={false}
+            evaluationMap={evaluationMap}
+            isFinishPreview
+            systemPromptText={systemPromptText}
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-900">Download Train/Test Split</p>
+                <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
+                  Test {downloadTestPercentage.toFixed(0)}% / Train {(100 - downloadTestPercentage).toFixed(0)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={downloadTestPercentage}
+                onChange={(e) => setDownloadTestPercentage(parseFloat(e.target.value))}
+                className="w-full"
               />
+              <button
+                onClick={handleDownloadTrainTestZip}
+                disabled={!conversionResult || !conversionResult.data?.length}
+                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-3 px-4 rounded-lg"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download train/test zip</span>
+              </button>
             </div>
 
-            <div className="space-y-4 lg:col-span-1">
+            <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-900">Download Filter by Overall Score</p>
+                <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
+                  {downloadScoreThreshold.toFixed(1)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="0.1"
+                value={downloadScoreThreshold}
+                onChange={(e) => setDownloadScoreThreshold(parseFloat(e.target.value))}
+                className="w-full"
+              />
               <button
-                onClick={handleDownload}
+                onClick={handleDownloadByScore}
                 disabled={!conversionResult}
-                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-4 px-6 rounded-xl shadow-md transition-all active:scale-[0.98]"
+                className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg"
               >
-                <Download className="w-5 h-5" />
-                <span>Download Converted File</span>
+                <Download className="w-4 h-4" />
+                <span>Download overall &gt;= filter</span>
               </button>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900 flex gap-2">
-                <Sparkles className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <p>
-                  Use the form below to push your final dataset to Hugging Face Hub.
-                </p>
-              </div>
-
-              {uploadedFile && conversionResult && (
-                <HuggingFaceUpload conversionResult={conversionResult} />
-              )}
-
-              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-                <h3 className="text-sm font-semibold text-gray-900">Filter by overall score</h3>
-                <p className="text-xs text-gray-600">
-                  Download only evaluated samples with overall score greater than or equal to the selected value.
-                </p>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs text-gray-600">
-                    <span>Threshold</span>
-                    <span className="font-semibold text-gray-900">{minOverallScore.toFixed(1)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={10}
-                    step={0.1}
-                    value={minOverallScore}
-                    onChange={(e) => setMinOverallScore(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="flex items-center justify-between text-[11px] text-gray-500">
-                    <span>0.0</span>
-                    <span>10.0</span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleDownloadFilteredByScore}
-                  disabled={!conversionResult}
-                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-2.5 px-4 rounded-lg"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download filtered file</span>
-                </button>
-              </div>
             </div>
           </div>
 
-          <StepNavigation showBack onBack={() => setCurrentStep(4)} />
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900 flex gap-2">
+            <Sparkles className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <p>Upload final dataset to Hugging Face after validating the split files.</p>
+          </div>
+
+          {conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
+
+          <StepNavigation showBack onBack={() => setCurrentStep(7)} />
         </div>
       )}
+
+      <EvaluateModal
+        isOpen={isEvaluateModalOpen}
+        provider={evaluateProvider}
+        onProviderChange={setEvaluateProvider}
+        onClose={() => setIsEvaluateModalOpen(false)}
+        onConfirm={() => {
+          const sourceRows = currentStep === 6 ? visibleRowsInRefinement : visibleRowsInEvaluation;
+          if (sourceRows.length === 0) {
+            toast.error('No visible rows on this page to evaluate.');
+            return;
+          }
+          evaluateMutation.mutate({
+            provider: evaluateProvider,
+            rows: sourceRows,
+          });
+          setIsEvaluateModalOpen(false);
+        }}
+        isSubmitting={evaluateMutation.isPending}
+      />
+
+      <ManualEvaluateModal
+        isOpen={isManualEvalModalOpen}
+        mode={previewMode}
+        metricA={manualDraft.metricA}
+        metricB={manualDraft.metricB}
+        metricC={manualDraft.metricC}
+        reason={manualDraft.reason}
+        onChange={handleManualDraftChange}
+        onClose={() => {
+          if (isManualSaving) {
+            return;
+          }
+          setIsManualEvalModalOpen(false);
+          setManualTargetRow(null);
+        }}
+        onConfirm={handleConfirmManualEvaluate}
+        isSubmitting={isManualSaving}
+      />
+
+      <RefineModal
+        isOpen={isRefineModalOpen}
+        provider={refineProvider}
+        scoreThreshold={refineScoreThreshold}
+        onProviderChange={setRefineProvider}
+        onScoreThresholdChange={setRefineScoreThreshold}
+        onClose={() => setIsRefineModalOpen(false)}
+        onConfirm={() => {
+          refineMutation.mutate({
+            provider: refineProvider,
+            rows: visibleRowsInRefinement,
+            scoreThreshold: refineScoreThreshold,
+          });
+          setIsRefineModalOpen(false);
+        }}
+        isSubmitting={refineMutation.isPending}
+      />
+
+      <DeleteConfirmModal
+        isOpen={Boolean(itemToDelete)}
+        onClose={() => setItemToDelete(null)}
+        onConfirm={handleConfirmDeleteSample}
+      />
+
+      <ScoreHistoryModal
+        isOpen={scoreHistoryModalOpen}
+        title={scoreHistoryModalTitle}
+        evaluations={scoreHistoryItems}
+        onClose={() => setScoreHistoryModalOpen(false)}
+      />
     </div>
   );
 }
