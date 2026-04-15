@@ -351,11 +351,11 @@ function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptT
 
 const METRIC_TOOLTIPS: Record<string, string> = {
   socratic:
-    'TÍNH SƯ PHẠM: Điểm tối đa nếu AI không đưa ra đáp án trực tiếp xuyên suốt hội thoại, chỉ dùng câu hỏi gợi mở hoặc ví dụ tương tự. Điểm 0 nếu AI đưa đáp án quá sớm hoặc giải hộ bài ở bất kỳ lượt nào.',
+    'TÍNH SƯ PHẠM: - Điểm tối đa (9-10) ̣nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ đưa ra công thức và dùng câu hỏi gợi mở hoặc ví dụ tương tự.\n- Điểm 5-8 :Có lời chào hỏi, có dẫn dắt nhưng gợi ý quá lộ liễu (gần như cho đáp án).\n- ĐIỂM 0-4 nếu AI đưa ra đáp án đúng nhưng quá sớm (Premature Disclosure) hoặc giải hộ bài ở bất kỳ lượt nào.\n',
   encouragement:
     "TÍNH KHÍCH LỆ (encouragement):\n- Điểm tối đa (9-10): AI sử dụng ngôn ngữ tích cực, công nhận nỗ lực của người dùng. Tông giọng ấm áp, thân thiện và giàu năng lượng.\n- Điểm trung bình (5-8): Có khen ngợi nhưng còn rập khuôn hoặc khen không đúng lúc. Tông giọng trung tính.\n- ĐIỂM 0: AI phản hồi cụt lủn, máy móc, hoặc tệ hơn là có thái độ gây nản lòng (ví dụ: \"Sai rồi, làm lại đi\").",
   factuality:
-    'ĐỘ CHÍNH XÁC KIẾN THỨC: Điểm tối đa nếu kiến thức, công thức và logic đều đúng trong toàn bộ hội thoại. Điểm 0 nếu có thông tin sai lệch hoặc tính toán sai.',
+    'ĐỘ CHÍNH XÁC KIẾN THỨC: - Điểm tối đa (9-10) nếu mọi kiến thức, công thức và logic toán học/khoa học đều đúng trong toàn bộ cuộc hội thoại.\n- Điểm 5-8: Có sai sót nhỏ nhưng không ảnh hưởng đến kết quả cuối cùng.\n- ĐIỂM 0-4 nếu AI cung cấp thông tin sai lệch,lỗi định dạng, sai công thức, tính toán sai ở bất kỳ lượt nào.',
   accuracy:
     'CHÍNH XÁC: Câu trả lời có đúng về mặt nội dung không?',
   clarity:

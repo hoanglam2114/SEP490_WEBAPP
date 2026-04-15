@@ -28,8 +28,24 @@ async function getGpuStatus(): Promise<{
       signal: AbortSignal.timeout(5000),
     });
     if (!resp.ok) return null;
-    return (await resp.json()) as any;
-  } catch {
+    const data = await resp.json();
+    console.log('[Backend] GPU status response:', data);
+
+    // Ensure all required fields are present, calculate missing ones
+    const result = {
+      can_create_eval: data.can_create_eval ?? true,
+      active_evals: data.active_evals ?? 0,
+      max_evals: data.max_evals ?? 3,
+      vram_free_mb: data.vram_free_mb ?? (data.vram_total_mb - data.vram_used_mb),
+      vram_total_mb: data.vram_total_mb,
+      vram_used_mb: data.vram_used_mb,
+      gpu_util: data.gpu_util ?? 0,
+    };
+
+    console.log('[Backend] Processed GPU status:', result);
+    return result;
+  } catch (err) {
+    console.error('[Backend] GPU status error:', err);
     return null;
   }
 }

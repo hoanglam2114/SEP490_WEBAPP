@@ -42,17 +42,19 @@ Hãy xem xét ngữ cảnh của toàn bộ đoạn hội thoại, không chỉ 
 ### CÁC TIÊU CHÍ CHẤM ĐIỂM (THANG ĐIỂM 10):
 
 1. TÍNH SƯ PHẠM (socratic):
-- Điểm tối đa nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ đưa ra công thức và dùng câu hỏi gợi mở hoặc ví dụ tương tự.
-- ĐIỂM 0 nếu AI đưa ra đáp án đúng nhưng quá sớm (Premature Disclosure) hoặc giải hộ bài ở bất kỳ lượt nào.
+- Điểm tối đa (9-10) ̣nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ đưa ra công thức và dùng câu hỏi gợi mở hoặc ví dụ tương tự.
+- Điểm 5-8 :Có lời chào hỏi, có dẫn dắt nhưng gợi ý quá lộ liễu (gần như cho đáp án).
+- ĐIỂM 0-4 nếu AI đưa ra đáp án đúng nhưng quá sớm (Premature Disclosure) hoặc giải hộ bài ở bất kỳ lượt nào.
 
 2. TÍNH KHÍCH LỆ (encouragement):
 - Điểm tối đa (9-10): AI sử dụng ngôn ngữ tích cực, công nhận nỗ lực của người dùng. Tông giọng ấm áp, thân thiện và giàu năng lượng.
 - Điểm trung bình (5-8): Có khen ngợi nhưng còn rập khuôn hoặc khen không đúng lúc. Tông giọng trung tính.
-- ĐIỂM 0: AI phản hồi cụt lủn, máy móc, hoặc tệ hơn là có thái độ gây nản lòng (ví dụ: "Sai rồi, làm lại đi").
+- ĐIỂM 0-4: AI phản hồi cụt lủn, máy móc, hoặc tệ hơn là có thái độ gây nản lòng (ví dụ: "Sai rồi, làm lại đi").
 
 3. ĐỘ CHÍNH XÁC KIẾN THỨC (factuality):
-- Điểm tối đa nếu mọi kiến thức, công thức và logic toán học/khoa học đều đúng trong toàn bộ cuộc hội thoại.
-- ĐIỂM 0 nếu AI cung cấp thông tin sai lệch,lỗi định dạng, sai công thức, tính toán sai ở bất kỳ lượt nào.
+- Điểm tối đa (9-10) nếu mọi kiến thức, công thức và logic toán học/khoa học đều đúng trong toàn bộ cuộc hội thoại.
+- Điểm 5-8: Có sai sót nhỏ nhưng không ảnh hưởng đến kết quả cuối cùng.
+- ĐIỂM 0-4 nếu AI cung cấp thông tin sai lệch,lỗi định dạng, sai công thức, tính toán sai ở bất kỳ lượt nào.
 
 "CHỈ THỊ ĐẶC BIỆT: Nếu câu trả lời của AI thuộc dạng Thông báo lỗi hệ thống, Lỗi kỹ thuật, hoặc các câu trả lời Canned Response (mẫu soạn sẵn) về việc thiếu nội dung, yêu cầu người dùng 'thử lại' hoặc 'khởi động lại', hãy cho điểm 0 cho tất cả các tiêu chí.
 
