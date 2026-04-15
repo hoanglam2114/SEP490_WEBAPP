@@ -3,14 +3,17 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
+  Columns,
   Download,
   Eye,
   Loader2,
   MoreVertical,
   Pencil,
+  Plus,
   ShieldCheck,
   Sparkles,
   Trash2,
+  X,
   Wand2,
   Zap,
 } from 'lucide-react';
@@ -364,6 +367,11 @@ const METRIC_TOOLTIPS: Record<string, string> = {
     'ĐỦ Ý: Câu trả lời có bao phủ đầy đủ nội dung câu hỏi không?',
 };
 
+const CLEANING_TOOLTIPS = {
+  removeBoilerplate:
+    'Xóa các câu trả lời mẫu/canned response ít giá trị huấn luyện như: "Xin lỗi, tôi không thể...", "As an AI model...", "Tôi không có quyền truy cập...", "Okay/Được rồi" đơn lẻ. Hệ thống sẽ kiểm tra cả instruction và output để loại các mẫu boilerplate này.',
+};
+
 function parseThinkContent(content: string): { thinkText: string; assistantText: string } {
   const thinkMatches = [...content.matchAll(/<think>([\s\S]*?)<\/think>/gi)];
   const thinkText = thinkMatches.map((m) => (m[1] || '').trim()).filter(Boolean).join('\n\n');
@@ -704,18 +712,20 @@ function EvaluateModal({
 function RefineModal({
   isOpen,
   provider,
-  scoreThreshold,
+  scoreThresholdInput,
+  scoreThresholdError,
   onProviderChange,
-  onScoreThresholdChange,
+  onScoreThresholdInputChange,
   onClose,
   onConfirm,
   isSubmitting,
 }: {
   isOpen: boolean;
   provider: AiProvider;
-  scoreThreshold: number;
+  scoreThresholdInput: string;
+  scoreThresholdError?: string;
   onProviderChange: (provider: AiProvider) => void;
-  onScoreThresholdChange: (value: number) => void;
+  onScoreThresholdInputChange: (value: string) => void;
   onClose: () => void;
   onConfirm: () => void;
   isSubmitting?: boolean;
@@ -746,14 +756,21 @@ function RefineModal({
       <div>
         <label className="mb-1 block text-sm font-medium text-gray-700">Refine items with overall &lt;=</label>
         <input
-          type="number"
-          min={0}
-          max={10}
-          step={0.1}
-          value={scoreThreshold}
-          onChange={(e) => onScoreThresholdChange(Math.max(0, Math.min(10, Number(e.target.value) || 0)))}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          type="text"
+          inputMode="decimal"
+          value={scoreThresholdInput}
+          onChange={(e) => onScoreThresholdInputChange(e.target.value)}
+          className={`w-full rounded-lg border px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 ${scoreThresholdError
+            ? 'border-red-400 focus:ring-red-200'
+            : 'border-gray-300 focus:ring-indigo-200'
+            }`}
         />
+        <p
+          className={`mt-1 min-h-[20px] text-xs font-medium ${scoreThresholdError ? 'text-red-600' : 'text-transparent'}`}
+          aria-live="polite"
+        >
+          {scoreThresholdError || ''}
+        </p>
       </div>
     </ActionModalFrame>
   );
@@ -970,6 +987,8 @@ function ConvertedDatasetTable({
   onRequestViewHistory,
   onRequestManualEvaluate,
   onRequestDeleteRow,
+  refineHistoryMap,
+  onRequestViewRefineChange,
   isFinishPreview = false,
   systemPromptText,
 }: {
@@ -988,6 +1007,8 @@ function ConvertedDatasetTable({
   onRequestViewHistory?: (row: DisplayRow) => void;
   onRequestManualEvaluate?: (row: DisplayRow) => void;
   onRequestDeleteRow?: (row: DisplayRow) => void;
+  refineHistoryMap?: Record<string, { original: string; refined: string }>;
+  onRequestViewRefineChange?: (row: DisplayRow) => void;
   isFinishPreview?: boolean;
   systemPromptText?: string;
 }) {
@@ -1037,6 +1058,7 @@ function ConvertedDatasetTable({
 
   const hasRows = totalRows > 0;
   const showDeleteAction = Boolean(onRequestDeleteRow);
+  const showRefineComparisonAction = Boolean(onRequestViewRefineChange);
   const showActionMenu = Boolean(showDeleteAction || onRequestManualEvaluate || onRequestViewHistory);
   const showSystemColumn = isFinishPreview;
   const hideOpenAIMetricBreakdown = Boolean(isFinishPreview && mode === 'openai');
@@ -1049,7 +1071,7 @@ function ConvertedDatasetTable({
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
 
   const renderMetricHeader = (metric: 'socratic' | 'encouragement' | 'factuality' | 'accuracy' | 'clarity' | 'completeness') => (
-    <span className="relative inline-flex items-center group cursor-help" title={METRIC_TOOLTIPS[metric]}>
+    <span className="relative inline-flex items-center group cursor-help">
       {metric}
       <span className="absolute left-0 top-full z-20 mt-2 hidden w-72 rounded-md border border-gray-200 bg-white p-2 text-xs font-normal text-gray-700 shadow-lg group-hover:block">
         {METRIC_TOOLTIPS[metric]}
@@ -1064,6 +1086,7 @@ function ConvertedDatasetTable({
 
     const rowKey = resolveEvaluationKey(row);
     const isOpen = openActionMenuKey === rowKey;
+    const hasRefineHistory = Boolean(refineHistoryMap?.[row.id] || refineHistoryMap?.[row.blockId]);
 
     return (
       <td className="px-2 py-3 align-bottom" rowSpan={rowSpan}>
@@ -1079,7 +1102,7 @@ function ConvertedDatasetTable({
           </button>
 
           {isOpen && (
-            <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+            <div className="absolute bottom-full right-4 mb-1 z-20 w-40 rounded-lg border border-gray-200 bg-white py-1 shadow-lg origin-bottom-right">
               {onRequestViewHistory && (
                 <button
                   type="button"
@@ -1104,6 +1127,19 @@ function ConvertedDatasetTable({
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   <span>Evaluate manual</span>
+                </button>
+              )}
+              {showRefineComparisonAction && hasRefineHistory && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestViewRefineChange?.(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Columns className="h-3.5 w-3.5" />
+                  <span>Compare Refine</span>
                 </button>
               )}
               {showDeleteAction && (
@@ -1452,6 +1488,298 @@ function ConvertedDatasetTable({
   );
 }
 
+function RefineComparisonModal({
+  isOpen,
+  title,
+  original,
+  refined,
+  onClose,
+}: {
+  isOpen: boolean;
+  title: string;
+  original: string;
+  refined: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-900/70 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-7xl rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <h4 className="text-base font-semibold text-slate-900">{title}</h4>
+            <p className="text-sm text-slate-600">Compare the content before and after refining.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid max-h-[72vh] grid-cols-1 gap-4 overflow-auto p-5 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50">
+            <div className="border-b border-slate-200 px-4 py-2 text-sm font-semibold text-slate-800">Before refine</div>
+            <div className="max-h-[60vh] overflow-auto px-4 py-3">
+              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-800">{original || '-'}</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50">
+            <div className="border-b border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-800">After refine</div>
+            <div className="max-h-[60vh] overflow-auto px-4 py-3">
+              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-900">{refined || '-'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompareGroupSlot({
+  title,
+  selectedGroupId,
+  otherSelectedGroupId,
+  clusterGroups,
+  rows,
+  onSelectGroup,
+  onRemoveGroup,
+}: {
+  title: string;
+  selectedGroupId: number | null;
+  otherSelectedGroupId: number | null;
+  clusterGroups: ClusterGroup[];
+  rows: DisplayRow[];
+  onSelectGroup: (groupId: number) => void;
+  onRemoveGroup: () => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (selectedGroupId !== null) {
+      setIsMenuOpen(false);
+    }
+  }, [selectedGroupId]);
+
+  const selectableGroups = useMemo(
+    () => clusterGroups.filter((group) => group.groupId !== otherSelectedGroupId),
+    [clusterGroups, otherSelectedGroupId]
+  );
+
+  const selectedGroup = clusterGroups.find((group) => group.groupId === selectedGroupId) || null;
+  const selectedRows = useMemo(
+    () => rows.filter((row) => row.groupId === selectedGroupId),
+    [rows, selectedGroupId]
+  );
+
+  if (selectedGroupId === null || !selectedGroup) {
+    return (
+      <div className="h-full rounded-2xl border-2 border-dashed border-slate-300 bg-white/85 p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-800">{title}</p>
+          <p className="text-xs text-slate-500">Empty slot</p>
+        </div>
+
+        <div className="relative flex h-[calc(100%-2rem)] items-center justify-center rounded-xl bg-slate-50">
+          <button
+            type="button"
+            onClick={() => setIsMenuOpen((prev) => !prev)}
+            className="inline-flex h-24 w-24 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-100"
+            title="Select Group"
+          >
+            <Plus className="h-12 w-12" />
+          </button>
+
+          {isMenuOpen && (
+            <div className="absolute left-1/2 top-[58%] z-20 w-64 -translate-x-1/2 rounded-xl border border-slate-200 bg-white p-2 shadow-2xl">
+              <p className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Select Group</p>
+              <div className="max-h-56 overflow-auto">
+                {selectableGroups.length > 0 ? (
+                  selectableGroups.map((group) => (
+                    <button
+                      key={group.groupId}
+                      type="button"
+                      onClick={() => onSelectGroup(group.groupId)}
+                      className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                    >
+                      <span>Group {group.groupId}</span>
+                      <span className="text-xs text-slate-500">{group.count} rows</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="px-3 py-2 text-sm text-slate-500">No available groups.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">Group {selectedGroup.groupId}</p>
+          <p className="text-xs text-slate-500">{selectedRows.length} rows</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRemoveGroup}
+          className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+          title="Remove group"
+          aria-label="Remove group"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="max-h-[70vh] overflow-auto">
+        <table className="min-w-full table-fixed text-xs">
+          <colgroup>
+            <col className="w-[34%]" />
+            <col className="w-[22%]" />
+            <col className="w-[44%]" />
+          </colgroup>
+          <thead className="sticky top-0 z-10 bg-slate-50">
+            <tr>
+              <th className="px-3 py-2 text-left font-semibold text-slate-700">User</th>
+              <th className="px-3 py-2 text-left font-semibold text-slate-700">&lt;think&gt;</th>
+              <th className="px-3 py-2 text-left font-semibold text-slate-700">Assistant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {selectedRows.length > 0 ? (
+              selectedRows.map((row, index) => (
+                <tr key={`${selectedGroupId}-${row.id}-${index}`} className="border-t border-slate-100 align-top">
+                  <td className="px-3 py-2 text-slate-800 whitespace-pre-wrap break-words">{row.userText || '-'}</td>
+                  <td className="px-3 py-2 text-slate-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
+                  <td className="px-3 py-2 text-slate-800 whitespace-pre-wrap break-words">{row.assistantText || '-'}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={3} className="px-3 py-8 text-center text-sm text-slate-500">
+                  No rows found for this group.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CompareOverlay({
+  isOpen,
+  compareSlot1,
+  compareSlot2,
+  clusterGroups,
+  rows,
+  onClose,
+  onUpdateSlot1,
+  onUpdateSlot2,
+}: {
+  isOpen: boolean;
+  compareSlot1: number | null;
+  compareSlot2: number | null;
+  clusterGroups: ClusterGroup[];
+  rows: DisplayRow[];
+  onClose: () => void;
+  onUpdateSlot1: (groupId: number | null) => void;
+  onUpdateSlot2: (groupId: number | null) => void;
+}) {
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[120] bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6" onClick={onClose}>
+      <div
+        className="mx-auto flex h-full w-full max-w-[1800px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">Cluster Group Comparison</h3>
+            <p className="text-sm text-slate-600">Compare two groups side by side using User, &lt;think&gt;, and Assistant content.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            <X className="h-4 w-4" />
+            Close Comparison
+          </button>
+        </div>
+
+        <div className="grid flex-1 gap-4 overflow-hidden p-4 lg:grid-cols-2">
+          <CompareGroupSlot
+            title="Comparison Slot 1"
+            selectedGroupId={compareSlot1}
+            otherSelectedGroupId={compareSlot2}
+            clusterGroups={clusterGroups}
+            rows={rows}
+            onSelectGroup={(groupId) => onUpdateSlot1(groupId)}
+            onRemoveGroup={() => onUpdateSlot1(null)}
+          />
+          <CompareGroupSlot
+            title="Comparison Slot 2"
+            selectedGroupId={compareSlot2}
+            otherSelectedGroupId={compareSlot1}
+            clusterGroups={clusterGroups}
+            rows={rows}
+            onSelectGroup={(groupId) => onUpdateSlot2(groupId)}
+            onRemoveGroup={() => onUpdateSlot2(null)}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StepNavigation({
   showBack,
   showNext,
@@ -1627,7 +1955,12 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
                 onChange={(e) => updateConversionOptions({ removeBoilerplate: e.target.checked })}
                 className="rounded"
               />
-              <span className="text-sm font-medium text-gray-700">Remove AI boilerplate</span>
+              <span className="relative inline-flex items-center group cursor-help text-sm font-medium text-gray-700">
+                Remove AI boilerplate
+                <span className="absolute left-0 top-full z-20 mt-2 hidden w-80 rounded-md border border-gray-200 bg-white p-2 text-xs font-normal text-gray-700 shadow-lg group-hover:block">
+                  {CLEANING_TOOLTIPS.removeBoilerplate}
+                </span>
+              </span>
             </label>
 
             <label className="flex items-center space-x-2">
@@ -1824,6 +2157,11 @@ export function ConversionPage() {
   const [scoreHistoryModalTitle, setScoreHistoryModalTitle] = useState<string>('Score History');
   const [scoreHistoryItems, setScoreHistoryItems] = useState<ScoreHistoryEntry[]>([]);
   const [manualTargetRow, setManualTargetRow] = useState<DisplayRow | null>(null);
+  const [isComparingGroups, setIsComparingGroups] = useState(false);
+  const [compareSlot1, setCompareSlot1] = useState<number | null>(null);
+  const [compareSlot2, setCompareSlot2] = useState<number | null>(null);
+  const [refineHistoryMap, setRefineHistoryMap] = useState<Record<string, { original: string; refined: string }>>({});
+  const [refineComparisonView, setRefineComparisonView] = useState<{ title: string; original: string; refined: string } | null>(null);
   const [manualDraft, setManualDraft] = useState<{ metricA: string; metricB: string; metricC: string; reason: string }>({
     metricA: '',
     metricB: '',
@@ -1835,6 +2173,8 @@ export function ConversionPage() {
   const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
   const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
   const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
+  const [refineScoreThresholdInput, setRefineScoreThresholdInput] = useState<string>('8');
+  const [refineScoreThresholdError, setRefineScoreThresholdError] = useState<string>('');
   const [systemPromptText, setSystemPromptText] = useState<string>('');
   const loadHandledRef = useRef<boolean>(false);
 
@@ -1860,6 +2200,11 @@ export function ConversionPage() {
     if (!selectedClusterIds.length) return rowsWithClusterGroups;
     return rowsWithClusterGroups.filter((row) => row.groupId !== undefined && selectedClusterIds.includes(row.groupId));
   }, [rowsWithClusterGroups, selectedClusterIds]);
+
+  const rowsWithResolvedGroup = useMemo(
+    () => rowsWithClusterGroups.filter((row) => Number.isFinite(row.groupId)),
+    [rowsWithClusterGroups]
+  );
 
   const evaluationRows = useMemo(() => {
     if (previewMode !== 'openai') {
@@ -2105,6 +2450,7 @@ export function ConversionPage() {
       setSelectedClusterIds([]);
       setVisibleRowsInEvaluation([]);
       setVisibleRowsInRefinement([]);
+      setRefineHistoryMap({});
       if (mode === 'initial') {
         setOriginalConvertedResult(data);
         setCurrentStep(2);
@@ -2329,6 +2675,7 @@ export function ConversionPage() {
       });
 
       const refinedIds = new Set(refinedRowIds);
+      const nextRefineHistoryMap: Record<string, { original: string; refined: string }> = {};
       let actuallyRefinedCount = 0;
       candidateRows.forEach((row, idx) => {
         const refinedOutput = refined.items[idx]?.refinedOutput;
@@ -2351,16 +2698,35 @@ export function ConversionPage() {
 
         if (changed) {
           refinedIds.add(row.id);
+          const normalizedRefinedText = typeof refinedOutput === 'string'
+            ? refinedOutput
+            : Object.entries(refinedOutput as Record<string, string>)
+              .sort((a, b) => Number(a[0]) - Number(b[0]))
+              .map(([, value]) => String(value || '').trim())
+              .filter(Boolean)
+              .join('\n\n');
+          nextRefineHistoryMap[row.id] = {
+            original: String(row.assistantText || ''),
+            refined: normalizedRefinedText,
+          };
           actuallyRefinedCount++;
         }
       });
       setRefinedRowIds(refinedIds);
 
-      return { count: actuallyRefinedCount, provider: params.provider };
+      return { count: actuallyRefinedCount, provider: params.provider, nextRefineHistoryMap };
     },
-    onSuccess: ({ count, provider }) => {
+    onSuccess: ({ count, provider, nextRefineHistoryMap }) => {
       const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
       toast.success(`Refined ${count} rows using ${label}.`);
+
+      const historyEntries = Object.entries(nextRefineHistoryMap || {});
+      if (historyEntries.length > 0) {
+        setRefineHistoryMap((prev) => ({
+          ...prev,
+          ...Object.fromEntries(historyEntries),
+        }));
+      }
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
   });
@@ -2443,6 +2809,7 @@ export function ConversionPage() {
     setSampleIdMap({});
     setEvaluationMap({});
     setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     toast.success('Dataset reset to original converted state.');
@@ -2721,6 +3088,7 @@ export function ConversionPage() {
     setVisualizationResult(null);
     setEvaluationMap(safeEvaluationMap);
     setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
     setSystemPromptText('');
     setCurrentDatasetVersionId(payload.datasetVersionId || null);
     setSampleIdMap(payload.sampleIdMap || {});
@@ -2754,6 +3122,7 @@ export function ConversionPage() {
     setVisualizationResult(null);
     setEvaluationMap({});
     setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
     setSystemPromptText('');
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
@@ -2773,6 +3142,14 @@ export function ConversionPage() {
   const canMoveFromStep5 = !!conversionResult;
   const canMoveFromStep6 = !!conversionResult;
   const canMoveFromStep7 = !!conversionResult;
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('data-prep-step-change', { detail: { step: currentStep } }));
+
+    return () => {
+      window.dispatchEvent(new CustomEvent('data-prep-step-change', { detail: { step: null } }));
+    };
+  }, [currentStep]);
 
   const systemPromptPreviewJson = useMemo(() => {
     if (!conversionResult?.data?.length) {
@@ -2806,6 +3183,60 @@ export function ConversionPage() {
       return;
     }
     createDatasetVersionMutation.mutate();
+  };
+
+  const validateRefineScoreThreshold = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return 'Refine items with overall <= is required.';
+    }
+
+    if (!/^\d*\.?\d+$/.test(trimmed)) {
+      return 'Please enter a valid number.';
+    }
+
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      return 'Please enter a valid number.';
+    }
+
+    if (parsed < 0 || parsed > 10) {
+      return 'Score threshold must be between 0 and 10.';
+    }
+
+    return '';
+  };
+
+  const handleRefineScoreThresholdInputChange = (value: string) => {
+    if (value !== '' && !/^\d*\.?\d*$/.test(value)) {
+      return;
+    }
+
+    setRefineScoreThresholdInput(value);
+    if (value.trim() === '') {
+      setRefineScoreThresholdError('');
+      return;
+    }
+
+    setRefineScoreThresholdError(validateRefineScoreThreshold(value));
+  };
+
+  useEffect(() => {
+    if (!isRefineModalOpen) {
+      return;
+    }
+    setRefineScoreThresholdInput(String(refineScoreThreshold));
+    setRefineScoreThresholdError('');
+  }, [isRefineModalOpen, refineScoreThreshold]);
+
+  const handleOpenCompareOverlay = () => {
+    setIsComparingGroups(true);
+  };
+
+  const handleCloseCompareOverlay = () => {
+    setIsComparingGroups(false);
+    setCompareSlot1(null);
+    setCompareSlot2(null);
   };
 
   const refinedHighlightMap = useMemo(() => {
@@ -2869,6 +3300,20 @@ export function ConversionPage() {
       .map(([groupId, count]) => ({ groupId, count, label: `Group ${groupId}` }));
   };
 
+  const handleOpenRefineComparison = (row: DisplayRow) => {
+    const record = refineHistoryMap[row.id] || refineHistoryMap[row.blockId];
+    if (!record) {
+      toast.error('Khong co lich su thay doi refine cho dong nay.');
+      return;
+    }
+
+    setRefineComparisonView({
+      title: `Refine Comparison - ${row.blockLabel}`,
+      original: record.original,
+      refined: record.refined,
+    });
+  };
+
   const handleConfirmDeleteSample = async () => {
     if (!conversionResult || !itemToDelete) {
       setItemToDelete(null);
@@ -2892,6 +3337,7 @@ export function ConversionPage() {
     let nextEvaluationMap = { ...evaluationMap };
     let nextRefinedRowIds = new Set(refinedRowIds);
     let nextRowClusterMap = { ...rowClusterMap };
+    let nextRefineHistoryMap = { ...refineHistoryMap };
     const nextSampleIdMap = { ...sampleIdMap };
 
     delete nextSampleIdMap[resolveEvaluationKey(itemToDelete)];
@@ -2914,6 +3360,8 @@ export function ConversionPage() {
       delete nextEvaluationMap[itemToDelete.blockId];
       nextRefinedRowIds.delete(itemToDelete.id);
       nextRefinedRowIds.delete(itemToDelete.blockId);
+      delete nextRefineHistoryMap[itemToDelete.id];
+      delete nextRefineHistoryMap[itemToDelete.blockId];
       delete nextRowClusterMap[itemToDelete.id];
       delete nextRowClusterMap[itemToDelete.blockId];
     } else {
@@ -2923,6 +3371,7 @@ export function ConversionPage() {
         nextData = (conversionResult.data || []).filter((_, idx) => idx !== deleteIndex);
         nextEvaluationMap = remapRecordKeysAfterAlpacaDelete(nextEvaluationMap, deleteIndex);
         nextRefinedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinedRowIds, deleteIndex);
+        nextRefineHistoryMap = remapRecordKeysAfterAlpacaDelete(nextRefineHistoryMap, deleteIndex);
         nextRowClusterMap = remapRecordKeysAfterAlpacaDelete(nextRowClusterMap, deleteIndex);
       }
     }
@@ -2946,6 +3395,7 @@ export function ConversionPage() {
     setEvaluationMap(nextEvaluationMap);
     setSampleIdMap(nextSampleIdMap);
     setRefinedRowIds(nextRefinedRowIds);
+    setRefineHistoryMap(nextRefineHistoryMap);
     setRowClusterMap(nextRowClusterMap);
     setClusterGroups(nextGroups);
     setSelectedClusterIds((prev) => prev.filter((id) => nextGroups.some((group) => group.groupId === id)));
@@ -3193,8 +3643,16 @@ export function ConversionPage() {
 
               {clusterGroups.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold text-gray-900">Cluster Statistics</h3>
+                    <button
+                      type="button"
+                      onClick={handleOpenCompareOverlay}
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      <Columns className="h-3.5 w-3.5" />
+                      Compare Groups
+                    </button>
                   </div>
                   <div className="max-h-[320px] overflow-auto">
                     <table className="min-w-full text-sm">
@@ -3244,6 +3702,8 @@ export function ConversionPage() {
             onRequestViewHistory={handleOpenScoreHistory}
             onRequestManualEvaluate={handleOpenManualEvaluate}
             onRequestDeleteRow={(row) => setItemToDelete(row)}
+            refineHistoryMap={refineHistoryMap}
+            onRequestViewRefineChange={handleOpenRefineComparison}
           />
 
           {averagedEvaluation && (
@@ -3286,6 +3746,8 @@ export function ConversionPage() {
             onRequestViewHistory={handleOpenScoreHistory}
             onRequestManualEvaluate={handleOpenManualEvaluate}
             onRequestDeleteRow={(row) => setItemToDelete(row)}
+            refineHistoryMap={refineHistoryMap}
+            onRequestViewRefineChange={handleOpenRefineComparison}
           />
 
           <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
@@ -3427,15 +3889,24 @@ export function ConversionPage() {
       <RefineModal
         isOpen={isRefineModalOpen}
         provider={refineProvider}
-        scoreThreshold={refineScoreThreshold}
+        scoreThresholdInput={refineScoreThresholdInput}
+        scoreThresholdError={refineScoreThresholdError}
         onProviderChange={setRefineProvider}
-        onScoreThresholdChange={setRefineScoreThreshold}
+        onScoreThresholdInputChange={handleRefineScoreThresholdInputChange}
         onClose={() => setIsRefineModalOpen(false)}
         onConfirm={() => {
+          const error = validateRefineScoreThreshold(refineScoreThresholdInput);
+          if (error) {
+            setRefineScoreThresholdError(error);
+            return;
+          }
+
+          const threshold = Number(refineScoreThresholdInput);
+          setRefineScoreThreshold(threshold);
           refineMutation.mutate({
             provider: refineProvider,
             rows: visibleRowsInRefinement,
-            scoreThreshold: refineScoreThreshold,
+            scoreThreshold: threshold,
           });
           setIsRefineModalOpen(false);
         }}
@@ -3453,6 +3924,25 @@ export function ConversionPage() {
         title={scoreHistoryModalTitle}
         evaluations={scoreHistoryItems}
         onClose={() => setScoreHistoryModalOpen(false)}
+      />
+
+      <CompareOverlay
+        isOpen={isComparingGroups}
+        compareSlot1={compareSlot1}
+        compareSlot2={compareSlot2}
+        clusterGroups={clusterGroups}
+        rows={rowsWithResolvedGroup}
+        onClose={handleCloseCompareOverlay}
+        onUpdateSlot1={setCompareSlot1}
+        onUpdateSlot2={setCompareSlot2}
+      />
+
+      <RefineComparisonModal
+        isOpen={Boolean(refineComparisonView)}
+        title={refineComparisonView?.title || 'Refine Comparison'}
+        original={refineComparisonView?.original || ''}
+        refined={refineComparisonView?.refined || ''}
+        onClose={() => setRefineComparisonView(null)}
       />
     </div>
   );

@@ -186,16 +186,25 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
             </div>
           </div>
 
-          {/* Nút đánh giá model mới */}
-          <button
-            onClick={() => navigate('/model-eval/run')}
-            className="flex items-center gap-2 bg-slate-800 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-slate-700 transition"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Đánh giá model
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Nút đánh giá model mới */}
+            <button
+              onClick={() => navigate('/model-eval/run')}
+              className="flex items-center gap-2 bg-slate-800 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-slate-700 transition"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Đánh giá model
+            </button>
+
+            <button
+              onClick={() => navigate('/chat')}
+              className="flex items-center gap-2 bg-emerald-100 text-emerald-800 border border-emerald-300 text-sm font-semibold px-4 py-2 rounded-xl hover:bg-emerald-200 transition"
+            >
+             AI Chatbot
+            </button>
+          </div>
         </div>
       </div>
 
