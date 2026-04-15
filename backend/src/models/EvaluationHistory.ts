@@ -1,6 +1,6 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema, Document, Types } from 'mongoose';
 
-interface IEvaluationScore {
+export interface IEvaluationScore {
   accuracy?: number | null;
   clarity?: number | null;
   completeness?: number | null;
@@ -12,10 +12,7 @@ interface IEvaluationScore {
 }
 
 export interface IEvaluationHistory extends Document {
-  fileId: string;
-  projectName: string;
-  format: string;
-  data: Record<string, any>;
+  sampleId: Types.ObjectId;
   evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
   results: IEvaluationScore;
   createdAt: Date;
@@ -38,19 +35,18 @@ const EvaluationScoreSchema = new Schema<IEvaluationScore>(
 
 const EvaluationHistorySchema = new Schema<IEvaluationHistory>(
   {
-    fileId: { type: String, required: true, index: true },
-    projectName: { type: String, required: true, index: true, trim: true },
-    format: { type: String, required: true, enum: ['openai', 'alpaca'] },
-    data: { type: Schema.Types.Mixed, required: true },
+    sampleId: {
+      type: Schema.Types.ObjectId,
+      ref: 'ProcessedDatasetItem',
+      required: true,
+      index: true,
+    },
     evaluatedBy: { type: String, required: true, enum: ['manual', 'gemini', 'openai', 'deepseek', 'none'] },
     results: { type: EvaluationScoreSchema, required: true },
-    createdAt: { type: Date, required: true },
-    updatedAt: { type: Date, default: Date.now },
   },
-  { timestamps: false }
+  {
+    timestamps: true,
+  }
 );
 
-export const EvaluationHistory = mongoose.model<IEvaluationHistory>(
-  'EvaluationHistory',
-  EvaluationHistorySchema
-);
+export const EvaluationHistory = mongoose.model<IEvaluationHistory>('EvaluationHistory', EvaluationHistorySchema);

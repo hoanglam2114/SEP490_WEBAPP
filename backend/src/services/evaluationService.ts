@@ -243,10 +243,7 @@ export class EvaluationService {
         format?: string
     ): Promise<EvaluationResult> {
         const populationSize = data.length;
-        const samples = data;
-        // const sampleSize = Math.min(10, populationSize);
-        // const samples = data.slice(0, sampleSize);
-        //console.log(`[Evaluation] Lấy ${sampleSize} mẫu đầu tiên: population=${populationSize}, samples=${samples.length}`);
+        const samples = Array.isArray(data) ? data : [];
         console.log(`[Evaluation] Lấy mẫu để chấm: population=${populationSize}, samples=${samples.length}`);
         const CHUNK_SIZE = 5;
         const results: SampleEvaluation[] = [];

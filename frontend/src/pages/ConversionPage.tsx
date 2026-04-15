@@ -4,7 +4,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
   Download,
+  Eye,
   Loader2,
+  MoreVertical,
+  Pencil,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -19,11 +22,13 @@ import { FileUploader } from '../components/FileUploader';
 import { ConversionOptions } from '../components/ConversionOptions';
 import { Preview } from '../components/Preview';
 import { HuggingFaceUpload } from '../components/HuggingFaceUpload';
+import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
+import { SystemPromptPage } from './SystemPromptPage.tsx';
 import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -35,14 +40,19 @@ type EvaluationScores = {
   encouragement?: number | null;
   factuality?: number | null;
   overall: number | null;
-  reason: string;
 };
 
 type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
-type RowEvaluationEntry = {
-  scores: EvaluationScores;
+type EvaluationRecord = {
   evaluatedBy: EvaluatedBy;
+  scores: EvaluationScores;
+  reason: string;
+  timestamp: string;
+};
+
+type RowEvaluationEntry = {
+  evaluations: EvaluationRecord[];
 };
 
 type DisplayRow = {
@@ -67,11 +77,13 @@ type ClusterGroup = {
 };
 
 type LoadProjectPayload = {
-  fileId: string;
+  fileId?: string;
   projectName: string;
   format: 'openai' | 'alpaca';
   data: any[];
   evaluationMap: Record<string, RowEvaluationEntry>;
+  datasetVersionId?: string;
+  sampleIdMap?: Record<string, string>;
 };
 
 function clampScore(value: string | number): number {
@@ -100,12 +112,180 @@ function formatTableScore(value: number | null | undefined): string {
   if (value === null || value === undefined || value === -1) {
     return '';
   }
-  return String(value);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return '';
+  }
+  return parsed.toFixed(2);
 }
 
 function calculateOverallFromThree(a: number, b: number, c: number): number {
   return Math.round(((a + b + c) / 3) * 10) / 10;
 }
+
+function normalizeNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+  return n;
+}
+
+function resolveEvaluationKey(row: DisplayRow): string {
+  return row.blockId || row.id;
+}
+
+function toIsoTimestamp(value?: string): string {
+  const raw = value ? new Date(value).getTime() : NaN;
+  if (!Number.isFinite(raw)) {
+    return new Date().toISOString();
+  }
+  return new Date(raw).toISOString();
+}
+
+function normalizeEvaluationEntry(raw: any): RowEvaluationEntry {
+  if (Array.isArray(raw?.evaluations)) {
+    const evaluations = raw.evaluations.map((item: any) => ({
+      evaluatedBy: (item?.evaluatedBy || 'none') as EvaluatedBy,
+      scores: {
+        accuracy: normalizeNullableNumber(item?.scores?.accuracy),
+        clarity: normalizeNullableNumber(item?.scores?.clarity),
+        completeness: normalizeNullableNumber(item?.scores?.completeness),
+        socratic: normalizeNullableNumber(item?.scores?.socratic),
+        encouragement: normalizeNullableNumber(item?.scores?.encouragement),
+        factuality: normalizeNullableNumber(item?.scores?.factuality),
+        overall: normalizeNullableNumber(item?.scores?.overall),
+      },
+      reason: String(item?.reason || ''),
+      timestamp: toIsoTimestamp(item?.timestamp),
+    }));
+
+    return { evaluations };
+  }
+
+  if (raw?.scores) {
+    return {
+      evaluations: [
+        {
+          evaluatedBy: (raw.evaluatedBy || 'none') as EvaluatedBy,
+          scores: {
+            accuracy: normalizeNullableNumber(raw.scores.accuracy),
+            clarity: normalizeNullableNumber(raw.scores.clarity),
+            completeness: normalizeNullableNumber(raw.scores.completeness),
+            socratic: normalizeNullableNumber(raw.scores.socratic),
+            encouragement: normalizeNullableNumber(raw.scores.encouragement),
+            factuality: normalizeNullableNumber(raw.scores.factuality),
+            overall: normalizeNullableNumber(raw.scores.overall),
+          },
+          reason: String(raw.scores.reason || ''),
+          timestamp: toIsoTimestamp(raw.timestamp),
+        },
+      ],
+    };
+  }
+
+  return { evaluations: [] };
+}
+
+function getLatestEvaluation(entry?: RowEvaluationEntry): EvaluationRecord | null {
+  if (!entry?.evaluations?.length) {
+    return null;
+  }
+  return [...entry.evaluations].sort((a, b) => {
+    const ta = new Date(a.timestamp || 0).getTime();
+    const tb = new Date(b.timestamp || 0).getTime();
+    return ta - tb;
+  })[entry.evaluations.length - 1] || null;
+}
+
+function getEvaluatedBySummary(entry?: RowEvaluationEntry): string {
+  if (!entry?.evaluations?.length) {
+    return '';
+  }
+
+  const providers = entry.evaluations
+    .map((item) => String(item?.evaluatedBy || '').trim())
+    .filter((provider) => provider && provider !== 'none');
+
+  if (!providers.length) {
+    return 'none';
+  }
+
+  return Array.from(new Set(providers)).join(', ');
+}
+
+function getAveragedScores(entry: RowEvaluationEntry | undefined, mode: PreviewMode): EvaluationScores | null {
+  const evaluations = entry?.evaluations || [];
+  if (!evaluations.length) {
+    return null;
+  }
+
+  const count = evaluations.length;
+  const sum = evaluations.reduce(
+    (acc, item) => ({
+      accuracy: acc.accuracy + (Number(item.scores.accuracy) || 0),
+      clarity: acc.clarity + (Number(item.scores.clarity) || 0),
+      completeness: acc.completeness + (Number(item.scores.completeness) || 0),
+      socratic: acc.socratic + (Number(item.scores.socratic) || 0),
+      encouragement: acc.encouragement + (Number(item.scores.encouragement) || 0),
+      factuality: acc.factuality + (Number(item.scores.factuality) || 0),
+      overall: acc.overall + (Number(item.scores.overall) || 0),
+    }),
+    {
+      accuracy: 0,
+      clarity: 0,
+      completeness: 0,
+      socratic: 0,
+      encouragement: 0,
+      factuality: 0,
+      overall: 0,
+    }
+  );
+
+  const avg = {
+    accuracy: sum.accuracy / count,
+    clarity: sum.clarity / count,
+    completeness: sum.completeness / count,
+    socratic: sum.socratic / count,
+    encouragement: sum.encouragement / count,
+    factuality: sum.factuality / count,
+    overall: sum.overall / count,
+  };
+
+  return {
+    accuracy: mode === 'alpaca' ? avg.accuracy : null,
+    clarity: mode === 'alpaca' ? avg.clarity : null,
+    completeness: mode === 'alpaca' ? avg.completeness : null,
+    socratic: mode === 'openai' ? avg.socratic : null,
+    encouragement: mode === 'openai' ? avg.encouragement : null,
+    factuality: mode === 'openai' ? avg.factuality : null,
+    overall: avg.overall,
+  };
+}
+
+function isMongoObjectId(value: string): boolean {
+  return /^[a-f\d]{24}$/i.test(String(value || ''));
+}
+
+function mergeEvaluationUpdates(
+  base: Record<string, RowEvaluationEntry>,
+  updates: Record<string, EvaluationRecord>
+): Record<string, RowEvaluationEntry> {
+  const merged = { ...base };
+
+  Object.entries(updates).forEach(([key, evaluation]) => {
+    const normalized = normalizeEvaluationEntry(merged[key]);
+    merged[key] = {
+      evaluations: [...normalized.evaluations, evaluation],
+    };
+  });
+
+  return merged;
+}
+
 function formatDefaultProjectName(date = new Date()): string {
   const dd = String(date.getDate()).padStart(2, '0');
   const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -121,7 +301,8 @@ const STEP_CONFIG: Array<{ id: Step; label: string }> = [
   { id: 4, label: 'Clustering Data' },
   { id: 5, label: 'Evaluation' },
   { id: 6, label: 'Data Refinement' },
-  { id: 7, label: 'Finish' },
+  { id: 7, label: 'System Prompt' },
+  { id: 8, label: 'Finish' },
 ];
 
 type VisualizationResult = {
@@ -144,14 +325,20 @@ function shuffle<T>(arr: T[]): T[] {
   return next;
 }
 
-function sanitizeRecordForDownload(record: any, mode: PreviewMode): any {
+function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptText?: string): any {
+  const trimmedSystemPrompt = String(systemPromptText || '').trim();
+
   if (mode === 'openai') {
     const messages = Array.isArray(record?.messages) ? record.messages : [];
+    const normalizedMessages = messages.map((msg: any) => ({
+      role: String(msg?.role || ''),
+      content: String(msg?.content || ''),
+    }));
+
     return {
-      messages: messages.map((msg: any) => ({
-        role: String(msg?.role || ''),
-        content: String(msg?.content || ''),
-      })),
+      messages: trimmedSystemPrompt
+        ? [{ role: 'system', content: trimmedSystemPrompt }, ...normalizedMessages]
+        : normalizedMessages,
     };
   }
 
@@ -283,11 +470,12 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
     const instruction = String(item?.instruction ?? item?.query ?? item?.question ?? '');
     const input = String(item?.input ?? item?.context ?? '');
     const output = String(item?.output ?? item?.answer ?? item?.response ?? '');
+    const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
 
     return {
-      id: `alpaca-${index}`,
-      blockId: `alpaca-${index}`,
-      blockLabel: `Record ${index + 1}`,
+      id: rowId,
+      blockId: rowId,
+      blockLabel: item?.id ? String(item.id) : `Record ${index + 1}`,
       isBlockLast: true,
       instruction,
       input,
@@ -303,7 +491,10 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
 function StepperHeader({ currentStep }: { currentStep: Step }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6">
-      <div className="grid grid-cols-7 gap-2 sm:gap-3">
+      <div
+        className="grid gap-2 sm:gap-3"
+        style={{ gridTemplateColumns: `repeat(${STEP_CONFIG.length}, minmax(0, 1fr))` }}
+      >
         {STEP_CONFIG.map((step) => {
           const isActive = step.id === currentStep;
           const isCompleted = step.id < currentStep;
@@ -488,7 +679,7 @@ function EvaluateModal({
     <ActionModalFrame
       isOpen={isOpen}
       title="Evaluate with AI"
-      description="Choose a model to evaluate all visible rows on this page."
+      description="Choose a model to evaluate all visible rows on the current page."
       confirmText="Confirm Evaluation"
       isSubmitting={isSubmitting}
       onClose={onClose}
@@ -562,6 +753,96 @@ function RefineModal({
           value={scoreThreshold}
           onChange={(e) => onScoreThresholdChange(Math.max(0, Math.min(10, Number(e.target.value) || 0)))}
           className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+        />
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function ManualEvaluateModal({
+  isOpen,
+  mode,
+  metricA,
+  metricB,
+  metricC,
+  reason,
+  isSubmitting,
+  onChange,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  mode: PreviewMode;
+  metricA: string;
+  metricB: string;
+  metricC: string;
+  reason: string;
+  isSubmitting?: boolean;
+  onChange: (field: 'metricA' | 'metricB' | 'metricC' | 'reason', value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const labelA = mode === 'openai' ? 'socratic' : 'accuracy';
+  const labelB = mode === 'openai' ? 'encouragement' : 'clarity';
+  const labelC = mode === 'openai' ? 'factuality' : 'completeness';
+
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Add evaluate by manual"
+      description="Fill in the evaluation metrics and reason."
+      confirmText="Save Evaluation"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelA}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricA}
+            onChange={(e) => onChange('metricA', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelB}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricB}
+            onChange={(e) => onChange('metricB', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">{labelC}</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step="any"
+            value={metricC}
+            onChange={(e) => onChange('metricC', e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-700">reason</label>
+        <textarea
+          value={reason}
+          onChange={(e) => onChange('reason', e.target.value)}
+          rows={4}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          placeholder="Nhap ly do danh gia"
         />
       </div>
     </ActionModalFrame>
@@ -678,51 +959,44 @@ function ConvertedDatasetTable({
   mode,
   showEvaluationColumns,
   showEvaluationActions = true,
-  showRowSelection = true,
   evaluationMap,
-  selectedManualRows,
-  selectedRows,
   rowHighlightMap,
-  editableSelectedRows = true,
   onEvaluate,
-  onAccept,
   onReset,
-  onToggleRow,
-  onManualFieldChange,
   extraActions,
   isEvaluating,
   disableEvaluate,
-  isAccepting,
   onVisibleRowsChange,
+  onRequestViewHistory,
+  onRequestManualEvaluate,
   onRequestDeleteRow,
+  isFinishPreview = false,
+  systemPromptText,
 }: {
   rows: DisplayRow[];
   mode: PreviewMode;
   showEvaluationColumns?: boolean;
   showEvaluationActions?: boolean;
-  showRowSelection?: boolean;
   evaluationMap?: Record<string, RowEvaluationEntry>;
-  selectedManualRows?: Set<string>;
-  selectedRows?: Set<string>;
   rowHighlightMap?: Record<string, 'refined'>;
-  editableSelectedRows?: boolean;
   onEvaluate?: () => void;
-  onAccept?: () => void;
   onReset?: () => void;
-  onToggleRow?: (row: DisplayRow, checked: boolean) => void;
-  onManualFieldChange?: (row: DisplayRow, field: string, value: string) => void;
   extraActions?: any;
   isEvaluating?: boolean;
   disableEvaluate?: boolean;
-  isAccepting?: boolean;
   onVisibleRowsChange?: (rows: DisplayRow[]) => void;
+  onRequestViewHistory?: (row: DisplayRow) => void;
+  onRequestManualEvaluate?: (row: DisplayRow) => void;
   onRequestDeleteRow?: (row: DisplayRow) => void;
+  isFinishPreview?: boolean;
+  systemPromptText?: string;
 }) {
   const PAGE_SIZE_STEPS = [5, 10, 20, 100, 250, 500];
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_STEPS[0]);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState<boolean>(false);
   const [detailModal, setDetailModal] = useState<{ title: string; content: string } | null>(null);
+  const [openActionMenuKey, setOpenActionMenuKey] = useState<string | null>(null);
   const lastVisibleSignatureRef = useRef<string>('');
 
   useEffect(() => {
@@ -763,7 +1037,13 @@ function ConvertedDatasetTable({
 
   const hasRows = totalRows > 0;
   const showDeleteAction = Boolean(onRequestDeleteRow);
-  const emptyColSpan = (showEvaluationColumns ? (showRowSelection ? 9 : 8) : 3) + (showDeleteAction ? 1 : 0);
+  const showActionMenu = Boolean(showDeleteAction || onRequestManualEvaluate || onRequestViewHistory);
+  const showSystemColumn = isFinishPreview;
+  const hideOpenAIMetricBreakdown = Boolean(isFinishPreview && mode === 'openai');
+  const scoreColumnCount = showEvaluationColumns
+    ? (hideOpenAIMetricBreakdown ? 1 : 4) + 2
+    : 0;
+  const emptyColSpan = 3 + (showSystemColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
   const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
@@ -776,6 +1056,75 @@ function ConvertedDatasetTable({
       </span>
     </span>
   );
+
+  const renderActionMenuCell = (row: DisplayRow, rowSpan?: number) => {
+    if (!showActionMenu) {
+      return null;
+    }
+
+    const rowKey = resolveEvaluationKey(row);
+    const isOpen = openActionMenuKey === rowKey;
+
+    return (
+      <td className="px-2 py-3 align-bottom" rowSpan={rowSpan}>
+        <div className="relative flex h-full items-end justify-end">
+          <button
+            type="button"
+            onClick={() => setOpenActionMenuKey((prev) => (prev === rowKey ? null : rowKey))}
+            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            title="Actions"
+            aria-label="Actions"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+
+          {isOpen && (
+            <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+              {onRequestViewHistory && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestViewHistory(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>All evaluate mark</span>
+                </button>
+              )}
+              {onRequestManualEvaluate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestManualEvaluate(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  <span>Evaluate manual</span>
+                </button>
+              )}
+              {showDeleteAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRequestDeleteRow?.(row);
+                    setOpenActionMenuKey(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete </span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </td>
+    );
+  };
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -833,21 +1182,15 @@ function ConvertedDatasetTable({
 
               {extraActions}
 
-              <button
-                onClick={onAccept}
-                disabled={!hasRows || isAccepting}
-                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-              >
-                Accept
-              </button>
-
-              <button
-                onClick={onReset}
-                disabled={!hasRows}
-                className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
-              >
-                Reset
-              </button>
+              {onReset && (
+                <button
+                  onClick={onReset}
+                  disabled={!hasRows}
+                  className="px-4 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-60 text-xs font-semibold text-gray-700"
+                >
+                  Reset
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -856,20 +1199,21 @@ function ConvertedDatasetTable({
       <div className="overflow-auto max-h-[680px]">
         <table className="min-w-full text-sm table-fixed">
           <colgroup>
-            {showEvaluationColumns && showRowSelection && <col className="w-[48px]" />}
+            {showSystemColumn && <col className="w-[16%]" />}
             <col className="w-[30%]" />
             <col className="w-[20%]" />
             <col className="w-[40%]" />
-            {showEvaluationColumns && <col className="w-[88px]" />}
-            {showEvaluationColumns && <col className="w-[88px]" />}
-            {showEvaluationColumns && <col className="w-[88px]" />}
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
+            {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
             {showEvaluationColumns && <col className="w-[88px]" />}
             {showEvaluationColumns && <col className="min-w-[280px]" />}
-            {showDeleteAction && <col className="w-[64px]" />}
+            {showEvaluationColumns && <col className="w-[120px]" />}
+            {showActionMenu && <col className="w-[64px]" />}
           </colgroup>
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
-              {showEvaluationColumns && showRowSelection && <th className="px-4 py-3 w-[48px]" />}
+              {showSystemColumn && <th className="text-left px-4 py-3 font-semibold text-gray-700">System</th>}
               <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'User' : 'Instruction'}
               </th>
@@ -881,12 +1225,17 @@ function ConvertedDatasetTable({
               </th>
               {showEvaluationColumns && (
                 <>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricA)}</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricB)}</th>
-                  <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
+                  {!hideOpenAIMetricBreakdown && (
+                    <>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricA)}</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricB)}</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-700">{renderMetricHeader(metricC)}</th>
+                    </>
+                  )}
                   <th className="text-left px-4 py-3 font-semibold text-gray-700">overall</th>
                   <th className="text-left px-4 py-3 font-semibold text-gray-700 min-w-[280px]">reason</th>
-                  {showDeleteAction && <th className="px-2 py-3" />}
+                  <th className="text-left px-4 py-3 font-semibold text-gray-700">evaluated by</th>
+                  {showActionMenu && <th className="px-2 py-3" />}
                 </>
               )}
             </tr>
@@ -895,14 +1244,11 @@ function ConvertedDatasetTable({
             {visibleRows.length > 0 ? (
               showEvaluationColumns && mode === 'openai'
                 ? visibleRows.flatMap((row, index) => {
-                  const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
-                  const score = entry?.scores;
-                  const activeSelection = selectedRows || selectedManualRows;
-                  const isManual = activeSelection?.has(row.id) || activeSelection?.has(row.blockId) || false;
-                  const metricInputClass =
-                    'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
-                  const reasonInputClass =
-                    'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                  const key = resolveEvaluationKey(row);
+                  const entry = normalizeEvaluationEntry(evaluationMap?.[key] || evaluationMap?.[row.id]);
+                  const averagedScores = getAveragedScores(entry, mode);
+                  const latestEvaluation = getLatestEvaluation(entry);
+                  const evaluatedBySummary = getEvaluatedBySummary(entry);
 
                   const pairs = row.conversationPairs && row.conversationPairs.length > 0
                     ? row.conversationPairs
@@ -914,22 +1260,17 @@ function ConvertedDatasetTable({
                       className={`align-top ${pairIndex === pairs.length - 1
                         ? 'border-b-4 border-b-gray-200'
                         : 'border-b border-b-gray-100'
-                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''
+                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
                         } ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''
                         }`}
                     >
-                      {pairIndex === 0 && (
-                        showRowSelection ? (
-                          <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
-                            <input
-                              type="checkbox"
-                              checked={isManual}
-                              onChange={(e) => onToggleRow?.(row, e.target.checked)}
-                            />
-                          </td>
-                        ) : null
+                      {showSystemColumn && pairIndex === 0 && (
+                        <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
+                          <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                            {systemPromptText?.trim() || '-'}
+                          </p>
+                        </td>
                       )}
-
                       <td className="px-4 py-3 align-top">
                         <ClampedTextCell
                           text={pair.user || '-'}
@@ -948,79 +1289,27 @@ function ConvertedDatasetTable({
 
                       {pairIndex === 0 && (
                         <>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual && editableSelectedRows ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.socratic ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'socratic', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              formatTableScore(score?.socratic)
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual && editableSelectedRows ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.encouragement ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'encouragement', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              formatTableScore(score?.encouragement)
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
-                            {isManual && editableSelectedRows ? (
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
-                                step="any"
-                                value={score?.factuality ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'factuality', e.target.value)}
-                                className={metricInputClass}
-                              />
-                            ) : (
-                              formatTableScore(score?.factuality)
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{formatTableScore(score?.overall)}</td>
-                          <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
-                            {isManual && editableSelectedRows ? (
-                              <input
-                                type="text"
-                                value={score?.reason ?? ''}
-                                onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
-                                className={reasonInputClass}
-                              />
-                            ) : (
-                              score?.reason ?? ''
-                            )}
-                          </td>
-                          {showDeleteAction && (
-                            <td className="px-2 py-3 align-bottom" rowSpan={pairs.length}>
-                              <div className="flex h-full items-end justify-end">
-                                <button
-                                  type="button"
-                                  onClick={() => onRequestDeleteRow?.(row)}
-                                  className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
-                                  title="Delete sample"
-                                  aria-label="Delete sample"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
+                          {!hideOpenAIMetricBreakdown && (
+                            <>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.socratic)}
+                              </td>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.encouragement)}
+                              </td>
+                              <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                                {formatTableScore(averagedScores?.factuality)}
+                              </td>
+                            </>
                           )}
+                          <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>{formatTableScore(averagedScores?.overall)}</td>
+                          <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words align-top" rowSpan={pairs.length}>
+                            {latestEvaluation?.reason ?? ''}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
+                            {evaluatedBySummary || latestEvaluation?.evaluatedBy || ''}
+                          </td>
+                          {renderActionMenuCell(row, pairs.length)}
                         </>
                       )}
                     </tr>
@@ -1040,6 +1329,13 @@ function ConvertedDatasetTable({
                           : 'border-b border-b-gray-100'
                           } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
                       >
+                        {showSystemColumn && (
+                          <td className="px-4 py-3 align-top">
+                            <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                              {systemPromptText?.trim() || '-'}
+                            </p>
+                          </td>
+                        )}
                         <td className="px-4 py-3 align-top">
                           <ClampedTextCell
                             text={pair.user || '-'}
@@ -1059,28 +1355,23 @@ function ConvertedDatasetTable({
                     ));
                   })
                   : visibleRows.map((row, index) => {
-                    const entry = evaluationMap?.[row.id] || evaluationMap?.[row.blockId];
-                    const score = entry?.scores;
-                    const activeSelection = selectedRows || selectedManualRows;
-                    const isManual = activeSelection?.has(row.id) || activeSelection?.has(row.blockId) || false;
-                    const metricInputClass =
-                      'w-20 px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
-                    const reasonInputClass =
-                      'w-full min-w-[220px] px-2 py-1 rounded border border-gray-300 text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200';
+                    const key = resolveEvaluationKey(row);
+                    const entry = normalizeEvaluationEntry(evaluationMap?.[key] || evaluationMap?.[row.id]);
+                    const averagedScores = getAveragedScores(entry, mode);
+                    const latestEvaluation = getLatestEvaluation(entry);
+                    const evaluatedBySummary = getEvaluatedBySummary(entry);
 
                     return (
                       <tr
                         key={row.id}
                         className={`align-top ${row.isBlockLast ? 'border-b-4 border-b-gray-200' : 'border-b border-b-gray-100'
-                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${isManual ? 'bg-emerald-50' : ''} ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''}`}
+                          } ${index === 0 ? 'border-t border-t-gray-100' : ''} ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''}`}
                       >
-                        {showEvaluationColumns && showRowSelection && (
-                          <td className="px-4 py-3">
-                            <input
-                              type="checkbox"
-                              checked={isManual}
-                              onChange={(e) => onToggleRow?.(row, e.target.checked)}
-                            />
+                        {showSystemColumn && (
+                          <td className="px-4 py-3 align-top">
+                            <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
+                              {systemPromptText?.trim() || '-'}
+                            </p>
                           </td>
                         )}
                         <td className="px-4 py-3 align-top">
@@ -1100,79 +1391,19 @@ function ConvertedDatasetTable({
                         </td>
                         {showEvaluationColumns && (
                           <>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual && editableSelectedRows ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.accuracy ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'accuracy', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                formatTableScore(score?.accuracy)
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual && editableSelectedRows ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.clarity ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'clarity', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                formatTableScore(score?.clarity)
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700">
-                              {isManual && editableSelectedRows ? (
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={10}
-                                  step="any"
-                                  value={score?.completeness ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'completeness', e.target.value)}
-                                  className={metricInputClass}
-                                />
-                              ) : (
-                                formatTableScore(score?.completeness)
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-gray-700 font-semibold">{formatTableScore(score?.overall)}</td>
-                            <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
-                              {isManual && editableSelectedRows ? (
-                                <input
-                                  type="text"
-                                  value={score?.reason ?? ''}
-                                  onChange={(e) => onManualFieldChange?.(row, 'reason', e.target.value)}
-                                  className={reasonInputClass}
-                                />
-                              ) : (
-                                score?.reason ?? ''
-                              )}
-                            </td>
-                            {showDeleteAction && (
-                              <td className="px-2 py-3 align-bottom">
-                                <div className="flex h-full items-end justify-end">
-                                  <button
-                                    type="button"
-                                    onClick={() => onRequestDeleteRow?.(row)}
-                                    className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
-                                    title="Delete sample"
-                                    aria-label="Delete sample"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              </td>
+                            {!hideOpenAIMetricBreakdown && (
+                              <>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.accuracy)}</td>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.clarity)}</td>
+                                <td className="px-4 py-3 text-gray-700">{formatTableScore(averagedScores?.completeness)}</td>
+                              </>
                             )}
+                            <td className="px-4 py-3 text-gray-700 font-semibold">{formatTableScore(averagedScores?.overall)}</td>
+                            <td className="px-4 py-3 text-gray-600 whitespace-pre-wrap break-words">
+                              {latestEvaluation?.reason ?? ''}
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">{evaluatedBySummary || latestEvaluation?.evaluatedBy || ''}</td>
+                            {renderActionMenuCell(row)}
                           </>
                         )}
                       </tr>
@@ -1574,24 +1805,37 @@ export function ConversionPage() {
   const [clusterK, setClusterK] = useState<number>(8);
   const [isVisualizing, setIsVisualizing] = useState<boolean>(false);
   const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
-  const [manualRowIds, setManualRowIds] = useState<Set<string>>(new Set());
-  const [refinementSelectedRowIds, setRefinementSelectedRowIds] = useState<Set<string>>(new Set());
   const [refinedRowIds, setRefinedRowIds] = useState<Set<string>>(new Set());
   const [clusterGroups, setClusterGroups] = useState<ClusterGroup[]>([]);
   const [rowClusterMap, setRowClusterMap] = useState<Record<string, number>>({});
   const [selectedClusterIds, setSelectedClusterIds] = useState<number[]>([]);
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
   const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
-  const [loadedProjectFileId, setLoadedProjectFileId] = useState<string | null>(null);
+  const [downloadTestPercentage, setDownloadTestPercentage] = useState<number>(10);
+  const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
+  const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
   const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[] } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
   const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
   const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
   const [isRefineModalOpen, setIsRefineModalOpen] = useState(false);
+  const [isManualEvalModalOpen, setIsManualEvalModalOpen] = useState(false);
+  const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
+  const [scoreHistoryModalTitle, setScoreHistoryModalTitle] = useState<string>('Score History');
+  const [scoreHistoryItems, setScoreHistoryItems] = useState<ScoreHistoryEntry[]>([]);
+  const [manualTargetRow, setManualTargetRow] = useState<DisplayRow | null>(null);
+  const [manualDraft, setManualDraft] = useState<{ metricA: string; metricB: string; metricC: string; reason: string }>({
+    metricA: '',
+    metricB: '',
+    metricC: '',
+    reason: '',
+  });
+  const [isManualSaving, setIsManualSaving] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<DisplayRow | null>(null);
   const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
   const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
   const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
+  const [systemPromptText, setSystemPromptText] = useState<string>('');
   const loadHandledRef = useRef<boolean>(false);
 
   const { data: stats } = useQuery({
@@ -1657,12 +1901,168 @@ export function ConversionPage() {
       });
   }, [conversionResult?.data, previewMode, rowsWithClusterGroups]);
 
+  const buildDatasetVersionPayload = (): {
+    projectName: string;
+    similarityThreshold: number;
+    format: 'openai' | 'alpaca';
+    data: Array<{ sourceKey: string; data: Record<string, any> }>;
+  } | null => {
+    if (!conversionResult) {
+      return null;
+    }
+
+    const data = allRows.map((row) => {
+      if (previewMode === 'openai') {
+        const messages = (row.conversationPairs || []).flatMap((pair) => ([
+          { role: 'user', content: String(pair.user || '') },
+          { role: 'assistant', content: String(pair.assistant || '') },
+        ])).filter((message) => String(message.content || '').trim() !== '');
+
+        return {
+          sourceKey: resolveEvaluationKey(row),
+          data: {
+            messages,
+          },
+        };
+      }
+
+      return {
+        sourceKey: resolveEvaluationKey(row),
+        data: {
+          instruction: row.instruction,
+          input: row.input,
+          output: row.output,
+        },
+      };
+    });
+
+    return {
+      projectName: projectName.trim() || formatDefaultProjectName(),
+      similarityThreshold: filterThreshold,
+      format: conversionResult.format === 'openai' ? 'openai' : 'alpaca',
+      data: data as Array<{ sourceKey: string; data: Record<string, any> }>,
+    };
+  };
+
+  const ensureSampleIdMapForKeys = async (keys: string[]): Promise<Record<string, string>> => {
+    const nextMap = { ...sampleIdMap };
+    const findMissing = () => keys.filter((key) => !nextMap[key] && !isMongoObjectId(key));
+
+    let missing = findMissing();
+    if (!missing.length) {
+      return nextMap;
+    }
+
+    if (currentDatasetVersionId) {
+      const detail = await apiService.getDatasetVersionDetail(currentDatasetVersionId);
+      detail.items.forEach((item) => {
+        nextMap[item.sampleKey] = item.sampleId;
+      });
+      setSampleIdMap((prev) => ({ ...prev, ...nextMap }));
+      missing = findMissing();
+    }
+
+    if (!missing.length) {
+      return nextMap;
+    }
+
+    const payload = buildDatasetVersionPayload();
+    if (!payload || !payload.data.length) {
+      throw new Error('Cannot resolve sample mapping to save evaluation.');
+    }
+
+    const created = await apiService.createDatasetVersion(payload);
+    setCurrentDatasetVersionId(created.datasetVersion._id);
+    setSampleIdMap(created.sampleIdMap || {});
+
+    return { ...nextMap, ...(created.sampleIdMap || {}) };
+  };
+
+  const persistEvaluationsForKeys = async (
+    keys: string[],
+    sourceMap: Record<string, RowEvaluationEntry>
+  ): Promise<number> => {
+    if (!conversionResult) {
+      return 0;
+    }
+
+    const targetKeys = Array.from(new Set(keys));
+    const items: Array<{
+      sampleId: string;
+      evaluatedBy: EvaluatedBy;
+      results: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      createdAt: string;
+    }> = [];
+
+    const resolvedMap = await ensureSampleIdMapForKeys(targetKeys);
+
+    targetKeys.forEach((key) => {
+      const entry = normalizeEvaluationEntry(sourceMap[key]);
+      const latest = getLatestEvaluation(entry);
+      if (!latest) {
+        return;
+      }
+
+      const persistedSampleId = resolvedMap[key] || key;
+
+      if (previewMode === 'openai') {
+        items.push({
+          sampleId: persistedSampleId,
+          evaluatedBy: latest.evaluatedBy,
+          results: {
+            socratic: latest.scores.socratic ?? null,
+            encouragement: latest.scores.encouragement ?? null,
+            factuality: latest.scores.factuality ?? null,
+            overall: latest.scores.overall ?? null,
+            reason: latest.reason,
+          },
+          createdAt: latest.timestamp,
+        });
+        return;
+      }
+
+      items.push({
+        sampleId: persistedSampleId,
+        evaluatedBy: latest.evaluatedBy,
+        results: {
+          accuracy: latest.scores.accuracy ?? null,
+          clarity: latest.scores.clarity ?? null,
+          completeness: latest.scores.completeness ?? null,
+          overall: latest.scores.overall ?? null,
+          reason: latest.reason,
+        },
+        createdAt: latest.timestamp,
+      });
+    });
+
+    if (!items.length) {
+      return 0;
+    }
+
+    await apiService.saveEvaluationResults({
+      projectName: projectName.trim() || formatDefaultProjectName(),
+      datasetVersionId: currentDatasetVersionId || undefined,
+      items,
+    });
+
+    return items.length;
+  };
+
   const averagedEvaluation = useMemo(() => {
     const values = Object.values(evaluationMap)
-      .map((entry) => entry.scores)
-      .filter((score) => Number.isFinite(score.overall) && (score.overall as number) >= 0);
+      .map((entry) => getAveragedScores(normalizeEvaluationEntry(entry), previewMode))
+      .filter((score): score is EvaluationScores => Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= 0));
     if (!values.length) return null;
-    const total = values.reduce(
+    const total = values.reduce<{ accuracy: number; clarity: number; completeness: number; socratic: number; encouragement: number; factuality: number; overall: number }>(
       (acc, item) => ({
         accuracy: acc.accuracy + (item.accuracy || 0),
         clarity: acc.clarity + (item.clarity || 0),
@@ -1685,7 +2085,7 @@ export function ConversionPage() {
       factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
-  }, [evaluationMap]);
+  }, [evaluationMap, previewMode]);
 
   const convertMutation = useMutation({
     mutationFn: (mode: 'initial' | 'clean') => {
@@ -1695,9 +2095,10 @@ export function ConversionPage() {
     onSuccess: (data, mode) => {
       setConversionResult(data);
       setEvaluationMap({});
-      setManualRowIds(new Set());
-      setRefinementSelectedRowIds(new Set());
       setRefinedRowIds(new Set());
+      setSystemPromptText('');
+      setCurrentDatasetVersionId(null);
+      setSampleIdMap({});
       setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
@@ -1715,19 +2116,37 @@ export function ConversionPage() {
     onError: (error: any) => toast.error(error.response?.data?.error || 'Conversion failed'),
   });
 
-  const evaluateMutation = useMutation({
-    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[]; excludeManualEvaluated: boolean }) => {
-      const rowsToEvaluate = params.rows.filter((row) => {
-        if (!params.excludeManualEvaluated) {
-          return true;
-        }
-        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-        return entry?.evaluatedBy !== 'manual';
-      });
+  const createDatasetVersionMutation = useMutation({
+    mutationFn: async () => {
+      const payload = buildDatasetVersionPayload();
+      if (!payload || !payload.data.length) {
+        throw new Error('No converted rows available to version.');
+      }
 
+      return apiService.createDatasetVersion({
+        projectName: payload.projectName,
+        similarityThreshold: payload.similarityThreshold,
+        format: payload.format,
+        data: payload.data,
+      });
+    },
+    onSuccess: (response) => {
+      setCurrentDatasetVersionId(response.datasetVersion._id);
+      setSampleIdMap(response.sampleIdMap || {});
+      setCurrentStep(5);
+      toast.success(`Created ${response.datasetVersion.versionName} for ${response.datasetVersion.projectName}.`);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error.message || 'Create dataset version failed');
+    },
+  });
+
+  const evaluateMutation = useMutation({
+    mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[] }) => {
+      const rowsToEvaluate = params.rows;
       if (!rowsToEvaluate.length) throw new Error('No rows to evaluate.');
 
-      const newMap: Record<string, RowEvaluationEntry> = {};
+      const updates: Record<string, EvaluationRecord> = {};
       if (previewMode === 'openai') {
         const normalizedConvs = normalizeOpenAIConversations(conversionResult?.data || []);
         const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
@@ -1739,45 +2158,66 @@ export function ConversionPage() {
           messages: convMessagesMap.get(convId) || [],
         }));
 
-        const evaluation = await apiService.evaluateDataChunked(conversationPayload, previewMode, undefined, params.provider);
+        const evaluation = await apiService.evaluateDataChunked(conversationPayload, previewMode, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const convId = convOrderedIds[idx];
           if (!convId || !Number.isFinite(sample.scores.overall)) return;
-          const score: EvaluationScores = {
-            socratic: sample.scores.socratic,
-            encouragement: sample.scores.encouragement,
-            factuality: sample.scores.factuality,
-            overall: sample.scores.overall,
+          updates[convId] = {
+            evaluatedBy: params.provider,
+            scores: {
+              socratic: sample.scores.socratic,
+              encouragement: sample.scores.encouragement,
+              factuality: sample.scores.factuality,
+              overall: sample.scores.overall,
+            },
             reason: sample.reason,
+            timestamp: new Date().toISOString(),
           };
-          rowsToEvaluate.filter((row) => row.blockId === convId).forEach((row) => {
-            newMap[row.id] = { scores: score, evaluatedBy: params.provider };
-          });
         });
       } else {
         const payload = rowsToEvaluate.map((row) => ({ instruction: row.instruction, input: row.input, output: row.output }));
-        const evaluation = await apiService.evaluateDataChunked(payload, previewMode, undefined, params.provider);
+        const evaluation = await apiService.evaluateDataChunked(payload, previewMode, params.provider);
         evaluation.samples.forEach((sample, idx) => {
           const row = rowsToEvaluate[idx];
           if (!row || !Number.isFinite(sample.scores.overall)) return;
-          newMap[row.id] = {
+          updates[resolveEvaluationKey(row)] = {
+            evaluatedBy: params.provider,
             scores: {
               accuracy: sample.scores.accuracy,
               clarity: sample.scores.clarity,
               completeness: sample.scores.completeness,
               overall: sample.scores.overall,
-              reason: sample.reason,
             },
-            evaluatedBy: params.provider,
+            reason: sample.reason,
+            timestamp: new Date().toISOString(),
           };
         });
       }
-      setEvaluationMap((prev) => ({ ...prev, ...newMap }));
-      return { count: Object.keys(newMap).length, provider: params.provider };
+
+      return { updates, provider: params.provider };
     },
-    onSuccess: ({ count, provider }) => {
+    onSuccess: async ({ updates, provider }) => {
+      const updateKeys = Object.keys(updates);
+      if (!updateKeys.length) {
+        toast.error('No rows were evaluated.');
+        return;
+      }
+
+      const mergedMap = mergeEvaluationUpdates(evaluationMap, updates);
+      setEvaluationMap(mergedMap);
+      let isAutoSaved = true;
+
+      try {
+        await persistEvaluationsForKeys(updateKeys, mergedMap);
+      } catch (error: any) {
+        isAutoSaved = false;
+        toast.error(error?.response?.data?.error || error.message || 'Auto-save failed after evaluation.');
+      }
+
       const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
-      toast.success(`Evaluation completed. ${count} rows scored by ${label}.`);
+      if (isAutoSaved) {
+        toast.success(`Evaluation completed. ${updateKeys.length} rows scored by ${label} and saved to database.`);
+      }
     },
     onError: (error: any) => {
       const backendError = error?.response?.data;
@@ -1791,8 +2231,10 @@ export function ConversionPage() {
   const refineMutation = useMutation({
     mutationFn: async (params: { provider: AiProvider; rows: DisplayRow[]; scoreThreshold: number }) => {
       const candidateRows = params.rows.filter((row) => {
-        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-        const overall = entry?.scores?.overall;
+        const key = resolveEvaluationKey(row);
+        const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+        const averagedScores = getAveragedScores(entry, previewMode);
+        const overall = averagedScores?.overall;
         return Number.isFinite(overall) && (overall as number) >= 0 && (overall as number) <= params.scoreThreshold;
       });
 
@@ -1801,8 +2243,10 @@ export function ConversionPage() {
       }
 
       const hasMissingReason = candidateRows.some((row) => {
-        const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-        return !String(entry?.scores?.reason || '').trim();
+        const key = resolveEvaluationKey(row);
+        const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+        const latest = getLatestEvaluation(entry);
+        return !String(latest?.reason || '').trim();
       });
 
       if (hasMissingReason) {
@@ -1811,7 +2255,7 @@ export function ConversionPage() {
 
       const payload = candidateRows.map((row) => ({
         assistant: row.assistantText,
-        reason: (evaluationMap[row.id] || evaluationMap[row.blockId])?.scores.reason || '',
+        reason: getLatestEvaluation(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)] || evaluationMap[row.id]))?.reason || '',
       }));
       const refined = await apiService.refineDataChunked(payload, params.provider);
 
@@ -1862,10 +2306,6 @@ export function ConversionPage() {
       candidateRows.forEach((row) => refinedIds.add(row.id));
       setRefinedRowIds(refinedIds);
 
-      const selectable = new Set(refinementSelectedRowIds);
-      candidateRows.forEach((row) => selectable.add(row.id));
-      setRefinementSelectedRowIds(selectable);
-
       return { count: candidateRows.length, provider: params.provider };
     },
     onSuccess: ({ count, provider }) => {
@@ -1873,75 +2313,6 @@ export function ConversionPage() {
       toast.success(`Refined ${count} rows using ${label}.`);
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
-  });
-
-  const acceptMutation = useMutation({
-    mutationFn: async () => {
-      const effectiveFileId = uploadedFile?.fileId || loadedProjectFileId;
-      if (!effectiveFileId || !conversionResult) throw new Error('No data available to save.');
-      const createdAt = new Date().toISOString();
-      const convMessagesMap = new Map<string, Array<{ role: string; content: string }>>();
-      if (previewMode === 'openai') {
-        normalizeOpenAIConversations(conversionResult.data || []).forEach((conv) => {
-          convMessagesMap.set(String(conv.conversation_id), conv.messages || []);
-        });
-      }
-
-      const records = allRows
-        .map((row) => {
-          const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-          const defaultScores: EvaluationScores = previewMode === 'openai'
-            ? {
-              socratic: null,
-              encouragement: null,
-              factuality: null,
-              overall: null,
-              reason: '',
-            }
-            : {
-              accuracy: null,
-              clarity: null,
-              completeness: null,
-              overall: null,
-              reason: '',
-            };
-          const resolvedScores = entry?.scores || defaultScores;
-
-          return {
-            format: previewMode,
-            data: previewMode === 'openai'
-              ? { messages: convMessagesMap.get(row.blockId) || [] }
-              : { instruction: row.instruction, input: row.input, output: row.output },
-            evaluatedBy: entry?.evaluatedBy || 'none',
-            results: previewMode === 'openai'
-              ? {
-                socratic: resolvedScores.socratic ?? null,
-                encouragement: resolvedScores.encouragement ?? null,
-                factuality: resolvedScores.factuality ?? null,
-                overall: resolvedScores.overall ?? null,
-                reason: resolvedScores.reason,
-              }
-              : {
-                accuracy: resolvedScores.accuracy ?? null,
-                clarity: resolvedScores.clarity ?? null,
-                completeness: resolvedScores.completeness ?? null,
-                overall: resolvedScores.overall ?? null,
-                reason: resolvedScores.reason,
-              },
-            createdAt,
-          };
-        }) as Array<any>;
-
-      if (!records.length) throw new Error('No evaluated rows to save.');
-      await apiService.saveEvaluationResults({
-        fileId: effectiveFileId,
-        projectName: projectName.trim() || formatDefaultProjectName(),
-        items: records,
-      });
-      return records.length;
-    },
-    onSuccess: (savedCount) => toast.success(`Accepted and saved ${savedCount} records to MongoDB.`),
-    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Accept failed'),
   });
 
   const clusterMutation = useMutation({
@@ -1984,6 +2355,8 @@ export function ConversionPage() {
     onSuccess: (result) => {
       setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
       setClusterGroups(result.groups);
+      setCurrentDatasetVersionId(null);
+      setSampleIdMap({});
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
         normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
@@ -2005,6 +2378,8 @@ export function ConversionPage() {
     if (!clusteredResult) return;
     setConversionResult((prev) => (prev ? { ...prev, data: clusteredResult.data } : null));
     setClusterGroups(clusteredResult.groups);
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
     setSelectedClusterIds([]);
     toast.success('Reset to pre-filter clustered state.');
   };
@@ -2014,10 +2389,10 @@ export function ConversionPage() {
     setConversionResult(originalConvertedResult);
     setClusterGroups([]);
     setRowClusterMap({});
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
     setEvaluationMap({});
-    setManualRowIds(new Set());
     setRefinedRowIds(new Set());
-    setRefinementSelectedRowIds(new Set());
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     toast.success('Dataset reset to original converted state.');
@@ -2047,37 +2422,72 @@ export function ConversionPage() {
     }
   };
 
+  const resolvePersistedSampleIdForRow = async (row: DisplayRow): Promise<string | null> => {
+    const key = resolveEvaluationKey(row);
+    const directCandidates = [
+      sampleIdMap[key],
+      sampleIdMap[row.blockId],
+      sampleIdMap[row.id],
+      key,
+      row.blockId,
+      row.id,
+    ].filter((value): value is string => Boolean(value));
+
+    const directMatch = directCandidates.find((value) => isMongoObjectId(value));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    if (!currentDatasetVersionId) {
+      return null;
+    }
+
+    try {
+      const detail = await apiService.getDatasetVersionDetail(currentDatasetVersionId);
+      const nextMap = detail.items.reduce<Record<string, string>>((acc, item) => {
+        acc[item.sampleKey] = item.sampleId;
+        return acc;
+      }, {});
+
+      setSampleIdMap((prev) => ({ ...prev, ...nextMap }));
+
+      const hydratedCandidates = [
+        nextMap[key],
+        nextMap[row.blockId],
+        nextMap[row.id],
+      ].filter((value): value is string => Boolean(value));
+
+      return hydratedCandidates.find((value) => isMongoObjectId(value)) || null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleDownloadTrainTestZip = async () => {
-    if (!conversionResult?.data?.length || !clusterGroups.length) {
-      toast.error('Please run Clustering first.');
+    if (!conversionResult?.data?.length) {
+      toast.error('No data available to split train/test.');
       return;
     }
 
-    const groupAssignments =
-      previewMode === 'openai'
-        ? normalizeOpenAIConversations(conversionResult.data || []).map((conv) => {
-            const row = rowsWithClusterGroups.find((item) => item.blockId === String(conv.conversation_id));
-            return row?.groupId ?? 1;
-          })
-        : allRows.map((row) => rowClusterMap[row.id] ?? row.groupId ?? 1);
-
-    const byGroup = new Map<number, number[]>();
-    groupAssignments.forEach((groupId, idx) => {
-      if (!byGroup.has(groupId)) byGroup.set(groupId, []);
-      byGroup.get(groupId)!.push(idx);
-    });
+    const totalCount = conversionResult.data.length;
+    const allIndices = Array.from({ length: totalCount }, (_, idx) => idx);
+    const shuffled = shuffle(allIndices);
+    const safePercentage = Math.min(100, Math.max(0, downloadTestPercentage));
+    let testCount = Math.round(totalCount * (safePercentage / 100));
+    if (safePercentage > 0 && testCount === 0) {
+      testCount = 1;
+    }
+    if (safePercentage < 100 && testCount === totalCount && totalCount > 0) {
+      testCount = totalCount - 1;
+    }
 
     const testIndexSet = new Set<number>();
-    byGroup.forEach((indices) => {
-      const shuffled = shuffle(indices);
-      const testCount = Math.max(1, Math.round(indices.length * 0.1));
-      shuffled.slice(0, testCount).forEach((i) => testIndexSet.add(i));
-    });
+    shuffled.slice(0, testCount).forEach((idx) => testIndexSet.add(idx));
 
     const trainData: any[] = [];
     const testData: any[] = [];
     conversionResult.data.forEach((record, idx) => {
-      const payload = sanitizeRecordForDownload(record, previewMode);
+      const payload = sanitizeRecordForDownload(record, previewMode, systemPromptText);
       if (testIndexSet.has(idx)) {
         testData.push(payload);
       } else {
@@ -2090,7 +2500,7 @@ export function ConversionPage() {
     zip.file('test_dataset.json', JSON.stringify(testData, null, 2));
     const blob = await zip.generateAsync({ type: 'blob' });
     saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
-    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records.`);
+    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records (test ${safePercentage.toFixed(0)}%).`);
   };
 
   const handleDownloadByScore = () => {
@@ -2100,8 +2510,9 @@ export function ConversionPage() {
     }
 
     const qualifiedRows = rowsWithClusterGroups.filter((row) => {
-      const entry = evaluationMap[row.id] || evaluationMap[row.blockId];
-      const overall = entry?.scores?.overall;
+      const key = resolveEvaluationKey(row);
+      const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+      const overall = getAveragedScores(entry, previewMode)?.overall;
       return Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold;
     });
 
@@ -2116,14 +2527,14 @@ export function ConversionPage() {
       const normalized = normalizeOpenAIConversations(conversionResult.data || []);
       normalized.forEach((conv, idx) => {
         if (selectedConversationIds.has(String(conv.conversation_id)) && conversionResult.data[idx]) {
-          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode));
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode, systemPromptText));
         }
       });
     } else {
       const selectedRowIds = new Set(qualifiedRows.map((row) => row.id));
       allRows.forEach((row, idx) => {
         if (selectedRowIds.has(row.id) && conversionResult.data[idx]) {
-          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode));
+          filteredData.push(sanitizeRecordForDownload(conversionResult.data[idx], previewMode, systemPromptText));
         }
       });
     }
@@ -2141,71 +2552,86 @@ export function ConversionPage() {
     toast.success(`Downloaded ${filteredData.length} samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`);
   };
 
-  const handleToggleManualRow = (row: DisplayRow, checked: boolean) => {
-    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
-    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
-    if (checked) {
-      setManualRowIds((prev) => new Set(prev).add(row.id));
-      setEvaluationMap((prev) => {
-        const existing = prev[row.id]?.scores;
-        if (existing) {
-          return { ...prev, [row.id]: { ...prev[row.id], evaluatedBy: 'manual' } };
-        }
-        const m1 = clampScore(0);
-        const m2 = clampScore(0);
-        const m3 = clampScore(0);
-        return {
-          ...prev,
-          [row.id]: {
-            scores: {
-              [metric1]: m1,
-              [metric2]: m2,
-              [metric3]: m3,
-              overall: calculateOverallFromThree(m1, m2, m3),
-              reason: '',
-            },
-            evaluatedBy: 'manual',
-          },
-        };
-      });
-    } else {
-      setManualRowIds((prev) => {
-        const next = new Set(prev);
-        next.delete(row.id);
-        return next;
-      });
-    }
-  };
+  const handleOpenManualEvaluate = (row: DisplayRow) => {
+    const key = resolveEvaluationKey(row);
+    const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+    const latest = getLatestEvaluation(entry);
+    const score = latest?.scores;
+    const labelA = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const labelB = previewMode === 'openai' ? 'encouragement' : 'clarity';
+    const labelC = previewMode === 'openai' ? 'factuality' : 'completeness';
 
-  const handleManualFieldChange = (row: DisplayRow, field: string, value: string) => {
-    if (!manualRowIds.has(row.id)) return;
-    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
-    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
-    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
-
-    setEvaluationMap((prev) => {
-      const existing = prev[row.id]?.scores || { overall: 0, reason: '' };
-      const nextScores: EvaluationScores = { ...existing };
-      if (field === 'reason') {
-        nextScores.reason = value;
-      } else {
-        (nextScores as any)[field] = parseOptionalScore(value);
-      }
-      const v1 = clampScore((nextScores as any)[metric1] ?? 0);
-      const v2 = clampScore((nextScores as any)[metric2] ?? 0);
-      const v3 = clampScore((nextScores as any)[metric3] ?? 0);
-      nextScores.overall = calculateOverallFromThree(v1, v2, v3);
-      return { ...prev, [row.id]: { scores: nextScores, evaluatedBy: 'manual' } };
+    setManualTargetRow(row);
+    setManualDraft({
+      metricA: String((score as any)?.[labelA] ?? ''),
+      metricB: String((score as any)?.[labelB] ?? ''),
+      metricC: String((score as any)?.[labelC] ?? ''),
+      reason: latest?.reason || '',
     });
+    setIsManualEvalModalOpen(true);
   };
 
-  const handleResetEvaluation = () => {
-    setEvaluationMap({});
-    setManualRowIds(new Set());
-    setRefinementSelectedRowIds(new Set());
-    setRefinedRowIds(new Set());
-    toast.success('Evaluation results have been reset.');
+  const handleOpenScoreHistory = (row: DisplayRow) => {
+    const key = resolveEvaluationKey(row);
+    const entry = normalizeEvaluationEntry(evaluationMap[key] || evaluationMap[row.id]);
+    setScoreHistoryItems(
+      (entry.evaluations || []).map((item) => ({
+        evaluatedBy: item.evaluatedBy,
+        scores: item.scores,
+        reason: item.reason,
+        timestamp: item.timestamp,
+      }))
+    );
+    setScoreHistoryModalTitle(`Lich su diem - ${row.blockLabel}`);
+    setScoreHistoryModalOpen(true);
+  };
+
+  const handleManualDraftChange = (field: 'metricA' | 'metricB' | 'metricC' | 'reason', value: string) => {
+    if (field !== 'reason' && value !== '' && !/^\d*\.?\d*$/.test(value)) {
+      return;
+    }
+    setManualDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleConfirmManualEvaluate = async () => {
+    if (!manualTargetRow) {
+      return;
+    }
+
+    const metric1 = previewMode === 'openai' ? 'socratic' : 'accuracy';
+    const metric2 = previewMode === 'openai' ? 'encouragement' : 'clarity';
+    const metric3 = previewMode === 'openai' ? 'factuality' : 'completeness';
+    const m1 = clampScore(parseOptionalScore(manualDraft.metricA) ?? 0);
+    const m2 = clampScore(parseOptionalScore(manualDraft.metricB) ?? 0);
+    const m3 = clampScore(parseOptionalScore(manualDraft.metricC) ?? 0);
+    const key = resolveEvaluationKey(manualTargetRow);
+
+    const update: EvaluationRecord = {
+      evaluatedBy: 'manual',
+      scores: {
+        [metric1]: m1,
+        [metric2]: m2,
+        [metric3]: m3,
+        overall: calculateOverallFromThree(m1, m2, m3),
+      },
+      reason: manualDraft.reason.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    const mergedMap = mergeEvaluationUpdates(evaluationMap, { [key]: update });
+    setEvaluationMap(mergedMap);
+    setIsManualSaving(true);
+
+    try {
+      await persistEvaluationsForKeys([key], mergedMap);
+      toast.success('Manual evaluation saved.');
+      setIsManualEvalModalOpen(false);
+      setManualTargetRow(null);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error.message || 'Failed to auto-save manual evaluation.');
+    } finally {
+      setIsManualSaving(false);
+    }
   };
 
   const toggleClusterSelection = (groupId: number) => {
@@ -2221,7 +2647,9 @@ export function ConversionPage() {
     const normalizedFormat: PreviewMode = payload.format === 'alpaca' ? 'alpaca' : 'openai';
     const safeData = Array.isArray(payload.data) ? payload.data : [];
     const safeEvaluationMap = payload.evaluationMap && typeof payload.evaluationMap === 'object'
-      ? payload.evaluationMap
+      ? Object.fromEntries(
+        Object.entries(payload.evaluationMap).map(([key, value]) => [key, normalizeEvaluationEntry(value)])
+      )
       : {};
 
     const restoredResult: ConversionResult = {
@@ -2242,19 +2670,15 @@ export function ConversionPage() {
     setOriginalConvertedResult(restoredResult);
     setVisualizationResult(null);
     setEvaluationMap(safeEvaluationMap);
-    setManualRowIds(new Set(
-      Object.entries(safeEvaluationMap)
-        .filter(([, value]) => value?.evaluatedBy === 'manual')
-        .map(([key]) => key)
-    ));
     setRefinedRowIds(new Set());
-    setRefinementSelectedRowIds(new Set());
+    setSystemPromptText('');
+    setCurrentDatasetVersionId(payload.datasetVersionId || null);
+    setSampleIdMap(payload.sampleIdMap || {});
     setClusterGroups([]);
     setRowClusterMap({});
     setSelectedClusterIds([]);
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
-    setLoadedProjectFileId(payload.fileId || null);
     updateConversionOptions({ format: normalizedFormat });
     setProjectName(payload.projectName || formatDefaultProjectName());
     setCurrentStep(5);
@@ -2279,15 +2703,15 @@ export function ConversionPage() {
     setOriginalConvertedResult(null);
     setVisualizationResult(null);
     setEvaluationMap({});
-    setManualRowIds(new Set());
     setRefinedRowIds(new Set());
-    setRefinementSelectedRowIds(new Set());
+    setSystemPromptText('');
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
     setClusterGroups([]);
     setRowClusterMap({});
     setSelectedClusterIds([]);
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
-    setLoadedProjectFileId(null);
     loadHandledRef.current = false;
     if (uploadedFile?.fileId) setProjectName(formatDefaultProjectName());
     else setProjectName('');
@@ -2298,6 +2722,41 @@ export function ConversionPage() {
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = !!conversionResult;
   const canMoveFromStep6 = !!conversionResult;
+  const canMoveFromStep7 = !!conversionResult;
+
+  const systemPromptPreviewJson = useMemo(() => {
+    if (!conversionResult?.data?.length) {
+      return null;
+    }
+
+    if (previewMode === 'openai') {
+      return sanitizeRecordForDownload(conversionResult.data[0], previewMode, systemPromptText);
+    }
+
+    const first = conversionResult.data[0] || {};
+    const userParts = [String(first?.instruction ?? first?.query ?? ''), String(first?.input ?? first?.context ?? '')]
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const assistant = String(first?.output ?? first?.answer ?? first?.response ?? '').trim();
+    const baseMessages = [
+      { role: 'user', content: userParts.join('\n\n') || '-' },
+      { role: 'assistant', content: assistant || '-' },
+    ];
+
+    const trimmedSystemPrompt = String(systemPromptText || '').trim();
+    return {
+      messages: trimmedSystemPrompt
+        ? [{ role: 'system', content: trimmedSystemPrompt }, ...baseMessages]
+        : baseMessages,
+    };
+  }, [conversionResult?.data, previewMode, systemPromptText]);
+
+  const handleProceedFromClusterStep = () => {
+    if (!canMoveFromStep4 || createDatasetVersionMutation.isPending) {
+      return;
+    }
+    createDatasetVersionMutation.mutate();
+  };
 
   const refinedHighlightMap = useMemo(() => {
     const map: Record<string, 'refined'> = {};
@@ -2306,11 +2765,6 @@ export function ConversionPage() {
     });
     return map;
   }, [refinedRowIds]);
-
-  const visibleRefinedRowsInStep6 = useMemo(
-    () => visibleRowsInRefinement.filter((row) => refinedRowIds.has(row.id) || refinedRowIds.has(row.blockId)),
-    [refinedRowIds, visibleRowsInRefinement]
-  );
 
   const remapKeyAfterAlpacaDelete = (key: string, deletedIndex: number): string | null => {
     const match = /^alpaca-(\d+)$/.exec(key);
@@ -2365,18 +2819,34 @@ export function ConversionPage() {
       .map(([groupId, count]) => ({ groupId, count, label: `Group ${groupId}` }));
   };
 
-  const handleConfirmDeleteSample = () => {
+  const handleConfirmDeleteSample = async () => {
     if (!conversionResult || !itemToDelete) {
       setItemToDelete(null);
       return;
     }
 
+    const persistedSampleId = await resolvePersistedSampleIdForRow(itemToDelete);
+    if (!persistedSampleId) {
+      toast.error('Khong tim thay sampleId trong database, khong the xoa.');
+      return;
+    }
+
+    try {
+      await apiService.deleteDatasetVersionItem(persistedSampleId);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error.message || 'Xoa mau du lieu that bai.');
+      return;
+    }
+
     let nextData = conversionResult.data || [];
     let nextEvaluationMap = { ...evaluationMap };
-    let nextManualRowIds = new Set(manualRowIds);
     let nextRefinedRowIds = new Set(refinedRowIds);
-    let nextRefinementSelectedRowIds = new Set(refinementSelectedRowIds);
     let nextRowClusterMap = { ...rowClusterMap };
+    const nextSampleIdMap = { ...sampleIdMap };
+
+    delete nextSampleIdMap[resolveEvaluationKey(itemToDelete)];
+    delete nextSampleIdMap[itemToDelete.blockId];
+    delete nextSampleIdMap[itemToDelete.id];
 
     if (previewMode === 'openai') {
       const targetId = itemToDelete.blockId;
@@ -2392,12 +2862,8 @@ export function ConversionPage() {
 
       delete nextEvaluationMap[itemToDelete.id];
       delete nextEvaluationMap[itemToDelete.blockId];
-      nextManualRowIds.delete(itemToDelete.id);
-      nextManualRowIds.delete(itemToDelete.blockId);
       nextRefinedRowIds.delete(itemToDelete.id);
       nextRefinedRowIds.delete(itemToDelete.blockId);
-      nextRefinementSelectedRowIds.delete(itemToDelete.id);
-      nextRefinementSelectedRowIds.delete(itemToDelete.blockId);
       delete nextRowClusterMap[itemToDelete.id];
       delete nextRowClusterMap[itemToDelete.blockId];
     } else {
@@ -2406,9 +2872,7 @@ export function ConversionPage() {
       if (deleteIndex >= 0) {
         nextData = (conversionResult.data || []).filter((_, idx) => idx !== deleteIndex);
         nextEvaluationMap = remapRecordKeysAfterAlpacaDelete(nextEvaluationMap, deleteIndex);
-        nextManualRowIds = remapSetKeysAfterAlpacaDelete(nextManualRowIds, deleteIndex);
         nextRefinedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinedRowIds, deleteIndex);
-        nextRefinementSelectedRowIds = remapSetKeysAfterAlpacaDelete(nextRefinementSelectedRowIds, deleteIndex);
         nextRowClusterMap = remapRecordKeysAfterAlpacaDelete(nextRowClusterMap, deleteIndex);
       }
     }
@@ -2430,16 +2894,15 @@ export function ConversionPage() {
       stats: nextStats,
     });
     setEvaluationMap(nextEvaluationMap);
-    setManualRowIds(nextManualRowIds);
+    setSampleIdMap(nextSampleIdMap);
     setRefinedRowIds(nextRefinedRowIds);
-    setRefinementSelectedRowIds(nextRefinementSelectedRowIds);
     setRowClusterMap(nextRowClusterMap);
     setClusterGroups(nextGroups);
     setSelectedClusterIds((prev) => prev.filter((id) => nextGroups.some((group) => group.groupId === id)));
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setItemToDelete(null);
-    toast.success('Sample deleted successfully.');
+    toast.success('Sample deleted successfully (database + UI).');
   };
 
   return (
@@ -2707,7 +3170,13 @@ export function ConversionPage() {
               )}
             </div>
           </div>
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(3)} onNext={() => setCurrentStep(5)} nextDisabled={!canMoveFromStep4} />
+          <StepNavigation
+            showBack
+            showNext
+            onBack={() => setCurrentStep(3)}
+            onNext={handleProceedFromClusterStep}
+            nextDisabled={!canMoveFromStep4 || createDatasetVersionMutation.isPending}
+          />
         </div>
       )}
 
@@ -2718,16 +3187,12 @@ export function ConversionPage() {
             mode={previewMode}
             showEvaluationColumns
             evaluationMap={evaluationMap}
-            selectedManualRows={manualRowIds}
             onEvaluate={() => setIsEvaluateModalOpen(true)}
-            onAccept={() => acceptMutation.mutate()}
-            onReset={handleResetEvaluation}
-            onToggleRow={handleToggleManualRow}
-            onManualFieldChange={handleManualFieldChange}
             isEvaluating={evaluateMutation.isPending}
             disableEvaluate={!conversionResult || visibleRowsInEvaluation.length === 0}
-            isAccepting={acceptMutation.isPending}
             onVisibleRowsChange={setVisibleRowsInEvaluation}
+            onRequestViewHistory={handleOpenScoreHistory}
+            onRequestManualEvaluate={handleOpenManualEvaluate}
             onRequestDeleteRow={(row) => setItemToDelete(row)}
           />
 
@@ -2752,13 +3217,9 @@ export function ConversionPage() {
             rows={evaluationRows}
             mode={previewMode}
             showEvaluationColumns
-            showRowSelection={false}
             evaluationMap={evaluationMap}
-            editableSelectedRows={false}
             rowHighlightMap={refinedHighlightMap}
             onEvaluate={() => setIsEvaluateModalOpen(true)}
-            onAccept={() => acceptMutation.mutate()}
-            onReset={handleResetEvaluation}
             extraActions={
               <button
                 onClick={() => setIsRefineModalOpen(true)}
@@ -2770,14 +3231,15 @@ export function ConversionPage() {
               </button>
             }
             isEvaluating={evaluateMutation.isPending}
-            disableEvaluate={!conversionResult || visibleRefinedRowsInStep6.length === 0}
-            isAccepting={acceptMutation.isPending}
+            disableEvaluate={!conversionResult || visibleRowsInRefinement.length === 0}
             onVisibleRowsChange={setVisibleRowsInRefinement}
+            onRequestViewHistory={handleOpenScoreHistory}
+            onRequestManualEvaluate={handleOpenManualEvaluate}
             onRequestDeleteRow={(row) => setItemToDelete(row)}
           />
 
           <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
-            Rows refined successfully are highlighted with a light-blue background. Their previous scores are preserved until you re-evaluate selected rows.
+            Rows refined successfully are highlighted with a light-blue background. Their previous scores are preserved until you re-evaluate visible rows on the current page.
           </div>
 
           <StepNavigation showBack showNext onBack={() => setCurrentStep(5)} onNext={() => setCurrentStep(7)} nextDisabled={!canMoveFromStep6} />
@@ -2786,56 +3248,90 @@ export function ConversionPage() {
 
       {currentStep === 7 && (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={evaluationRows} mode={previewMode} showEvaluationColumns showEvaluationActions={false} evaluationMap={evaluationMap} />
-            </div>
-            <div className="space-y-4 lg:col-span-1">
+          <SystemPromptPage
+            systemPromptText={systemPromptText}
+            onSystemPromptTextChange={setSystemPromptText}
+            previewJson={systemPromptPreviewJson}
+          />
+
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={() => setCurrentStep(8)} nextDisabled={!canMoveFromStep7} />
+        </div>
+      )}
+
+      {currentStep === 8 && (
+        <div className="space-y-5">
+          <ConvertedDatasetTable
+            rows={evaluationRows}
+            mode={previewMode}
+            showEvaluationColumns
+            showEvaluationActions={false}
+            evaluationMap={evaluationMap}
+            isFinishPreview
+            systemPromptText={systemPromptText}
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-900">Download Train/Test Split</p>
+                <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
+                  Test {downloadTestPercentage.toFixed(0)}% / Train {(100 - downloadTestPercentage).toFixed(0)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={downloadTestPercentage}
+                onChange={(e) => setDownloadTestPercentage(parseFloat(e.target.value))}
+                className="w-full"
+              />
               <button
                 onClick={handleDownloadTrainTestZip}
-                disabled={!conversionResult || clusterGroups.length === 0}
-                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-4 px-6 rounded-xl shadow-md"
+                disabled={!conversionResult || !conversionResult.data?.length}
+                className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-3 px-4 rounded-lg"
               >
-                <Download className="w-5 h-5" />
+                <Download className="w-4 h-4" />
                 <span>Download train/test zip</span>
               </button>
+            </div>
 
-              <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-gray-900">Download Filter by Overall Score</p>
-                  <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
-                    {downloadScoreThreshold.toFixed(1)}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="10"
-                  step="0.1"
-                  value={downloadScoreThreshold}
-                  onChange={(e) => setDownloadScoreThreshold(parseFloat(e.target.value))}
-                  className="w-full"
-                />
-                <button
-                  onClick={handleDownloadByScore}
-                  disabled={!conversionResult}
-                  className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download overall &gt;= filter</span>
-                </button>
+            <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-900">Download Filter by Overall Score</p>
+                <span className="text-sm font-mono bg-gray-50 px-2 py-0.5 rounded border border-gray-200 text-gray-700">
+                  {downloadScoreThreshold.toFixed(1)}
+                </span>
               </div>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900 flex gap-2">
-                <Sparkles className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <p>Upload final dataset to Hugging Face after validating the split files.</p>
-              </div>
-
-              {uploadedFile && conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="0.1"
+                value={downloadScoreThreshold}
+                onChange={(e) => setDownloadScoreThreshold(parseFloat(e.target.value))}
+                className="w-full"
+              />
+              <button
+                onClick={handleDownloadByScore}
+                disabled={!conversionResult}
+                className="w-full flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download overall &gt;= filter</span>
+              </button>
             </div>
           </div>
 
-          <StepNavigation showBack onBack={() => setCurrentStep(6)} />
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900 flex gap-2">
+            <Sparkles className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <p>Upload final dataset to Hugging Face after validating the split files.</p>
+          </div>
+
+          {conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
+
+          <StepNavigation showBack onBack={() => setCurrentStep(7)} />
         </div>
       )}
 
@@ -2845,19 +3341,37 @@ export function ConversionPage() {
         onProviderChange={setEvaluateProvider}
         onClose={() => setIsEvaluateModalOpen(false)}
         onConfirm={() => {
-          const sourceRows = currentStep === 6 ? visibleRefinedRowsInStep6 : visibleRowsInEvaluation;
+          const sourceRows = currentStep === 6 ? visibleRowsInRefinement : visibleRowsInEvaluation;
           if (sourceRows.length === 0) {
-            toast.error('No highlighted refined rows on this page to evaluate.');
+            toast.error('No visible rows on this page to evaluate.');
             return;
           }
           evaluateMutation.mutate({
             provider: evaluateProvider,
             rows: sourceRows,
-            excludeManualEvaluated: true,
           });
           setIsEvaluateModalOpen(false);
         }}
         isSubmitting={evaluateMutation.isPending}
+      />
+
+      <ManualEvaluateModal
+        isOpen={isManualEvalModalOpen}
+        mode={previewMode}
+        metricA={manualDraft.metricA}
+        metricB={manualDraft.metricB}
+        metricC={manualDraft.metricC}
+        reason={manualDraft.reason}
+        onChange={handleManualDraftChange}
+        onClose={() => {
+          if (isManualSaving) {
+            return;
+          }
+          setIsManualEvalModalOpen(false);
+          setManualTargetRow(null);
+        }}
+        onConfirm={handleConfirmManualEvaluate}
+        isSubmitting={isManualSaving}
       />
 
       <RefineModal
@@ -2882,6 +3396,13 @@ export function ConversionPage() {
         isOpen={Boolean(itemToDelete)}
         onClose={() => setItemToDelete(null)}
         onConfirm={handleConfirmDeleteSample}
+      />
+
+      <ScoreHistoryModal
+        isOpen={scoreHistoryModalOpen}
+        title={scoreHistoryModalTitle}
+        evaluations={scoreHistoryItems}
+        onClose={() => setScoreHistoryModalOpen(false)}
       />
     </div>
   );

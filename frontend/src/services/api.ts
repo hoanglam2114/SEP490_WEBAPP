@@ -173,13 +173,11 @@ export const apiService = {
   evaluateData: async (
     data: any[],
     format?: string,
-    sampleSize?: number,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
       format,
-      sampleSize,
       provider,
     });
     return response.data;
@@ -188,7 +186,6 @@ export const apiService = {
   evaluateDataChunked: async (
     data: any[],
     format?: string,
-    sampleSize?: number,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
     chunkSize = 100
   ): Promise<EvaluationResult> => {
@@ -204,12 +201,12 @@ export const apiService = {
     }
 
     if (data.length <= chunkSize) {
-      return apiService.evaluateData(data, format, sampleSize, provider);
+      return apiService.evaluateData(data, format, provider);
     }
 
     const chunks = chunkArray(data, chunkSize);
     const results = await Promise.all(
-      chunks.map((chunk) => apiService.evaluateData(chunk, format, undefined, provider))
+      chunks.map((chunk) => apiService.evaluateData(chunk, format, provider))
     );
 
     const samples = results.flatMap((item) => item.samples || []);
@@ -280,11 +277,11 @@ export const apiService = {
   },
 
   saveEvaluationResults: async (payload: {
-    fileId: string;
-    projectName: string;
+    fileId?: string;
+    projectName?: string;
+    datasetVersionId?: string;
     items: Array<{
-      format: string;
-      data: Record<string, any>;
+      sampleId: string;
       evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
       results: {
         accuracy?: number | null;
@@ -303,26 +300,55 @@ export const apiService = {
     return response.data;
   },
 
-  getEvaluationHistory: async (params: {
-    page: number;
-    limit: number;
-    format?: 'openai' | 'alpaca';
-    minOverall?: number;
+  createDatasetVersion: async (payload: {
+    projectName: string;
+    similarityThreshold: number;
+    format: 'openai' | 'alpaca';
+    data: Array<Record<string, any>>;
   }): Promise<{
-    projects: Array<{
+    message: string;
+    datasetVersion: {
+      _id: string;
       projectName: string;
-      totalItems: number;
-      latestCreatedAt: string;
-      formats: Array<'openai' | 'alpaca'>;
-      avgOverall: number;
-      items: Array<{
-        _id: string;
-        fileId: string;
-        projectName: string;
-        format: 'openai' | 'alpaca';
-        data: Record<string, any>;
+      versionName: string;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    sampleIdMap: Record<string, string>;
+  }> => {
+    const response = await api.post('/dataset-versions/create', payload);
+    return response.data;
+  },
+
+  getDatasetVersionDetail: async (id: string): Promise<{
+    datasetVersion: {
+      _id: string;
+      projectName: string;
+      versionName: string;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    items: Array<{
+      _id: string;
+      sampleId: string;
+      sampleKey: string;
+      data: Record<string, any>;
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+      results: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      evaluations?: Array<{
         evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
-        results: {
+        scores: {
           accuracy?: number | null;
           clarity?: number | null;
           completeness?: number | null;
@@ -332,8 +358,40 @@ export const apiService = {
           overall: number | null;
           reason: string;
         };
+        reason?: string;
+        timestamp?: string;
+      }>;
+      createdAt: string;
+      updatedAt?: string;
+    }>;
+  }> => {
+    const response = await api.get(`/dataset-versions/${id}`);
+    return response.data;
+  },
+
+  deleteDatasetVersionItem: async (sampleId: string): Promise<{ message: string; deletedSampleId: string }> => {
+    const response = await api.delete(`/dataset-versions/items/${sampleId}`);
+    return response.data;
+  },
+
+  getEvaluationHistory: async (params: {
+    page: number;
+    limit: number;
+    projectSearch?: string;
+  }): Promise<{
+    projects: Array<{
+      projectName: string;
+      versionCount: number;
+      totalSamples: number;
+      latestCreatedAt: string;
+      versions: Array<{
+        _id: string;
+        versionName: string;
+        similarityThreshold: number;
+        totalSamples: number;
         createdAt: string;
-        updatedAt?: string;
+        evaluatedCount: number;
+        avgOverall: number | null;
       }>;
     }>;
     total: number;
@@ -345,8 +403,7 @@ export const apiService = {
       params: {
         page: params.page,
         limit: params.limit,
-        ...(params.format ? { format: params.format } : {}),
-        ...(Number.isFinite(params.minOverall) ? { minOverall: params.minOverall } : {}),
+        ...(params.projectSearch ? { projectSearch: params.projectSearch } : {}),
 
       },
     });

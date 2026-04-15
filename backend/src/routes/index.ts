@@ -104,6 +104,9 @@ router.post('/evaluate/refine', (req, res) => evalController.refine(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
 router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistory(req, res));
 router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
+router.post('/dataset-versions/create', (req, res) => evalController.createDatasetVersion(req, res));
+router.get('/dataset-versions/:id', (req, res) => evalController.getDatasetVersionDetail(req, res));
+router.delete('/dataset-versions/items/:sampleId', (req, res) => evalController.deleteDatasetVersionSample(req, res));
 
 // Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
 router.post('/cluster/visualize', clusterVisualize);
