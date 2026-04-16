@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Bot, ChevronLeft } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
@@ -12,8 +12,23 @@ export function MainLayout({ children }: MainLayoutProps) {
   const { uploadedFile, resetOptions } = useAppStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const [dataPrepStep, setDataPrepStep] = useState<number | null>(null);
 
   const isHomePage = location.pathname === '/';
+  const showDataPrepNextButton = location.pathname === '/chatbotconverter' && dataPrepStep === 8;
+
+  useEffect(() => {
+    const handleDataPrepStepChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ step: number | null }>;
+      const step = customEvent.detail?.step;
+      setDataPrepStep(typeof step === 'number' ? step : null);
+    };
+
+    window.addEventListener('data-prep-step-change', handleDataPrepStepChange as EventListener);
+    return () => {
+      window.removeEventListener('data-prep-step-change', handleDataPrepStepChange as EventListener);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -43,14 +58,25 @@ export function MainLayout({ children }: MainLayoutProps) {
                 </p>
               </div>
             </div>
-            {uploadedFile && (
-              <button
-                onClick={resetOptions}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                Reset & Upload New
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {uploadedFile && (
+                <button
+                  onClick={resetOptions}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Reset & Upload New
+                </button>
+              )}
+
+              {showDataPrepNextButton && (
+                <button
+                  onClick={() => navigate('/autotrain')}
+                  className="px-4 py-2 text-sm font-semibold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-lg hover:bg-emerald-200 transition-colors"
+                >
+                  AutoTrain
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </header>

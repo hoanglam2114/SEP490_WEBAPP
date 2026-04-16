@@ -44,14 +44,19 @@ export interface OpenAIConversationSample {
 // Union type: either a flat Alpaca sample or a full OpenAI conversation
 export type EvaluationSample = AlpacaFormat | OpenAIConversationSample;
 
-export interface RefinementSample {
+export interface ConversationTurn {
+    user: string;
     assistant: string;
+}
+
+export interface RefinementSample {
+    assistant: string | Array<ConversationTurn>;
     reason: string;
 }
 
 export interface RefinementResultItem {
-    assistant: string;
-    refinedOutput: string;
+    assistant: string | Array<ConversationTurn>;
+    refinedOutput: string | Array<ConversationTurn>;
 }
 
 function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
@@ -247,7 +252,7 @@ export class EvaluationService {
         console.log(`[Evaluation] Lấy mẫu để chấm: population=${populationSize}, samples=${samples.length}`);
         const CHUNK_SIZE = 5;
         const results: SampleEvaluation[] = [];
-        
+
 
         console.log(`[Evaluation] Bắt đầu xử lý batching: ${Math.ceil(samples.length / CHUNK_SIZE)} chunk(s)`);
 
@@ -309,7 +314,7 @@ export class EvaluationService {
             const chunk = data.slice(i, i + CHUNK_SIZE);
             const payload = chunk.map((item, index) => ({
                 index,
-                assistant: String(item.assistant || ''),
+                assistant: typeof item.assistant === 'object' ? item.assistant : String(item.assistant || ''),
                 reason: String(item.reason || ''),
             }));
 
@@ -334,23 +339,45 @@ export class EvaluationService {
 
                 chunk.forEach((original, idx) => {
                     const responseItem = mapped.get(idx);
-                    const refinedOutput = String(responseItem?.refinedOutput || original.assistant || '').trim();
+                    if (!responseItem || !responseItem.refinedOutput) {
+                        throw new Error(`AI xử lý thất bại hoặc không trả về nội dung đã Refine cho mẫu (index = ${idx}).`);
+                    }
+
+                    let refinedOutput = responseItem.refinedOutput;
+
+                    // Fallback to parse if LLM returns stringified JSON string (common with Deepseek)
+                    if (typeof refinedOutput === 'string') {
+                        const trimmed = refinedOutput.trim();
+                        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                            try {
+                                refinedOutput = JSON.parse(trimmed);
+                            } catch (e) {
+                                // ignore
+                            }
+                        }
+                    }
+
+                    // Unwrap double array if LLM returns [[{}]] (common with Deepseek logic confusion)
+                    if (Array.isArray(refinedOutput) && refinedOutput.length === 1 && Array.isArray(refinedOutput[0])) {
+                        refinedOutput = refinedOutput[0];
+                    }
+
+                    if (typeof refinedOutput === 'string') {
+                        refinedOutput = refinedOutput.trim();
+                    }
+
                     results.push({
                         assistant: original.assistant,
                         refinedOutput,
                     });
                 });
-            } catch (error) {
-                chunk.forEach((original) => {
-                    results.push({
-                        assistant: original.assistant,
-                        refinedOutput: original.assistant,
-                    });
-                });
+            } catch (error: any) {
+                console.error("[RefineBatch] Lỗi khi refine dữ liệu:", error.message);
+                throw error;
             }
             if (i + CHUNK_SIZE < data.length) {
-        console.log(`[Evaluation] Đang nghỉ 4 giây để tránh lỗi 429...`);
-        await delay(4000);
+                console.log(`[Evaluation] Đang nghỉ 4 giây để tránh lỗi 429...`);
+                await delay(4000);
             }
         }
 

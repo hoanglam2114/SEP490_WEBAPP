@@ -245,8 +245,9 @@ export class EvaluationController {
 
   async refine(req: Request, res: Response): Promise<void> {
     try {
-      const { data } = req.body as {
+      const { data, provider } = req.body as {
         data: RefinementSample[];
+        provider?: 'gemini' | 'openai' | 'deepseek';
       };
 
       if (!Array.isArray(data) || data.length === 0) {
@@ -254,7 +255,7 @@ export class EvaluationController {
         return;
       }
 
-      const service = new EvaluationService(new GeminiProvider());
+      const service = this.getService(provider);
       const samples = data.map((item) => ({
         assistant: String(item?.assistant || ''),
         reason: String(item?.reason || ''),
@@ -459,23 +460,23 @@ export class EvaluationController {
       const projectNames = projectGroups.map((group) => String(group.projectName || 'Untitled Project'));
       const versions = projectNames.length
         ? await DatasetVersion.find({ projectName: { $in: projectNames } })
-            .sort({ createdAt: -1 })
-            .lean()
+          .sort({ createdAt: -1 })
+          .lean()
         : [];
 
       const versionIds = versions.map((version: any) => version._id);
       const versionItems = versionIds.length
         ? await ProcessedDatasetItem.aggregate([
-            { $match: { datasetVersionId: { $in: versionIds } } },
-            {
-              $lookup: {
-                from: 'evaluationhistories',
-                localField: '_id',
-                foreignField: 'sampleId',
-                as: 'evaluations',
-              },
+          { $match: { datasetVersionId: { $in: versionIds } } },
+          {
+            $lookup: {
+              from: 'evaluationhistories',
+              localField: '_id',
+              foreignField: 'sampleId',
+              as: 'evaluations',
             },
-          ])
+          },
+        ])
         : [];
 
       const itemsByVersion = new Map<string, any[]>();

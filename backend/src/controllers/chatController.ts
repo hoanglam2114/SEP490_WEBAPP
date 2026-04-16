@@ -338,3 +338,32 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python model load', details: error.message });
   }
 };
+
+export const getInferenceLogs = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { inference_id, instanceId } = req.query;
+    const targetUrl = getGpuUrl(instanceId ? Number(instanceId) : undefined);
+    
+    let url = `${targetUrl}/api/infer/logs`;
+    if (inference_id) {
+      url += `/${inference_id}`;
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorData: any = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Lỗi từ Python backend: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error: any) {
+    console.error('Get Inference Logs Proxy Error:', error);
+    res.status(500).json({ error: error.message || 'Có lỗi xảy ra khi gọi Python logs', details: error.message });
+  }
+};

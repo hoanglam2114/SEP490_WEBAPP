@@ -23,6 +23,14 @@ interface Message {
     parameters?: any;
 }
 
+interface LogEntry {
+    ts: number;
+    instanceId?: number;
+    message: string;
+    type: "info" | "success" | "error" | "warning";
+    data?: any;
+}
+
 type ChatMode = "select" | "single" | "compare";
 
 // ─── Inference Params ─────────────────────────────────────────────────────────
@@ -90,7 +98,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => (
 
 // ─── Params Summary Bar ───────────────────────────────────────────────────────
 
-function ParamsSummaryBar({ params }: { params: InferenceParams }) {
+function ParamsSummaryBar({ params, onToggleLogs, showLogsActive }: { params: InferenceParams, onToggleLogs?: () => void, showLogsActive?: boolean }) {
     const chips = [
         { label: "Tokens", value: params.maxNewTokens },
         { label: "Temp", value: params.temperature },
@@ -115,6 +123,68 @@ function ParamsSummaryBar({ params }: { params: InferenceParams }) {
                     <span className="truncate text-violet-700 font-semibold">{params.systemPrompt}</span>
                 </span>
             )}
+            {onToggleLogs && (
+                <button
+                    onClick={onToggleLogs}
+                    className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border transition-all whitespace-nowrap ml-1
+                        ${showLogsActive 
+                            ? "bg-slate-800 text-white border-slate-800" 
+                            : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100"}`}
+                >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 6h16M4 12h16M4 18h7" />
+                    </svg>
+                    Logs
+                </button>
+            )}
+        </div>
+    );
+}
+
+// ─── Global Logs Panel ────────────────────────────────────────────────────────
+
+function GlobalLogsPanel({ logs, onClose }: { logs: LogEntry[], onClose: () => void }) {
+    const endRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        endRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [logs]);
+
+    return (
+        <div className="absolute bottom-full left-0 right-0 mb-3 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl p-4 z-50 flex flex-col h-64 text-slate-300 font-mono text-[12px] overflow-hidden" style={{ boxShadow: "0 -10px 40px -10px rgba(0,0,0,0.5)" }}>
+            <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-700/80 shrink-0">
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    <span className="font-bold text-slate-100 uppercase tracking-widest text-[11px]">Inference Logs Console</span>
+                </div>
+                <button onClick={onClose} className="p-1 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white">
+                    <ChevronUp size={14} className="rotate-180" />
+                </button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2 pr-2 scroll-smooth" style={{ scrollbarWidth: "thin", scrollbarColor: "#475569 transparent" }}>
+                {logs.length === 0 ? (
+                    <div className="text-slate-500 italic flex h-full items-center justify-center">Chưa có log...</div>
+                ) : (
+                    logs.map((L, i) => (
+                        <div key={i} className="flex gap-2.5 items-start leading-relaxed">
+                            <span className="text-slate-500 shrink-0 select-none">[{new Date(L.ts).toLocaleTimeString()}]</span>
+                            {L.instanceId && <span className="text-violet-400 font-semibold shrink-0 select-none">[Model {L.instanceId}]</span>}
+                            <div className={`flex-1 min-w-0 ${
+                                L.type === 'error' ? 'text-red-400' :
+                                L.type === 'success' ? 'text-emerald-400' :
+                                L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
+                            }`}>
+                                <p className="break-words">{L.message}</p>
+                                {L.data && (
+                                    <pre className="text-[10px] mt-1.5 p-2 bg-slate-950/50 rounded-lg text-slate-400 overflow-x-auto whitespace-pre-wrap word-break">
+                                        {JSON.stringify(L.data, null, 2)}
+                                    </pre>
+                                )}
+                            </div>
+                        </div>
+                    ))
+                )}
+                <div ref={endRef} />
+            </div>
         </div>
     );
 }
@@ -308,6 +378,7 @@ interface ChatPanelProps {
     isCompareMode?: boolean;
     onModelLoadedChange?: (loaded: boolean) => void;
     externalParams?: InferenceParams;
+    onLog?: (log: Omit<LogEntry, "ts">) => void;
 }
 
 function ChatPanel({
@@ -318,6 +389,7 @@ function ChatPanel({
     isCompareMode = false,
     onModelLoadedChange,
     externalParams,
+    onLog,
 }: ChatPanelProps) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [loading, setLoading] = useState(false);
@@ -395,6 +467,12 @@ function ChatPanel({
         const userMessage: Message = { role: "user", content: text };
         setMessages((prev) => [...prev, userMessage]);
         setLoading(true);
+        onLog?.({ 
+            message: `Bắt đầu inference...`, 
+            type: "info", 
+            instanceId, 
+            data: params.systemPrompt ? { systemPrompt: params.systemPrompt } : undefined 
+        });
 
         const startTime = Date.now();
         let aiContent = "";
@@ -418,6 +496,7 @@ function ChatPanel({
                             arr[arr.length - 1] = { ...arr[arr.length - 1], parameters: info.input_parameters };
                             return arr;
                         });
+                        onLog?.({ message: `Nhận thông số inference (Final Info)`, type: "info", instanceId, data: info.input_parameters });
                     }
                 }
             };
@@ -437,6 +516,21 @@ function ChatPanel({
                 arr[arr.length - 1] = { ...arr[arr.length - 1], responseTime };
                 return arr;
             });
+            onLog?.({ message: `Hoàn thành inference trong ${responseTime.toFixed(2)}s`, type: "success", instanceId });
+
+            try {
+                const gpuLogsContent = await apiService.getInferenceLogs(instanceId);
+                if (Array.isArray(gpuLogsContent)) {
+                    const latestLog = gpuLogsContent.filter((l: any) => l.slot_id === instanceId).pop();
+                    if (latestLog && latestLog.input_parameters) {
+                        onLog?.({ message: `Tham số inference thực tế (GPU)`, type: "info", instanceId, data: latestLog.input_parameters });
+                    }
+                } else if (gpuLogsContent && gpuLogsContent.input_parameters) {
+                    onLog?.({ message: `Tham số inference thực tế (GPU)`, type: "info", instanceId, data: gpuLogsContent.input_parameters });
+                }
+            } catch (err) {
+                console.warn("Failed to fetch exact GPU logs:", err);
+            }
 
             try {
                 const payload = { userMessage: text, aiMessage: aiContent, model: hfHubId, responseTime };
@@ -456,6 +550,9 @@ function ChatPanel({
                     arr[arr.length - 1] = { ...arr[arr.length - 1], content: `[Lỗi: ${error.message}]` };
                     return arr;
                 });
+                onLog?.({ message: `Lỗi inference: ${error.message}`, type: "error", instanceId });
+            } else {
+                onLog?.({ message: `Inference bị huỷ`, type: "warning", instanceId });
             }
         } finally {
             setLoading(false);
@@ -479,6 +576,7 @@ function ChatPanel({
         setLoading(true);
         setModelLoaded(false);
         setLoadError(null);
+        onLog?.({ message: `Bắt đầu load model: ${hfHubId}`, type: "info", instanceId });
         try {
             const options = {
                 instanceId,
@@ -491,10 +589,12 @@ function ChatPanel({
             };
             await apiService.loadModel(hfHubId, options);
             setModelLoaded(true);
+            onLog?.({ message: `Load model thành công: ${hfHubId}`, type: "success", instanceId });
         } catch (error: any) {
             const errorMsg = error.response?.data?.error || error.message;
             setLoadError(errorMsg);
             setModelLoaded(false);
+            onLog?.({ message: `Lỗi load model: ${errorMsg}`, type: "error", instanceId });
         } finally {
             setLoading(false);
         }
@@ -694,6 +794,12 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
     const [params, setParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const [showSettings, setShowSettings] = useState(false);
     const settingsRef = useRef<HTMLDivElement>(null);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [showLogs, setShowLogs] = useState(false);
+
+    const handleLog = useCallback((log: Omit<LogEntry, "ts">) => {
+        setLogs(prev => [...prev, { ...log, ts: Date.now() }]);
+    }, []);
 
     const handleSend = () => {
         if (!input.trim() || !panelModelLoaded) return;
@@ -745,11 +851,13 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                     isCompareMode={false}
                     onModelLoadedChange={setPanelModelLoaded}
                     externalParams={params}
+                    onLog={handleLog}
                 />
             </div>
 
             {/* Unified input bar */}
-            <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0">
+            <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0 relative">
+                {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
                 <div className="max-w-[800px] mx-auto">
                     {!panelModelLoaded && (
                         <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-2">
@@ -759,7 +867,11 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                     )}
 
                     {/* Params summary */}
-                    <ParamsSummaryBar params={params} />
+                    <ParamsSummaryBar 
+                        params={params} 
+                        onToggleLogs={() => setShowLogs(!showLogs)} 
+                        showLogsActive={showLogs} 
+                    />
 
                     <div className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
                         ${panelModelLoaded ? "border-slate-300 focus-within:border-slate-500 focus-within:bg-white" : "border-slate-200 opacity-60"}`}>
@@ -823,6 +935,12 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
     const [params, setParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const [showSettings, setShowSettings] = useState(false);
     const settingsRef = useRef<HTMLDivElement>(null);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [showLogs, setShowLogs] = useState(false);
+
+    const handleLog = useCallback((log: Omit<LogEntry, "ts">) => {
+        setLogs(prev => [...prev, { ...log, ts: Date.now() }]);
+    }, []);
 
     const bothLoaded = model1Loaded && model2Loaded;
 
@@ -896,6 +1014,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                         externalInput={sendTrigger ? sendTrigger.text : undefined}
                         onModelLoadedChange={setModel1Loaded}
                         externalParams={params}
+                        onLog={handleLog}
                     />
                 </div>
                 <div className="flex-1 overflow-hidden bg-white">
@@ -906,12 +1025,15 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                         externalInput={sendTrigger ? sendTrigger.text : undefined}
                         onModelLoadedChange={setModel2Loaded}
                         externalParams={params}
+                        onLog={handleLog}
                     />
                 </div>
             </div>
 
             {/* Unified input bar */}
-            <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0">
+            <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0 relative">
+                {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
+                
                 {!bothLoaded && (
                     <div className="flex items-center gap-2 text-xs mb-2 text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
                         <AlertCircle size={13} />
@@ -923,7 +1045,11 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                 )}
 
                 {/* Params summary — shared cho cả 2 */}
-                <ParamsSummaryBar params={params} />
+                <ParamsSummaryBar 
+                    params={params} 
+                    onToggleLogs={() => setShowLogs(!showLogs)} 
+                    showLogsActive={showLogs} 
+                />
 
                 <div className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all
                     ${bothLoaded ? "border-slate-300 focus-within:border-slate-600 focus-within:bg-white shadow-sm" : "border-slate-200 opacity-50"}`}>
