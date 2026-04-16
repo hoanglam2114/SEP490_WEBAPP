@@ -129,6 +129,14 @@ export const apiService = {
     return response.data;
   },
 
+  getInferenceLogs: async (instanceId?: number, inference_id?: string) => {
+    const params: any = {};
+    if (instanceId !== undefined) params.instanceId = instanceId;
+    if (inference_id) params.inference_id = inference_id;
+    const response = await api.get("/infer/logs", { params });
+    return response.data;
+  },
+
   uploadFile: async (file: File): Promise<FileUploadResult> => {
     const formData = new FormData();
     formData.append('file', file);
