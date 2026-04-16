@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Toaster, toast } from 'react-hot-toast';
-import { Eye, Trash2 } from 'lucide-react';
+import { MoreVertical, Trash2 } from 'lucide-react';
 import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
 import { apiService } from '../services/api';
 
@@ -256,6 +256,20 @@ export const EvaluationHistory: React.FC = () => {
   const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
   const [scoreHistoryModalTitle, setScoreHistoryModalTitle] = useState('Score History');
   const [scoreHistoryItems, setScoreHistoryItems] = useState<ScoreHistoryEntry[]>([]);
+  const [openActionMenuSampleId, setOpenActionMenuSampleId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openActionMenuSampleId) {
+      return;
+    }
+
+    const handleClickOutside = () => {
+      setOpenActionMenuSampleId(null);
+    };
+
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [openActionMenuSampleId]);
 
   const historyQuery = useQuery<EvaluationHistoryResponse>({
     queryKey: ['evaluation-history', page, projectSearch],
@@ -605,7 +619,7 @@ export const EvaluationHistory: React.FC = () => {
                   onChange={(e) => setShowUnaudited(e.target.checked)}
                   className="rounded border-slate-300"
                 />
-                <span>Hiển thị câu chưa chấm</span>
+                <span>Displaying unevaluated data</span>
               </label>
 
               <div className="ml-auto text-xs text-slate-500">
@@ -625,7 +639,7 @@ export const EvaluationHistory: React.FC = () => {
                       <th className="px-3 py-2 text-left font-semibold text-slate-700">Reason</th>
                       <th className="px-3 py-2 text-left font-semibold text-slate-700">Evaluated By</th>
                       <th className="px-3 py-2 text-left font-semibold text-slate-700">Updated</th>
-                      <th className="px-3 py-2 text-left font-semibold text-slate-700">Action</th>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-700 w-[56px]" />
                     </tr>
                   </thead>
                   <tbody>
@@ -641,25 +655,49 @@ export const EvaluationHistory: React.FC = () => {
                         <td className="px-3 py-3 text-slate-700 align-top break-words">{latest?.reason || latest?.scores?.reason || ''}</td>
                         <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{evaluatedBySummary || latest?.evaluatedBy || 'none'}</td>
                         <td className="px-3 py-3 text-slate-500 text-xs align-top whitespace-nowrap">{toDateTime(latest?.timestamp || item.updatedAt || item.createdAt)}</td>
-                        <td className="px-3 py-3 align-top whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => handleOpenScoreHistory(item)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
+                        <td className="p-0 align-middle relative whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOpenActionMenuSampleId((prev) => (prev === item.sampleId ? null : item.sampleId));
+                            }}
+                            className="w-full h-full min-h-[64px] flex items-center justify-center text-slate-600 hover:bg-slate-100 transition-colors"
+                            title="Actions"
+                            aria-label="Actions"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5" />
+                          </button>
+
+                          {openActionMenuSampleId === item.sampleId && (
+                            <div
+                              className="absolute right-full top-1/2 z-20 mr-1 w-32 -translate-y-1/2 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+                              onClick={(event) => event.stopPropagation()}
                             >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>Xem diem</span>
-                            </button>
-                            <button
-                              onClick={() => handleDeleteItem(item)}
-                              disabled={deleteMutation.isPending}
-                              className="inline-flex items-center justify-center p-1.5 rounded border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-60"
-                              title="Xoa mau"
-                              aria-label="Xoa mau"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleOpenScoreHistory(item);
+                                  setOpenActionMenuSampleId(null);
+                                }}
+                                className="block w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                              >
+                                View all scores
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleDeleteItem(item);
+                                  setOpenActionMenuSampleId(null);
+                                }}
+                                disabled={deleteMutation.isPending}
+                                className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Delete</span>
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                       );

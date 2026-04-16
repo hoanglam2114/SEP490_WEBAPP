@@ -119,7 +119,7 @@ export const apiService = {
             } catch (e: any) {
               // Always rethrow if it's an error object we created or if it's a known error format
               if (e.isStreamingError || e.message) {
-                throw e; 
+                throw e;
               }
               console.warn("Lỗi parse SSE JSON:", dataText, e);
             }
@@ -136,6 +136,14 @@ export const apiService = {
 
   validateModel: async (model: string, provider: string) => {
     const response = await api.post("/chat/validate-model", { model, provider });
+    return response.data;
+  },
+
+  getInferenceLogs: async (instanceId?: number, inference_id?: string) => {
+    const params: any = {};
+    if (instanceId !== undefined) params.instanceId = instanceId;
+    if (inference_id) params.inference_id = inference_id;
+    const response = await api.get("/infer/logs", { params });
     return response.data;
   },
 
@@ -257,18 +265,18 @@ export const apiService = {
   },
 
   refineData: async (
-    data: Array<{ assistant: string; reason: string }>,
+    data: Array<{ assistant: string | Array<{ user: string; assistant: string }>; reason: string }>,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
-  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+  ): Promise<{ items: Array<{ assistant: string | Array<{ user: string; assistant: string }>; refinedOutput: string | Array<{ user: string; assistant: string }> }>; refined: number }> => {
     const response = await api.post('/evaluate/refine', { data, provider });
     return response.data;
   },
 
   refineDataChunked: async (
-    data: Array<{ assistant: string; reason: string }>,
+    data: Array<{ assistant: string | Array<{ user: string; assistant: string }>; reason: string }>,
     provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
     chunkSize = 100
-  ): Promise<{ items: Array<{ assistant: string; refinedOutput: string }>; refined: number }> => {
+  ): Promise<{ items: Array<{ assistant: string | Array<{ user: string; assistant: string }>; refinedOutput: string | Array<{ user: string; assistant: string }> }>; refined: number }> => {
     if (!Array.isArray(data) || data.length === 0) {
       return { items: [], refined: 0 };
     }
