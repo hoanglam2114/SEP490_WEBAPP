@@ -1,3 +1,3 @@
 export interface ILlmProvider {
-    generateContent(prompt: string): Promise<string>;
+    generateContent(prompt: string, modelOverride?: string): Promise<string>;
 }

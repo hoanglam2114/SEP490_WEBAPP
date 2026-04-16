@@ -6,7 +6,7 @@ import { Eye, Trash2 } from 'lucide-react';
 import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
 import { apiService } from '../services/api';
 
-type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'openrouter' | 'none';
 
 type EvalResults = {
   accuracy?: number | null;

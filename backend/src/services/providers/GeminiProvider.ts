@@ -18,7 +18,7 @@ export class GeminiProvider implements ILlmProvider {
         });
     }
 
-    async generateContent(prompt: string): Promise<string> {
+    async generateContent(prompt: string, _modelOverride?: string): Promise<string> {
         const result = await this.model.generateContent(prompt);
         const response = await result.response;
         return response.text()?.trim() || '[]';

@@ -17,11 +17,11 @@ export class DeepseekProvider implements ILlmProvider {
     }
   }
 
-  async generateContent(prompt: string): Promise<string> {
+  async generateContent(prompt: string, modelOverride?: string): Promise<string> {
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
       {
-        model: 'deepseek-chat',
+        model: modelOverride || 'deepseek-chat',
         messages: [
           {
             role: 'system',

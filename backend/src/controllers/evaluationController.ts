@@ -7,6 +7,7 @@ import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
+import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
 
 type EvalFormat = 'openai' | 'alpaca';
 
@@ -214,6 +215,9 @@ export class EvaluationController {
     if (normalizedProvider === 'deepseek') {
       return new EvaluationService(new DeepseekProvider());
     }
+    if (normalizedProvider === 'openrouter') {
+      return new EvaluationService(new OpenRouterProvider());
+    }
     return new EvaluationService(new GeminiProvider());
   }
 
@@ -222,7 +226,7 @@ export class EvaluationController {
       const { data, format, provider } = req.body as {
         data: EvaluationSample[];
         format?: string;
-        provider?: 'gemini' | 'openai' | 'deepseek';
+        provider?: 'gemini' | 'openai' | 'deepseek' | 'openrouter';
       };
 
       if (!data || !Array.isArray(data) || data.length === 0) {
@@ -371,7 +375,7 @@ export class EvaluationController {
       const { items } = req.body as {
         items: Array<{
           sampleId: string;
-          evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+          evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'openrouter' | 'none';
           results: EvaluationScorePayload;
         }>;
       };
@@ -386,7 +390,7 @@ export class EvaluationController {
           return (
             item &&
             mongoose.Types.ObjectId.isValid(item.sampleId) &&
-            ['manual', 'gemini', 'openai', 'deepseek', 'none'].includes(item.evaluatedBy) &&
+            ['manual', 'gemini', 'openai', 'deepseek', 'openrouter', 'none'].includes(item.evaluatedBy) &&
             item.results
           );
         })

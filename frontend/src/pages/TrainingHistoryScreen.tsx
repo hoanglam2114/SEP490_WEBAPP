@@ -213,19 +213,31 @@ export const TrainingHistoryScreen: React.FC = () => {
               <p className="text-xs text-slate-400 mt-0.5">View all past training runs</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded-lg">
-              {histories.length} record{histories.length !== 1 ? 's' : ''}
-            </span>
+          <div className="flex items-center gap-3">
             <button
-              onClick={() => fetchHistories(selectedModel || undefined)}
-              className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"
-              title="Refresh"
+              onClick={() => navigate("/model-eval/run")}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded-xl text-sm font-semibold transition-all"
+              title="Go to Model Evaluation"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
+              Evaluation
             </button>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded-lg">
+                {histories.length} record{histories.length !== 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={() => fetchHistories(selectedModel || undefined)}
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all"
+                title="Refresh"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>

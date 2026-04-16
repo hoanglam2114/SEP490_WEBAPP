@@ -31,15 +31,13 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
 }
 
 export const apiService = {
-  chat: async (text_input: string, hf_hub_id: string = "") => {
-    const response = await api.post("/chat", { text_input, hf_hub_id });
+  chat: async (text_input: string, hf_hub_id: string = "", provider?: string) => {
+    const response = await api.post("/chat", { text_input, hf_hub_id, provider });
     return response.data;
   },
 
-  infer: async (text_input: string, hf_model_id: string = "") => {
-    // Gọi đến API backend của chúng ta, sau đó backend proxy tới Flask Python hoặc có thể gọi thẳng
-    // Tạm thời gọi đến /chat (đã được sửa logic proxy) hoặc endpoint riêng /infer
-    const response = await api.post("/infer", { text_input, hf_model_id });
+  infer: async (text_input: string, hf_model_id: string = "", provider?: string) => {
+    const response = await api.post("/infer", { text_input, hf_model_id, provider });
     return response.data;
   },
 
@@ -53,19 +51,20 @@ export const apiService = {
       top_k?: number;
       top_p?: number;
       repetition_penalty?: number;
+      provider?: string;
       signal?: AbortSignal;
       onFinalInfo?: (info: any) => void;
     } = {},
     onChunk: (text: string) => void
   ) => {
-    const { signal, onFinalInfo, ...restOptions } = options;
+    const { signal, onFinalInfo, provider, ...restOptions } = options;
     const response = await fetch(`${API_BASE_URL}/infer/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
       },
-      body: JSON.stringify({ text_input, hf_model_id, ...restOptions }),
+      body: JSON.stringify({ text_input, hf_model_id, provider, ...restOptions }),
       signal,
     });
 
@@ -108,15 +107,21 @@ export const apiService = {
             try {
               const dataObj = JSON.parse(dataText);
               if (dataObj.error) {
-                throw new Error(dataObj.error);
+                const streamErr = new Error(dataObj.error);
+                (streamErr as any).isStreamingError = true;
+                throw streamErr;
               }
               if (dataObj.is_final && onFinalInfo) {
                 onFinalInfo(dataObj);
               } else if (dataObj.text) {
                 onChunk(dataObj.text);
               }
-            } catch (e) {
-              console.warn("Lỗi parse SSE JSON:", dataText);
+            } catch (e: any) {
+              // Always rethrow if it's an error object we created or if it's a known error format
+              if (e.isStreamingError || e.message) {
+                throw e; 
+              }
+              console.warn("Lỗi parse SSE JSON:", dataText, e);
             }
           }
         }
@@ -126,6 +131,11 @@ export const apiService = {
 
   loadModel: async (hf_model_id: string, options?: any) => {
     const response = await api.post("/model/load", { hf_model_id, ...options });
+    return response.data;
+  },
+
+  validateModel: async (model: string, provider: string) => {
+    const response = await api.post("/chat/validate-model", { model, provider });
     return response.data;
   },
 
@@ -173,7 +183,7 @@ export const apiService = {
   evaluateData: async (
     data: any[],
     format?: string,
-    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
+    provider: 'gemini' | 'openai' | 'deepseek' | 'openrouter' = 'gemini'
   ): Promise<EvaluationResult> => {
     const response = await api.post<EvaluationResult>('/evaluate', {
       data,
@@ -186,7 +196,7 @@ export const apiService = {
   evaluateDataChunked: async (
     data: any[],
     format?: string,
-    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    provider: 'gemini' | 'openai' | 'deepseek' | 'openrouter' = 'gemini',
     chunkSize = 100
   ): Promise<EvaluationResult> => {
     if (!Array.isArray(data) || data.length === 0) {
