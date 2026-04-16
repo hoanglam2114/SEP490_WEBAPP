@@ -42,21 +42,22 @@ Hãy xem xét ngữ cảnh của toàn bộ đoạn hội thoại, không chỉ 
 ### CÁC TIÊU CHÍ CHẤM ĐIỂM (THANG ĐIỂM 10):
 
 1. TÍNH SƯ PHẠM (socratic):
-- Điểm tối đa (9-10) ̣nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ đưa ra công thức và dùng câu hỏi gợi mở hoặc ví dụ tương tự.
-- Điểm 5-8 :Có lời chào hỏi, có dẫn dắt nhưng gợi ý quá lộ liễu (gần như cho đáp án).
-- ĐIỂM 0-4 nếu AI đưa ra đáp án đúng nhưng quá sớm (Premature Disclosure) hoặc giải hộ bài ở bất kỳ lượt nào.
+- ĐIỂM 0-4 nếu AI đưa ra đáp án đúng quá sớm hoặc giải hộ bài ở bất kỳ lượt nào.
+- Điểm 5-6: AI đưa ra lời gợi ý nhưng còn chung chung, chưa tập trung vào trọng tâm câu hỏi của User, chưa đưa ra công thức chỉ dẫn cho User, AI không nắm bắt được ý định của User .
+- Điểm 7-8 :Mở đầu cuộc hội thoại AI có lời chào hỏi, có dẫn dắt và gợi ý tập trung vào trọng tâm câu hỏi của User,có đưa ra công thức chỉ dẫn cho User ví dụ: '(a + b)² = a² + 2ab + b²'.
+- Điểm tối đa (9-10): Nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ dùng câu hỏi gợi mở hoặc ví dụ tương tự.
 
 2. TÍNH KHÍCH LỆ (encouragement):
-- Điểm tối đa (9-10): AI sử dụng ngôn ngữ tích cực, công nhận nỗ lực của người dùng. Tông giọng ấm áp, thân thiện và giàu năng lượng.
-- Điểm trung bình (5-8): Có khen ngợi nhưng còn rập khuôn hoặc khen không đúng lúc. Tông giọng trung tính.
 - ĐIỂM 0-4: AI phản hồi cụt lủn, máy móc, hoặc tệ hơn là có thái độ gây nản lòng (ví dụ: "Sai rồi, làm lại đi").
+- Điểm trung bình (5-8): Có khen ngợi nhưng còn rập khuôn hoặc khen không đúng lúc. Tông giọng trung tính.
+- Điểm tối đa (9-10): AI sử dụng ngôn ngữ tích cực, công nhận nỗ lực của người dùng. Tông giọng ấm áp, thân thiện và giàu năng lượng.
 
 3. ĐỘ CHÍNH XÁC KIẾN THỨC (factuality):
-- Điểm tối đa (9-10) nếu mọi kiến thức, công thức và logic toán học/khoa học đều đúng trong toàn bộ cuộc hội thoại.
-- Điểm 5-8: Có sai sót nhỏ nhưng không ảnh hưởng đến kết quả cuối cùng.
 - ĐIỂM 0-4 nếu AI cung cấp thông tin sai lệch,lỗi định dạng, sai công thức, tính toán sai ở bất kỳ lượt nào.
+- Điểm trung bình (5-8): Có sai sót nhỏ nhưng không ảnh hưởng đến kết quả cuối cùng.
+- Điểm tối đa (9-10) nếu mọi kiến thức, công thức và logic toán học/khoa học đều đúng trong toàn bộ cuộc hội thoại.
 
-"CHỈ THỊ ĐẶC BIỆT: Nếu câu trả lời của AI thuộc dạng Thông báo lỗi hệ thống, Lỗi kỹ thuật, hoặc các câu trả lời Canned Response (mẫu soạn sẵn) về việc thiếu nội dung, yêu cầu người dùng 'thử lại' hoặc 'khởi động lại', hãy cho điểm 0 cho tất cả các tiêu chí.
+"CHỈ THỊ ĐẶC BIỆT: Nếu câu trả lời của AI thuộc dạng Thông báo lỗi hệ thống, Lỗi hệ thống, hoặc các câu trả lời Canned Response (mẫu soạn sẵn) về việc thiếu nội dung, yêu cầu người dùng 'thử lại' hoặc 'khởi động lại', hãy cho điểm 0 cho tất cả các tiêu chí.
 
 Bạn sẽ nhận một JSON array gồm nhiều hội thoại, mỗi phần tử có cấu trúc:
 {
@@ -94,16 +95,17 @@ Bạn sẽ nhận JSON array có cấu trúc:
 [
   {
     "index": number,
-    "assistant": string | object, // Có thể là chuỗi (1 lượt) hoặc object {"1": "...", "2": "..."} cho nhiều lượt
+    "assistant": string | array, // Có thể là chuỗi (1 lượt) hoặc array chứa các đoạn hội thoại: [{"user": "...", "assistant": "..."}]
     "reason": string
   }
 ]
 
 Nhiệm vụ:
-- Viết lại nội dung assistant để rõ ràng hơn, chính xác hơn, đầy đủ hơn dựa trên reason.
-- Nếu input "assistant" là một OBJECT nhiều lượt hội thoại:
-  + Nếu reason chỉ rõ phần cần cải thiện là ở lượt nào thì tập trung cải thiện ở lượt đó.
-  + Trả về toàn bộ nội dung của tất cả các lượt (cả lượt thay đổi và lượt giữ nguyên) dưới dạng OBJECT.
+- TUYỆT ĐỐI KHÔNG thay đổi hoàn toàn chỉ viết lại nội dung assistant để chính xác hơn dựa trên reason.
+- Nếu input "assistant" là MẢNG (ARRAY) nhiều lượt hội thoại:
+  + Dựa vào "reason" để xác định và chỉ sửa nội dung "assistant" tại những lượt hội thoại có nhắc đến lỗi.
+  + TUYỆT ĐỐI KHÔNG ĐƯỢC sửa nội dung "user".
+  + Trả về LẠI TOÀN BỘ mảng hội thoại: các lượt sửa thì mang giá trị mới, lượt không sửa thì giữ nguyên.
 - Giữ đúng ngôn ngữ và ý định giáo dục ban đầu.
 - Không thêm thông tin bịa đặt.
 
@@ -114,12 +116,27 @@ Yêu cầu output:
 - CHỈ trả về JSON array hợp lệ.
 - Mỗi phần tử phải có: index, refinedOutput.
 - Nếu input "assistant" là một CHUỖI, "refinedOutput" cũng phải là CHUỖI chứa nội dung đã sửa.
-- Nếu input "assistant" là một OBJECT, "refinedOutput" cũng phải là OBJECT với các key tương tự (ví dụ: {"1": "...", "2": "..."}), chứa nội dung các lượt phản hồi của bot.
+- Nếu input "assistant" là một MẢNG, "refinedOutput" cũng phải là một MẢNG các lượt với cấu trúc y hệt input (ví dụ: [{"user": "...", "assistant": "..."}]), trong đó "assistant" ở các lượt lỗi đã được sửa đổi.
 
-Định dạng chính xác:
+Định dạng CHỈ CÓ MỘT TRƯỜNG HỢP (dựa theo input):
+
+[Trường hợp "assistant" là Chuỗi (String)]
 [
   {
     "index": 0,
-    "refinedOutput": "Nội dung assistant đã tinh chỉnh" // LƯU Ý: hoặc dạng Object (ví dụ: {"1": "...", "2": "..."}) nếu input assistant là Object
+    "refinedOutput": "Nội dung assistant đã tinh chỉnh"
+  }
+]
+
+[Trường hợp "assistant" là Mảng (Array)]
+[
+  {
+    "index": 0,
+    "refinedOutput": [
+      {
+        "user": "Nội dung câu hỏi của user (BẮT BUỘC GIỮ NGUYÊN 100% TỪ INPUT)",
+        "assistant": "Nội dung trả lời của bot (ĐÃ ĐƯỢC CHỈNH SỬA TÍCH CỰC THEO REASON)"
+      }
+    ]
   }
 ]`;

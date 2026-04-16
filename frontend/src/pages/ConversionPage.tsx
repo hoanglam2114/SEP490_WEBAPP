@@ -2600,12 +2600,9 @@ export function ConversionPage() {
       }
 
       const payload = candidateRows.map((row) => {
-        let assistantData: string | Record<string, string> = row.assistantText;
+        let assistantData: string | Array<{ user: string; assistant: string }> = row.assistantText;
         if (previewMode === 'openai' && Array.isArray(row.conversationPairs)) {
-          assistantData = {};
-          row.conversationPairs.forEach((pair, idx) => {
-            (assistantData as Record<string, string>)[idx + 1] = pair.assistant;
-          });
+          assistantData = row.conversationPairs;
         }
         return {
           assistant: assistantData,
@@ -2636,13 +2633,13 @@ export function ConversionPage() {
                 .filter((m: any) => m.role === 'assistant')
                 .map((m: any) => m.i);
 
-              if (typeof refinedOutput === 'object' && refinedOutput !== null) {
+              if (Array.isArray(refinedOutput)) {
                 assistantIndices.forEach((msgIndex: number, turnIdx: number) => {
-                  const turnKey = String(turnIdx + 1);
-                  if (typeof (refinedOutput as Record<string, string>)[turnKey] === 'string') {
+                  const newText = refinedOutput[turnIdx]?.assistant;
+                  if (typeof newText === 'string') {
                     newRecord.messages[msgIndex] = {
                       ...newRecord.messages[msgIndex],
-                      content: (refinedOutput as Record<string, string>)[turnKey],
+                      content: newText,
                     };
                   }
                 });
@@ -2682,11 +2679,10 @@ export function ConversionPage() {
         if (!refinedOutput) return;
 
         let changed = false;
-        if (typeof refinedOutput === 'object' && refinedOutput !== null) {
+        if (Array.isArray(refinedOutput)) {
           if (Array.isArray(row.conversationPairs)) {
             row.conversationPairs.forEach((pair, turnIdx) => {
-              const turnKey = String(turnIdx + 1);
-              const newText = (refinedOutput as Record<string, string>)[turnKey];
+              const newText = refinedOutput[turnIdx]?.assistant;
               if (typeof newText === 'string' && newText !== pair.assistant) {
                 changed = true;
               }
@@ -2700,11 +2696,9 @@ export function ConversionPage() {
           refinedIds.add(row.id);
           const normalizedRefinedText = typeof refinedOutput === 'string'
             ? refinedOutput
-            : Object.entries(refinedOutput as Record<string, string>)
-              .sort((a, b) => Number(a[0]) - Number(b[0]))
-              .map(([, value]) => String(value || '').trim())
-              .filter(Boolean)
-              .join('\n\n');
+            : (Array.isArray(refinedOutput)
+                ? refinedOutput.map((t: any) => String(t.assistant || '').trim()).filter(Boolean).join('\n\n')
+                : '');
           nextRefineHistoryMap[row.id] = {
             original: String(row.assistantText || ''),
             refined: normalizedRefinedText,

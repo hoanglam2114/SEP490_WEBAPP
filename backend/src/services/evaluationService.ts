@@ -44,14 +44,19 @@ export interface OpenAIConversationSample {
 // Union type: either a flat Alpaca sample or a full OpenAI conversation
 export type EvaluationSample = AlpacaFormat | OpenAIConversationSample;
 
+export interface ConversationTurn {
+    user: string;
+    assistant: string;
+}
+
 export interface RefinementSample {
-    assistant: string | Record<string, string>;
+    assistant: string | Array<ConversationTurn>;
     reason: string;
 }
 
 export interface RefinementResultItem {
-    assistant: string | Record<string, string>;
-    refinedOutput: string | Record<string, string>;
+    assistant: string | Array<ConversationTurn>;
+    refinedOutput: string | Array<ConversationTurn>;
 }
 
 function isConversationSample(s: EvaluationSample): s is OpenAIConversationSample {
@@ -337,9 +342,29 @@ export class EvaluationService {
                     if (!responseItem || !responseItem.refinedOutput) {
                         throw new Error(`AI xử lý thất bại hoặc không trả về nội dung đã Refine cho mẫu (index = ${idx}).`);
                     }
-                    const refinedOutput = typeof responseItem.refinedOutput === 'string' 
-                        ? String(responseItem.refinedOutput).trim() 
-                        : responseItem.refinedOutput;
+
+                    let refinedOutput = responseItem.refinedOutput;
+
+                    // Fallback to parse if LLM returns stringified JSON string (common with Deepseek)
+                    if (typeof refinedOutput === 'string') {
+                        const trimmed = refinedOutput.trim();
+                        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                            try {
+                                refinedOutput = JSON.parse(trimmed);
+                            } catch (e) {
+                                // ignore
+                            }
+                        }
+                    }
+
+                    // Unwrap double array if LLM returns [[{}]] (common with Deepseek logic confusion)
+                    if (Array.isArray(refinedOutput) && refinedOutput.length === 1 && Array.isArray(refinedOutput[0])) {
+                        refinedOutput = refinedOutput[0];
+                    }
+
+                    if (typeof refinedOutput === 'string') {
+                        refinedOutput = refinedOutput.trim();
+                    }
 
                     results.push({
                         assistant: original.assistant,

@@ -460,23 +460,23 @@ export class EvaluationController {
       const projectNames = projectGroups.map((group) => String(group.projectName || 'Untitled Project'));
       const versions = projectNames.length
         ? await DatasetVersion.find({ projectName: { $in: projectNames } })
-            .sort({ createdAt: -1 })
-            .lean()
+          .sort({ createdAt: -1 })
+          .lean()
         : [];
 
       const versionIds = versions.map((version: any) => version._id);
       const versionItems = versionIds.length
         ? await ProcessedDatasetItem.aggregate([
-            { $match: { datasetVersionId: { $in: versionIds } } },
-            {
-              $lookup: {
-                from: 'evaluationhistories',
-                localField: '_id',
-                foreignField: 'sampleId',
-                as: 'evaluations',
-              },
+          { $match: { datasetVersionId: { $in: versionIds } } },
+          {
+            $lookup: {
+              from: 'evaluationhistories',
+              localField: '_id',
+              foreignField: 'sampleId',
+              as: 'evaluations',
             },
-          ])
+          },
+        ])
         : [];
 
       const itemsByVersion = new Map<string, any[]>();
