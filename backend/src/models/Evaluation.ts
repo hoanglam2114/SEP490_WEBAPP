@@ -1,50 +1,41 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+// Per-conversation result (1 entry = 1 conversation được replay + chấm)
 export interface IEvalResult {
-  subject: string;
-  instruction: string;
-  expected: string;
-  base_answer: string;
-  ft_answer: string;
-  base_score: number;
-  ft_score: number;
-  delta: number;
-  eval_method: string;
-  criteria_detail?: {
-    name: string;
-    base_score: number;
-    ft_score: number;
-    base_reason?: string;
-    ft_reason?: string;
-  }[];
-}
-
-export interface ISubjectSummary {
-  base_avg: number;
-  ft_avg: number;
-  improvement_pct: number;
+  conv_index: number;
+  num_turns: number;
+  avg_latency_ms: number;
+  criteria_scores: {
+    A1: number; A2: number; A3: number;
+    B1: number; B2: number;
+    C1: number; C2: number; C3: number;
+    D1: number; D2: number;
+  };
+  criteria_reasons: Record<string, string>;
+  group_scores: {
+    group_a: number;
+    group_b: number;
+    group_c: number;
+    group_d: number;
+    overall: number;
+    a1_hard_constraint_triggered: boolean;
+  };
+  non_scoring: {
+    bleu: number;
+    rouge_l: number;
+    question_detection_rate: number;
+  };
 }
 
 export interface IEvaluation extends Document {
   modelEvalId: string;
   jobId: string;
-  status: string; // 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
-  totalSamples: number;
-  subjectBreakdown: Record<string, number>;
-  skippedBySimilarity: number;
+  status: string;
+  totalConversations: number;
+  validConversations: number;
   results: IEvalResult[];
-  summary: {
-    overall: { base_avg: number; ft_avg: number; improvement_pct: number; delta?: number };
-    quality?: { base_avg: number; ft_avg: number; weight: number };
-    hallucination?: { base_avg: number; ft_avg: number; weight: number; sample_count: number };
-    speed?: { base_avg_ms: number; ft_avg_ms: number; base_score: number; ft_score: number; weight: number };
-    by_subject: Record<string, ISubjectSummary>;
-    max_possible: number;
-    reference_metrics?: {
-      bleu: { base: number; ft: number };
-      rouge_l: { base: number; ft: number };
-    };
-  };
+  summary: Record<string, any>;
+  gpuResult?: Record<string, any>;
   judgeModel?: string;
   startedAt: Date;
   completedAt: Date;
@@ -54,33 +45,13 @@ export interface IEvaluation extends Document {
 
 const EvaluationResultSchema = new Schema<IEvalResult>(
   {
-    subject: { type: String, required: true },
-    instruction: { type: String, required: true },
-    expected: { type: String, required: true },
-    base_answer: { type: String, required: true },
-    ft_answer: { type: String, required: true },
-    base_score: { type: Number, required: true },
-    ft_score: { type: Number, required: true },
-    delta: { type: Number, required: true },
-    eval_method: { type: String, required: true },
-    criteria_detail: [
-      {
-        name: { type: String, required: true },
-        base_score: { type: Number, required: true },
-        ft_score: { type: Number, required: true },
-        base_reason: { type: String },
-        ft_reason: { type: String },
-      },
-    ],
-  },
-  { _id: false }
-);
-
-const SubjectSummarySchema = new Schema<ISubjectSummary>(
-  {
-    base_avg: { type: Number, required: true },
-    ft_avg: { type: Number, required: true },
-    improvement_pct: { type: Number, required: true },
+    conv_index: { type: Number },
+    num_turns: { type: Number },
+    avg_latency_ms: { type: Number },
+    criteria_scores: { type: Schema.Types.Mixed, default: {} },
+    criteria_reasons: { type: Schema.Types.Mixed, default: {} },
+    group_scores: { type: Schema.Types.Mixed, default: {} },
+    non_scoring: { type: Schema.Types.Mixed, default: {} },
   },
   { _id: false }
 );
@@ -90,49 +61,16 @@ const EvaluationSchema = new Schema<IEvaluation>(
     modelEvalId: { type: String, required: true, unique: true, index: true },
     jobId: { type: String, required: true, index: true },
     status: { type: String, required: true },
-    totalSamples: { type: Number, default: 0 },
-    subjectBreakdown: { type: Map, of: Number, default: {} },
-    skippedBySimilarity: { type: Number, default: 0 },
-    results: [EvaluationResultSchema],
-    summary: {
-      overall: {
-        base_avg: { type: Number, required: true },
-        ft_avg: { type: Number, required: true },
-        improvement_pct: { type: Number, required: true },
-        delta: { type: Number },
-      },
-      quality: {
-        base_avg: { type: Number },
-        ft_avg: { type: Number },
-        weight: { type: Number },
-      },
-      hallucination: {
-        base_avg: { type: Number },
-        ft_avg: { type: Number },
-        weight: { type: Number },
-        sample_count: { type: Number },
-      },
-      speed: {
-        base_avg_ms: { type: Number },
-        ft_avg_ms: { type: Number },
-        base_score: { type: Number },
-        ft_score: { type: Number },
-        weight: { type: Number },
-      },
-      by_subject: { type: Map, of: SubjectSummarySchema, default: {} },
-      max_possible: { type: Number, default: 5 },
-      reference_metrics: {
-        bleu: { base: { type: Number }, ft: { type: Number } },
-        rouge_l: { base: { type: Number }, ft: { type: Number } },
-      },
-    },
+    totalConversations: { type: Number, default: 0 },
+    validConversations: { type: Number, default: 0 },
+    results: { type: [EvaluationResultSchema], default: [] },
+    summary: { type: Schema.Types.Mixed, default: {} },
+    gpuResult: { type: Schema.Types.Mixed, default: {} },
     startedAt: { type: Date, required: true },
     completedAt: { type: Date, required: true },
-    judgeModel: { type: String, default: 'claude-haiku-4-5-20251001' },
+    judgeModel: { type: String, default: 'claude-sonnet-4-5-20251001' },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 export const ModelEvaluation = mongoose.model<IEvaluation>('ModelEvaluation', EvaluationSchema);

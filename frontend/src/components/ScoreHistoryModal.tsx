@@ -1,4 +1,3 @@
-import React from 'react';
 import { Loader2, X } from 'lucide-react';
 
 type ScoreMap = {

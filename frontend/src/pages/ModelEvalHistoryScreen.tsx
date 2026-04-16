@@ -5,17 +5,21 @@ import { useNavigate, useParams } from 'react-router-dom';
 // Types
 // ---------------------------------------------------------------------------
 interface EvalSummary {
-  overall: { base_avg: number; ft_avg: number; improvement_pct: number } | null;
-  quality: { base_avg: number; ft_avg: number; weight: number } | null;
-  hallucination: { base_avg: number; ft_avg: number; weight: number } | null;
-  speed: { ft_score: number; ft_avg_ms: number; weight: number } | null;
+  overall: number | null;
+  group_a: number | null;
+  group_b: number | null;
+  group_c: number | null;
+  group_d: number | null;
+  criteria?: Record<string, number>;
+  avg_latency_ms?: number;
+  non_scoring?: { bleu: number; rouge_l: number; question_detection_rate: number };
 }
 
 interface EvalRun {
   modelEvalId: string;
   jobId: string;
   status: string;
-  totalSamples: number;
+  totalConversations: number;
   judgeModel: string;
   summary: EvalSummary;
   startedAt: string;
@@ -230,7 +234,7 @@ export function ModelEvalHistoryScreen() {
                 Pinned
               </span>
               <span>
-                {pinnedEval.modelEvalId} · {judgeLabel(pinnedEval.judgeModel)} · {pinnedEval.totalSamples} samples
+                {pinnedEval.modelEvalId} · {judgeLabel(pinnedEval.judgeModel)} · {pinnedEval.totalConversations} conversations
               </span>
             </div>
           )}
@@ -262,21 +266,21 @@ export function ModelEvalHistoryScreen() {
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">#</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">Ngày</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">Judge</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Samples</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Convs</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Overall</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Quality</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Hallucination</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Speed</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Socratic</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Accuracy</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Pedagogy</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Status</th>
                     <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {evals.map((e, i) => {
-                    const overall = e.summary?.overall?.ft_avg ?? null;
-                    const quality = e.summary?.quality?.ft_avg ?? null;
-                    const hall = e.summary?.hallucination?.ft_avg ?? null;
-                    const speed = e.summary?.speed?.ft_score ?? null;
+                    const overall = e.summary?.overall ?? null;
+                    const socratic = e.summary?.group_a ?? null;
+                    const accuracy = e.summary?.group_b ?? null;
+                    const pedagogy = e.summary?.group_c ?? null;
                     const isSelected = compareIds.includes(e.modelEvalId);
                     const canSelect = isSelected || compareIds.length < 2;
 
@@ -315,13 +319,14 @@ export function ModelEvalHistoryScreen() {
                         </td>
 
                         {/* Samples */}
-                        <td className="px-4 py-3 text-center text-xs text-slate-600">{e.totalSamples}</td>
+                        {/* Convs */}
+                        <td className="px-4 py-3 text-center text-xs text-slate-600">{e.totalConversations}</td>
 
                         {/* Scores */}
                         <td className="px-4 py-3 text-center"><ScorePill value={overall} /></td>
-                        <td className="px-4 py-3 text-center"><ScorePill value={quality} /></td>
-                        <td className="px-4 py-3 text-center"><ScorePill value={hall} /></td>
-                        <td className="px-4 py-3 text-center"><ScorePill value={speed} /></td>
+                        <td className="px-4 py-3 text-center"><ScorePill value={socratic} /></td>
+                        <td className="px-4 py-3 text-center"><ScorePill value={accuracy} /></td>
+                        <td className="px-4 py-3 text-center"><ScorePill value={pedagogy} /></td>
 
                         {/* Pin badge */}
                         <td className="px-4 py-3 text-center">

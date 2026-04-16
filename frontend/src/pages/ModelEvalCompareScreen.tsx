@@ -18,7 +18,7 @@ interface RunMeta {
   projectName: string;
   judgeModel: string;
   completedAt: string;
-  totalSamples: number;
+  totalConversations: number;
 }
 
 type Winner = 'a' | 'b' | 'tie';
@@ -34,21 +34,20 @@ interface CompareResponse {
   runB: RunMeta;
   scoreSummary: {
     overall: ScoreCell;
-    quality: ScoreCell;
-    hallucination: ScoreCell;
-    speed: ScoreCell;
+    group_a: ScoreCell;
+    group_b: ScoreCell;
+    group_c: ScoreCell;
+    group_d: ScoreCell;
     bleu: ScoreCell;
     rouge_l: ScoreCell;
   };
   matchedSamples: {
-    instruction: string;
-    subject: string;
-    expected: string;
-    ft_answer_a: string;
-    ft_answer_b: string;
-    ft_score_a: number;
-    ft_score_b: number;
-    delta_ft: number;
+    conv_index: number;
+    num_turns_a: number;
+    num_turns_b: number;
+    overall_a: number;
+    overall_b: number;
+    delta_overall: number;
   }[];
   matchedCount: number;
   differentTestSetsNote: boolean;
@@ -117,9 +116,10 @@ export function ModelEvalCompareScreen() {
     const s = data.scoreSummary;
     return [
       { axis: 'Overall', runA: s.overall.a ?? 0, runB: s.overall.b ?? 0 },
-      { axis: 'Quality', runA: s.quality.a ?? 0, runB: s.quality.b ?? 0 },
-      { axis: 'Hallucination', runA: s.hallucination.a ?? 0, runB: s.hallucination.b ?? 0 },
-      { axis: 'Speed', runA: s.speed.a ?? 0, runB: s.speed.b ?? 0 },
+      { axis: 'Socratic Compliance', runA: s.group_a.a ?? 0, runB: s.group_a.b ?? 0 },
+      { axis: 'Độ chính xác nội dung', runA: s.group_b.a ?? 0, runB: s.group_b.b ?? 0 },
+      { axis: 'Chất lượng sư phạm', runA: s.group_c.a ?? 0, runB: s.group_c.b ?? 0 },
+      { axis: 'Hallucination + Tốc độ', runA: s.group_d.a ?? 0, runB: s.group_d.b ?? 0 },
     ];
   }, [data]);
 
@@ -127,9 +127,9 @@ export function ModelEvalCompareScreen() {
     if (!data) return [];
     const rows = data.matchedSamples;
     if (diffFilter === 'all') return rows;
-    if (diffFilter === 'improved') return rows.filter((r) => r.delta_ft > 0);
-    if (diffFilter === 'worse') return rows.filter((r) => r.delta_ft < 0);
-    return rows.filter((r) => r.delta_ft === 0);
+    if (diffFilter === 'improved') return rows.filter((r) => r.delta_overall > 0);
+    if (diffFilter === 'worse') return rows.filter((r) => r.delta_overall < 0);
+    return rows.filter((r) => r.delta_overall === 0);
   }, [data, diffFilter]);
 
   if (loading) {
@@ -161,9 +161,10 @@ export function ModelEvalCompareScreen() {
 
   const rows: { key: string; label: string; cell: ScoreCell }[] = [
     { key: 'overall', label: 'Overall', cell: scoreSummary.overall },
-    { key: 'quality', label: 'Quality', cell: scoreSummary.quality },
-    { key: 'hallucination', label: 'Hallucination', cell: scoreSummary.hallucination },
-    { key: 'speed', label: 'Speed', cell: scoreSummary.speed },
+    { key: 'group_a', label: 'Socratic Compliance', cell: scoreSummary.group_a },
+    { key: 'group_b', label: 'Độ chính xác nội dung', cell: scoreSummary.group_b },
+    { key: 'group_c', label: 'Chất lượng sư phạm', cell: scoreSummary.group_c },
+    { key: 'group_d', label: 'Hallucination + Tốc độ', cell: scoreSummary.group_d },
     { key: 'bleu', label: 'BLEU', cell: scoreSummary.bleu },
     { key: 'rouge', label: 'ROUGE-L', cell: scoreSummary.rouge_l },
   ];
@@ -209,7 +210,7 @@ export function ModelEvalCompareScreen() {
               <span className="text-slate-500">Ngày:</span> {fmtDate(runA.completedAt)}
             </div>
             <div className="text-sm">
-              <span className="text-slate-500">Samples:</span> {runA.totalSamples}
+              <span className="text-slate-500">Conversations:</span> {runA.totalConversations}
             </div>
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-2">
@@ -227,7 +228,7 @@ export function ModelEvalCompareScreen() {
               <span className="text-slate-500">Ngày:</span> {fmtDate(runB.completedAt)}
             </div>
             <div className="text-sm">
-              <span className="text-slate-500">Samples:</span> {runB.totalSamples}
+              <span className="text-slate-500">Conversations:</span> {runB.totalConversations}
             </div>
           </div>
         </div>
@@ -323,39 +324,37 @@ export function ModelEvalCompareScreen() {
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-slate-50 z-10">
                   <tr className="border-b border-slate-100">
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Subject</th>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 max-w-[200px]">
-                      Instruction
-                    </th>
-                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Điểm A</th>
-                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Điểm B</th>
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Conv Index</th>
+                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Turns A</th>
+                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Turns B</th>
+                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Overall A</th>
+                    <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Overall B</th>
                     <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500">Δ</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {filteredSamples.map((row, idx) => (
                     <tr
-                      key={`${row.instruction.slice(0, 80)}-${idx}`}
+                      key={`${row.conv_index}-${idx}`}
                       className="hover:bg-slate-50 cursor-pointer"
                       onClick={() => setPanelRow(row)}
                     >
-                      <td className="px-4 py-2 text-xs text-slate-600 whitespace-nowrap">{row.subject}</td>
-                      <td className="px-4 py-2 text-xs text-slate-700 max-w-[240px] truncate" title={row.instruction}>
-                        {row.instruction}
-                      </td>
-                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.ft_score_a.toFixed(2)}</td>
-                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.ft_score_b.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-xs text-slate-600 whitespace-nowrap">{row.conv_index}</td>
+                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.num_turns_a}</td>
+                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.num_turns_b}</td>
+                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.overall_a.toFixed(2)}</td>
+                      <td className="px-4 py-2 text-center tabular-nums text-xs">{row.overall_b.toFixed(2)}</td>
                       <td
                         className={`px-4 py-2 text-center text-xs font-semibold tabular-nums ${
-                          row.delta_ft > 0
+                          row.delta_overall > 0
                             ? 'text-emerald-600'
-                            : row.delta_ft < 0
+                            : row.delta_overall < 0
                               ? 'text-red-600'
                               : 'text-slate-500'
                         }`}
                       >
-                        {row.delta_ft > 0 ? '+' : ''}
-                        {row.delta_ft.toFixed(2)}
+                        {row.delta_overall > 0 ? '+' : ''}
+                        {row.delta_overall.toFixed(2)}
                       </td>
                     </tr>
                   ))}
@@ -377,7 +376,7 @@ export function ModelEvalCompareScreen() {
           />
           <div className="fixed top-0 right-0 h-full w-full max-w-3xl bg-white shadow-2xl z-[70] flex flex-col border-l border-slate-200">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between shrink-0">
-              <h4 className="text-sm font-semibold text-slate-800">Chi tiết câu trả lời (FT)</h4>
+              <h4 className="text-sm font-semibold text-slate-800">Chi tiết cuộc trò chuyện (Conversation #{panelRow.conv_index})</h4>
               <button
                 type="button"
                 onClick={() => setPanelRow(null)}
@@ -388,17 +387,31 @@ export function ModelEvalCompareScreen() {
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
               <div>
-                <div className="text-xs font-semibold text-slate-500 mb-1">Instruction</div>
-                <p className="text-sm text-slate-800 whitespace-pre-wrap">{panelRow.instruction}</p>
+                <div className="text-xs font-semibold text-slate-500 mb-1">Conversation Index</div>
+                <p className="text-sm text-slate-800">Conversation #{panelRow.conv_index}</p>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-4">
                   <div className="text-xs font-semibold text-indigo-700 mb-2">Run A — {labelA}</div>
-                  <div className="text-sm text-slate-800 whitespace-pre-wrap break-words">{panelRow.ft_answer_a}</div>
+                  <div className="space-y-2">
+                    <div className="text-sm">
+                      <span className="font-medium">Turns:</span> {panelRow.num_turns_a}
+                    </div>
+                    <div className="text-sm">
+                      <span className="font-medium">Overall Score:</span> {panelRow.overall_a.toFixed(2)}
+                    </div>
+                  </div>
                 </div>
                 <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-4">
                   <div className="text-xs font-semibold text-emerald-700 mb-2">Run B — {labelB}</div>
-                  <div className="text-sm text-slate-800 whitespace-pre-wrap break-words">{panelRow.ft_answer_b}</div>
+                  <div className="space-y-2">
+                    <div className="text-sm">
+                      <span className="font-medium">Turns:</span> {panelRow.num_turns_b}
+                    </div>
+                    <div className="text-sm">
+                      <span className="font-medium">Overall Score:</span> {panelRow.overall_b.toFixed(2)}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 interface CompletedJob {
   jobId: string;
@@ -19,19 +19,29 @@ interface EvalRun {
   projectName: string;
   judgeModel: string;
   phase: EvalPhase;
-  progress: { pct: number; stage_label: string; stage_detail: string; current: number; total: number; } | null;
+  progress: {
+    pct: number;
+    stage_label: string;
+    stage_detail: string;
+    current: number;
+    total: number;
+  } | null;
   etaSeconds: number | null;
   logs: string[];
   errorMsg: string;
   doneEvalId: string | null;
-  currentSample: { index: number; instruction: string; ft_answer: string | null; base_answer: string | null; } | null;
+  currentSample: {
+    index: number;
+    instruction: string;
+    ft_answer: string | null;
+  } | null;
   // kết quả tóm tắt khi COMPLETED (từ SSE end event)
   overallFt?: number | null;
   deltaImprov?: number | null;
   completedAt?: string;
 }
 
-type EvalPhase = 'idle' | 'uploading' | 'running' | 'done' | 'error';
+type EvalPhase = "idle" | "uploading" | "running" | "done" | "error";
 
 interface GpuStatus {
   can_create_eval: boolean;
@@ -46,75 +56,79 @@ interface GpuStatus {
 // Judge models cố định — thêm vào đây khi có model mới
 const JUDGE_MODELS = [
   {
-    id: 'claude-sonnet-4-5',
-    name: 'Claude Sonnet 4.5',
-    provider: 'Anthropic',
-    note: 'Khuyên dùng',
+    id: "claude-sonnet-4-5",
+    name: "Claude Sonnet 4.5",
+    provider: "Anthropic",
+    note: "Khuyên dùng",
     recommended: true,
   },
   {
-    id: 'claude-opus-4-5',
-    name: 'Claude Opus 4.5',
-    provider: 'Anthropic',
-    note: 'Chính xác cao, chậm hơn',
+    id: "claude-opus-4-5",
+    name: "Claude Opus 4.5",
+    provider: "Anthropic",
+    note: "Chính xác cao, chậm hơn",
     recommended: false,
   },
   {
-    id: 'gemini-2.0-flash',
-    name: 'Gemini 2.0 Flash',
-    provider: 'Google',
-    note: 'Nhanh, chi phí thấp',
+    id: "gemini-2.0-flash",
+    name: "Gemini 2.0 Flash",
+    provider: "Google",
+    note: "Nhanh, chi phí thấp",
     recommended: false,
   },
   {
-    id: 'deepseek-chat',
-    name: 'Deepseek Chat',
-    provider: 'Deepseek',
-    note: 'Chính xác, chi phí thấp',
+    id: "deepseek-chat",
+    name: "Deepseek Chat",
+    provider: "Deepseek",
+    note: "Chính xác, chi phí thấp",
     recommended: false,
   },
 ];
 
-
 const PROVIDER_COLORS: Record<string, string> = {
-  Anthropic: 'bg-amber-50 text-amber-700 border-amber-200',
-  Google: 'bg-sky-50 text-sky-700 border-sky-200',
-  OpenAI: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  Deepseek: 'bg-purple-50 text-purple-700 border-purple-200',
+  Anthropic: "bg-amber-50 text-amber-700 border-amber-200",
+  Google: "bg-sky-50 text-sky-700 border-sky-200",
+  OpenAI: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  Deepseek: "bg-purple-50 text-purple-700 border-purple-200",
 };
 
 // ─── ETA: khởi tạo 340 + N×15.5s; mỗi giây -=1; SSE tính lại theo stage ───────────────
 
 const SEC_INIT = 340;
 const SEC_PER_SAMPLE_INIT = 15.5;
-const SEC_AFTER_BASE_TAIL = 310 + 10; // 310s rubric + 10s finalize
-const SEC_PER_SAMPLE_BASE = 13; // N×13s trong phase infer_ft
 const SEC_RUBRIC = 310;
 const SEC_FINALIZE = 10;
 
-type EvalStageKey = 'infer_ft' | 'infer_base' | 'rubric' | 'finalize' | 'unknown';
+type EvalStageKey =
+  | "warmup"
+  | "replay"
+  | "judge"
+  | "rubric"
+  | "finalize"
+  | "unknown";
 
 function detectEvalStage(payload: Record<string, unknown>): EvalStageKey {
-  const raw = String(payload.stage ?? payload.stage_label ?? '').toLowerCase();
-  if (raw.includes('finalize') || raw.includes('tổng hợp')) return 'finalize';
-  if (raw.includes('rubric') || raw.includes('hallucinat')) return 'rubric';
-  if (raw.includes('infer_base') || (raw.includes('infer') && raw.includes('base'))) return 'infer_base';
-  if (raw.includes('infer_ft') || (raw.includes('infer') && raw.includes('ft'))) return 'infer_ft';
-
-  const sample = payload.current_sample as { ft_answer?: string | null; base_answer?: string | null } | undefined;
-  if (sample) {
-    if (sample.ft_answer == null && sample.base_answer == null) return 'infer_ft';
-    if (sample.ft_answer != null && sample.base_answer == null) return 'infer_base';
-  }
-  return 'unknown';
+  const raw = String(payload.stage ?? payload.stage_label ?? "").toLowerCase();
+  if (raw.includes("finalize") || raw.includes("tổng hợp")) return "finalize";
+  if (
+    raw.includes("judge") ||
+    raw.includes("judging") ||
+    raw.includes("rubric") ||
+    raw.includes("hallucinat")
+  )
+    return "judge";
+  if (raw.includes("replay")) return "replay";
+  if (raw.includes("warmup") || raw.includes("prepare") || raw.includes("init"))
+    return "warmup";
+  return "unknown";
 }
 
 /** ms: ưu tiên *_ms; field gốc: nếu > 1e4 coi là ms, ngược lại coi là giây (cho thời gian ngắn) */
 function pickMsMs(payload: Record<string, unknown>, keys: string[]): number {
   for (const k of keys) {
     const v = payload[k];
-    if (typeof v === 'number' && isFinite(v) && v >= 0) {
-      if (k.endsWith('_ms') || v > 1e4) return v;
+    if (typeof v === "number" && isFinite(v) && v >= 0) {
+      if (k.endsWith("_ms") || v > 1e4) return v;
       return v * 1000;
     }
   }
@@ -123,9 +137,9 @@ function pickMsMs(payload: Record<string, unknown>, keys: string[]): number {
 
 function pickRubricElapsedSec(payload: Record<string, unknown>): number {
   const ms = payload.elapsed_rubric_ms;
-  if (typeof ms === 'number' && isFinite(ms) && ms >= 0) return ms / 1000;
+  if (typeof ms === "number" && isFinite(ms) && ms >= 0) return ms / 1000;
   const s = payload.elapsed_rubric;
-  if (typeof s === 'number' && isFinite(s) && s >= 0) return s;
+  if (typeof s === "number" && isFinite(s) && s >= 0) return s;
   return 0;
 }
 
@@ -141,13 +155,14 @@ function oneBasedKFromPayload(payload: Record<string, unknown>): number {
 /**
  * Trả về ETA còn lại (giây) hoặc null nếu không đủ dữ liệu.
  */
-function computeEtaFromPayload(payload: Record<string, unknown>): number | null {
+function computeEtaFromPayload(
+  payload: Record<string, unknown>,
+): number | null {
   const stage = detectEvalStage(payload);
   const N = Number(payload.stage_total) || 0;
 
-  if (stage === 'finalize') return SEC_FINALIZE;
-
-  if (stage === 'rubric') {
+  if (stage === "finalize") return SEC_FINALIZE;
+  if (stage === "judge" || stage === "rubric") {
     const elapsedSec = pickRubricElapsedSec(payload);
     if (elapsedSec <= 0) return SEC_RUBRIC;
     return Math.max(0, SEC_RUBRIC - elapsedSec);
@@ -156,21 +171,20 @@ function computeEtaFromPayload(payload: Record<string, unknown>): number | null 
   const K = oneBasedKFromPayload(payload);
   if (N <= 0) return null;
 
-  if (stage === 'infer_ft') {
-    const elapsedFt = pickMsMs(payload, ['elapsed_ft_ms', 'elapsed_ft']);
-    if (elapsedFt <= 0) return null;
-    const ftDoneMs = elapsedFt / K;
-    const remainingMs =
-      (N - K) * ftDoneMs + N * SEC_PER_SAMPLE_BASE * 1000 + SEC_AFTER_BASE_TAIL * 1000;
-    return Math.max(0, Math.ceil(remainingMs / 1000));
-  }
-
-  if (stage === 'infer_base') {
-    const elapsedBase = pickMsMs(payload, ['elapsed_base_ms', 'elapsed_base']);
-    if (elapsedBase <= 0) return null;
-    const baseDoneMs = elapsedBase / K;
-    const remainingMs = (N - K) * baseDoneMs + SEC_AFTER_BASE_TAIL * 1000;
-    return Math.max(0, Math.ceil(remainingMs / 1000));
+  if (stage === "replay") {
+    const K = oneBasedKFromPayload(payload);
+    const N = Number(payload.stage_total) || 0;
+    if (N <= 0 || K <= 0) return null;
+    // Ước tính: mỗi conversation replay ~20s, sau đó judge ~30s/conv
+    const elapsed = pickMsMs(payload, ["elapsed_replay_ms", "elapsed_ms"]);
+    if (elapsed <= 0) return null;
+    const perConvMs = elapsed / K;
+    const remainingReplayMs = (N - K) * perConvMs;
+    const judgeMs = N * 30 * 1000;
+    return Math.max(
+      0,
+      Math.ceil((remainingReplayMs + judgeMs + SEC_FINALIZE * 1000) / 1000),
+    );
   }
 
   return null;
@@ -185,32 +199,43 @@ function formatEtaCountdown(totalSeconds: number): string {
     const mm = m % 60;
     return `${h}h ${mm}m`;
   }
-  return `${m}:${r.toString().padStart(2, '0')}`;
+  return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
 // ── RunCard: hiển thị 1 eval run (active hoặc done/error) ────────────────────
 const RunCard: React.FC<{
   run: EvalRun;
   expanded: boolean;
-  expandedTab: 'log' | 'preview';
+  expandedTab: "log" | "preview";
   logEndRef: React.RefObject<HTMLDivElement>;
   onToggle: () => void;
-  onTabChange: (tab: 'log' | 'preview') => void;
+  onTabChange: (tab: "log" | "preview") => void;
   onNavigate: (path: string) => void;
-}> = ({ run, expanded, expandedTab, logEndRef, onToggle, onTabChange, onNavigate }) => {
-  const isActive = run.phase === 'running' || run.phase === 'uploading';
+}> = ({
+  run,
+  expanded,
+  expandedTab,
+  logEndRef,
+  onToggle,
+  onTabChange,
+  onNavigate,
+}) => {
+  const isActive = run.phase === "running" || run.phase === "uploading";
 
   const badgeClass = {
-    uploading: 'bg-amber-50 text-amber-700 border border-amber-200',
-    running:   'bg-blue-50 text-blue-700 border border-blue-200',
-    done:      'bg-emerald-50 text-emerald-700 border border-emerald-200',
-    error:     'bg-red-50 text-red-700 border border-red-200',
-    idle:      '',
+    uploading: "bg-amber-50 text-amber-700 border border-amber-200",
+    running: "bg-blue-50 text-blue-700 border border-blue-200",
+    done: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+    error: "bg-red-50 text-red-700 border border-red-200",
+    idle: "",
   }[run.phase];
 
   const badgeLabel = {
-    uploading: 'Uploading', running: 'Running',
-    done: 'Completed', error: 'Failed', idle: '',
+    uploading: "Uploading",
+    running: "Running",
+    done: "Completed",
+    error: "Failed",
+    idle: "",
   }[run.phase];
 
   return (
@@ -218,43 +243,84 @@ const RunCard: React.FC<{
       {/* Card header */}
       <div className="px-4 py-3 flex items-center gap-3">
         {/* Status indicator */}
-        {run.phase === 'running' && (
+        {run.phase === "running" && (
           <div className="w-3.5 h-3.5 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin shrink-0" />
         )}
-        {run.phase === 'done' && <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />}
-        {run.phase === 'error' && <div className="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0" />}
-        {run.phase === 'uploading' && <div className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 animate-pulse" />}
+        {run.phase === "done" && (
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />
+        )}
+        {run.phase === "error" && (
+          <div className="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0" />
+        )}
+        {run.phase === "uploading" && (
+          <div className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 animate-pulse" />
+        )}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-slate-800 truncate">{run.projectName}</span>
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${badgeClass}`}>{badgeLabel}</span>
+            <span className="text-sm font-semibold text-slate-800 truncate">
+              {run.projectName}
+            </span>
+            <span
+              className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${badgeClass}`}
+            >
+              {badgeLabel}
+            </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
             {run.judgeModel}
-            {run.phase === 'running' && run.progress && run.progress.total > 0 && (
-              <> · {run.progress.stage_label} · {run.progress.current}/{run.progress.total} mẫu</>
+            {run.phase === "running" &&
+              run.progress &&
+              run.progress.total > 0 && (
+                <>
+                  {" "}
+                  · {run.progress.stage_label} · {run.progress.current}/
+                  {run.progress.total} mẫu
+                </>
+              )}
+            {run.phase === "done" && run.completedAt && (
+              <> · Hoàn thành lúc {run.completedAt}</>
             )}
-            {run.phase === 'done' && run.completedAt && <> · Hoàn thành lúc {run.completedAt}</>}
-            {run.phase === 'error' && <> · <span className="text-red-400">{run.errorMsg}</span></>}
+            {run.phase === "error" && (
+              <>
+                {" "}
+                · <span className="text-red-400">{run.errorMsg}</span>
+              </>
+            )}
           </div>
         </div>
 
         {/* ETA / action */}
         <div className="flex items-center gap-2 shrink-0">
-          {run.phase === 'running' && run.etaSeconds != null && (
-            <span className="text-xs font-mono text-slate-500">~{formatEtaCountdown(run.etaSeconds)}</span>
+          {run.phase === "running" && run.etaSeconds != null && (
+            <span className="text-xs font-mono text-slate-500">
+              ~{formatEtaCountdown(run.etaSeconds)}
+            </span>
           )}
-          {run.phase === 'done' && run.doneEvalId && (
-            <button onClick={() => onNavigate(`/model-eval/${run.doneEvalId}`)}
-              className="text-xs font-semibold text-slate-700 hover:text-slate-900 border border-slate-200 px-2.5 py-1 rounded-lg transition">
+          {run.phase === "done" && run.doneEvalId && (
+            <button
+              onClick={() => onNavigate(`/model-eval/${run.doneEvalId}`)}
+              className="text-xs font-semibold text-slate-700 hover:text-slate-900 border border-slate-200 px-2.5 py-1 rounded-lg transition"
+            >
               Xem kết quả
             </button>
           )}
-          <button onClick={onToggle}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition">
-            <svg className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          <button
+            onClick={onToggle}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+          >
+            <svg
+              className={`w-4 h-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
             </svg>
           </button>
         </div>
@@ -265,24 +331,39 @@ const RunCard: React.FC<{
         <div className="px-4 pb-3">
           {/* Stage steps */}
           <div className="flex gap-1 mb-2">
-            {Object.entries({ 'Khởi động': 5, 'Inference FT': 35, 'Inference Base': 60, 'Chấm điểm': 85, 'Tổng hợp': 98 })
-              .map(([label, threshold]) => {
-                const pct = run.progress?.pct ?? 0;
-                const done = pct >= threshold;
-                const active = pct >= threshold - 25 && pct < threshold;
-                return (
-                  <div key={label} className="flex-1">
-                    <div className={`h-0.5 rounded-full mb-1 transition-all duration-500 ${done ? 'bg-emerald-400' : active ? 'bg-blue-400' : 'bg-slate-200'}`} />
-                    <p className={`text-[9px] text-center truncate ${done ? 'text-emerald-600' : active ? 'text-blue-500' : 'text-slate-300'}`}>{label}</p>
-                  </div>
-                );
-              })}
+            {Object.entries({
+              Warmup: 10,
+              Replay: 35,
+              Judging: 75,
+              Finalize: 98,
+            }).map(([label, threshold]) => {
+              const pct = run.progress?.pct ?? 0;
+              const done = pct >= threshold;
+              const active = pct >= threshold - 25 && pct < threshold;
+              return (
+                <div key={label} className="flex-1">
+                  <div
+                    className={`h-0.5 rounded-full mb-1 transition-all duration-500 ${done ? "bg-emerald-400" : active ? "bg-blue-400" : "bg-slate-200"}`}
+                  />
+                  <p
+                    className={`text-[9px] text-center truncate ${done ? "text-emerald-600" : active ? "text-blue-500" : "text-slate-300"}`}
+                  >
+                    {label}
+                  </p>
+                </div>
+              );
+            })}
           </div>
           <div className="flex items-center gap-2">
             <div className="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-slate-700 rounded-full transition-all duration-500" style={{ width: `${run.progress?.pct ?? 0}%` }} />
+              <div
+                className="h-full bg-slate-700 rounded-full transition-all duration-500"
+                style={{ width: `${run.progress?.pct ?? 0}%` }}
+              />
             </div>
-            <span className="text-[10px] font-mono text-slate-400 shrink-0">{run.progress?.pct ?? 0}%</span>
+            <span className="text-[10px] font-mono text-slate-400 shrink-0">
+              {run.progress?.pct ?? 0}%
+            </span>
           </div>
         </div>
       )}
@@ -291,66 +372,102 @@ const RunCard: React.FC<{
       {expanded && (
         <div className="border-t border-slate-100">
           <div className="flex border-b border-slate-100">
-            {(['log', 'preview'] as const).map(tab => (
-              <button key={tab} onClick={() => onTabChange(tab)}
-                className={`px-4 py-2 text-xs font-semibold border-b-2 transition -mb-px ${expandedTab === tab ? 'border-slate-800 text-slate-800' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                {tab === 'log' ? 'Terminal Log' : 'Inference Preview'}
-                {tab === 'preview' && run.currentSample !== null && (
-                  <span className="ml-1.5 text-[9px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full font-bold">LIVE</span>
+            {(["log", "preview"] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => onTabChange(tab)}
+                className={`px-4 py-2 text-xs font-semibold border-b-2 transition -mb-px ${expandedTab === tab ? "border-slate-800 text-slate-800" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+              >
+                {tab === "log" ? "Terminal Log" : "Inference Preview"}
+                {tab === "preview" && run.currentSample !== null && (
+                  <span className="ml-1.5 text-[9px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full font-bold">
+                    LIVE
+                  </span>
                 )}
               </button>
             ))}
           </div>
 
-          {expandedTab === 'log' && (
+          {expandedTab === "log" && (
             <div className="bg-slate-900 p-4 h-48 overflow-y-auto font-mono text-[11px] leading-relaxed">
-              {run.logs.length === 0
-                ? <p className="text-slate-500">Chờ log từ GPU service...</p>
-                : run.logs.map((log, i) => (
-                  <p key={i} className={
-                    log.includes('✅') || log.includes('🎉') ? 'text-emerald-400' :
-                    log.includes('❌') || log.includes('LỖI') ? 'text-red-400' :
-                    log.includes('⚡') || log.includes('📊') || log.includes('📐') ? 'text-blue-400' :
-                    log.includes('⚙️') ? 'text-amber-400' : 'text-slate-300'
-                  }>{log}</p>
-                ))}
+              {run.logs.length === 0 ? (
+                <p className="text-slate-500">Chờ log từ GPU service...</p>
+              ) : (
+                run.logs.map((log, i) => (
+                  <p
+                    key={i}
+                    className={
+                      log.includes("✅") || log.includes("🎉")
+                        ? "text-emerald-400"
+                        : log.includes("❌") || log.includes("LỖI")
+                          ? "text-red-400"
+                          : log.includes("⚡") ||
+                              log.includes("📊") ||
+                              log.includes("📐")
+                            ? "text-blue-400"
+                            : log.includes("⚙️")
+                              ? "text-amber-400"
+                              : "text-slate-300"
+                    }
+                  >
+                    {log}
+                  </p>
+                ))
+              )}
               <div ref={logEndRef} />
             </div>
           )}
 
-          {expandedTab === 'preview' && (
+          {expandedTab === "preview" && (
             <div className="p-4 h-48 overflow-y-auto">
               {run.currentSample === null ? (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
-                  <svg className="w-7 h-7 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  <svg
+                    className="w-7 h-7 text-slate-200"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                    />
                   </svg>
                   <p className="text-xs">Chờ inference bắt đầu...</p>
                 </div>
               ) : (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Câu #{run.currentSample.index + 1}</span>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${run.currentSample.base_answer !== null ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {run.currentSample.base_answer !== null ? 'FT + Base ✓' : 'FT only — Base đang chạy...'}
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Câu #{run.currentSample.index + 1}
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                      Live
                     </span>
                   </div>
                   <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Câu hỏi</p>
-                    <p className="text-xs text-slate-800 leading-relaxed">{run.currentSample.instruction}</p>
+                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">
+                      Câu hỏi
+                    </p>
+                    <p className="text-xs text-slate-800 leading-relaxed">
+                      {run.currentSample.instruction}
+                    </p>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-purple-50 rounded-lg p-2.5 border border-purple-100">
-                      <p className="text-[10px] uppercase font-bold text-purple-500 mb-1">FT Answer</p>
-                      <p className="text-xs text-slate-800 leading-relaxed whitespace-pre-wrap">{run.currentSample.ft_answer ?? '—'}</p>
-                    </div>
-                    <div className={`rounded-lg p-2.5 border ${run.currentSample.base_answer !== null ? 'bg-slate-50 border-slate-200' : 'bg-slate-50 border-dashed border-slate-200'}`}>
-                      <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Base Answer</p>
-                      {run.currentSample.base_answer !== null
-                        ? <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{run.currentSample.base_answer}</p>
-                        : <p className="text-xs text-slate-400 animate-pulse">Đang chạy...</p>}
-                    </div>
+                  <div className="bg-purple-50 rounded-lg p-2.5 border border-purple-100">
+                    <p className="text-[10px] uppercase font-bold text-purple-500 mb-1">
+                      Model Response
+                    </p>
+                    <p className="text-xs text-slate-800 leading-relaxed whitespace-pre-wrap">
+                      {run.currentSample.ft_answer ?? "—"}
+                    </p>
                   </div>
                 </div>
               )}
@@ -373,19 +490,29 @@ export const ModelEvalRunScreen: React.FC = () => {
   const [runs, setRuns] = useState<EvalRun[]>([]);
   // evalJobId của run đang expand (hiện log + preview)
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const [expandedTab, setExpandedTab] = useState<'log' | 'preview'>('log');
+  const [expandedTab, setExpandedTab] = useState<"log" | "preview">("log");
 
   // ── Modal tạo eval mới ────────────────────────────────────────────────
   const [showModal, setShowModal] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<GpuStatus | null>(null);
   const [gpuLoading, setGpuLoading] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<string>('');
+  const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [judgeModel, setJudgeModel] = useState<string>(JUDGE_MODELS[0].id);
-  const [jobSearch, setJobSearch] = useState<string>('');
+  const [jobSearch, setJobSearch] = useState<string>("");
   const [evalFile, setEvalFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [submitPhase, setSubmitPhase] = useState<'idle' | 'uploading' | 'error'>('idle');
-  const [submitError, setSubmitError] = useState<string>('');
+  const [datasetPreview, setDatasetPreview] = useState<{
+    totalConvs: number;
+    turnDist: { label: string; count: number }[];
+    samples: { turns: { role: string; content: string }[] }[];
+    hasSystemPrompt: boolean;
+  } | null>(null);
+  const [expandedSample, setExpandedSample] = useState<number | null>(null);
+
+  const [submitPhase, setSubmitPhase] = useState<
+    "idle" | "uploading" | "error"
+  >("idle");
+  const [submitError, setSubmitError] = useState<string>("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -393,17 +520,22 @@ export const ModelEvalRunScreen: React.FC = () => {
   // SSE refs: evalJobId → EventSource
   const sseMapRef = useRef<Map<string, EventSource>>(new Map());
   // ETA refs: evalJobId → { seconds, lastStage }
-  const etaMapRef = useRef<Map<string, { seconds: number | null; lastStage: EvalStageKey }>>(new Map());
+  const etaMapRef = useRef<
+    Map<string, { seconds: number | null; lastStage: EvalStageKey }>
+  >(new Map());
 
   // ── Fetch GPU status ─────────────────────────────────────────────────
   const fetchGpuStatus = async () => {
     setGpuLoading(true);
     try {
-      const r = await fetch('/api/model-eval/gpu-status');
+      const r = await fetch("/api/model-eval/gpu-status");
       if (r.ok) setGpuStatus(await r.json());
       else setGpuStatus(null);
-    } catch { setGpuStatus(null); }
-    finally { setGpuLoading(false); }
+    } catch {
+      setGpuStatus(null);
+    } finally {
+      setGpuLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -415,11 +547,12 @@ export const ModelEvalRunScreen: React.FC = () => {
 
   // ── Fetch jobs list ───────────────────────────────────────────────────
   useEffect(() => {
-    fetch('/api/train/history?status=COMPLETED')
-      .then(r => r.json())
+    fetch("/api/train/history?status=COMPLETED")
+      .then((r) => r.json())
       .then((data: CompletedJob[]) => {
-        const completedWithRepo = data.filter(j =>
-          j.hfRepoId && (!j.status || j.status.toUpperCase() === 'COMPLETED')
+        const completedWithRepo = data.filter(
+          (j) =>
+            j.hfRepoId && (!j.status || j.status.toUpperCase() === "COMPLETED"),
         );
         setJobs(completedWithRepo);
         setLoadingJobs(false);
@@ -429,20 +562,22 @@ export const ModelEvalRunScreen: React.FC = () => {
 
   // ── Auto-scroll log ───────────────────────────────────────────────────
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [runs, expandedRunId]);
 
   // ── ETA countdown: 1 interval dùng chung, tick mỗi giây ──────────────
   useEffect(() => {
     const id = window.setInterval(() => {
-      setRuns(prev => prev.map(run => {
-        if (run.phase !== 'running') return run;
-        const eta = etaMapRef.current.get(run.evalJobId);
-        if (!eta || eta.seconds === null) return run;
-        const next = eta.seconds > 0 ? eta.seconds - 1 : 0;
-        eta.seconds = next;
-        return { ...run, etaSeconds: next };
-      }));
+      setRuns((prev) =>
+        prev.map((run) => {
+          if (run.phase !== "running") return run;
+          const eta = etaMapRef.current.get(run.evalJobId);
+          if (!eta || eta.seconds === null) return run;
+          const next = eta.seconds > 0 ? eta.seconds - 1 : 0;
+          eta.seconds = next;
+          return { ...run, etaSeconds: next };
+        }),
+      );
     }, 1000);
     return () => clearInterval(id);
   }, []);
@@ -450,52 +585,72 @@ export const ModelEvalRunScreen: React.FC = () => {
   // ── Cleanup all SSE on unmount ────────────────────────────────────────
   useEffect(() => {
     return () => {
-      sseMapRef.current.forEach(es => es.close());
+      sseMapRef.current.forEach((es) => es.close());
     };
   }, []);
 
   // ── Reconnect từ sessionStorage khi mount ────────────────────────────
   useEffect(() => {
-    const stored = sessionStorage.getItem('active_eval_runs');
+    const stored = sessionStorage.getItem("active_eval_runs");
     if (!stored) return;
     try {
-      const saved: Array<{ evalJobId: string; jobId: string; projectName: string; judgeModel: string }> = JSON.parse(stored);
-      saved.forEach(s => {
+      const saved: Array<{
+        evalJobId: string;
+        jobId: string;
+        projectName: string;
+        judgeModel: string;
+      }> = JSON.parse(stored);
+      saved.forEach((s) => {
         const run: EvalRun = {
-          evalJobId: s.evalJobId, jobId: s.jobId,
-          projectName: s.projectName, judgeModel: s.judgeModel,
-          phase: 'running', progress: null, etaSeconds: null,
+          evalJobId: s.evalJobId,
+          jobId: s.jobId,
+          projectName: s.projectName,
+          judgeModel: s.judgeModel,
+          phase: "running",
+          progress: null,
+          etaSeconds: null,
           logs: [`[🔄] Khôi phục kết nối: ${s.evalJobId}`],
-          errorMsg: '', doneEvalId: null, currentSample: null,
+          errorMsg: "",
+          doneEvalId: null,
+          currentSample: null,
         };
-        setRuns(prev => [...prev, run]);
+        setRuns((prev) => [...prev, run]);
         connectSSE(s.evalJobId);
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Lưu active runs vào sessionStorage mỗi khi runs thay đổi ─────────
   useEffect(() => {
     const active = runs
-      .filter(r => r.phase === 'running' || r.phase === 'uploading')
-      .map(r => ({ evalJobId: r.evalJobId, jobId: r.jobId, projectName: r.projectName, judgeModel: r.judgeModel }));
+      .filter((r) => r.phase === "running" || r.phase === "uploading")
+      .map((r) => ({
+        evalJobId: r.evalJobId,
+        jobId: r.jobId,
+        projectName: r.projectName,
+        judgeModel: r.judgeModel,
+      }));
     if (active.length > 0) {
-      sessionStorage.setItem('active_eval_runs', JSON.stringify(active));
+      sessionStorage.setItem("active_eval_runs", JSON.stringify(active));
     } else {
-      sessionStorage.removeItem('active_eval_runs');
+      sessionStorage.removeItem("active_eval_runs");
     }
   }, [runs]);
 
   // ── Helper: update 1 run trong list ──────────────────────────────────
   const updateRun = (evalJobId: string, patch: Partial<EvalRun>) => {
-    setRuns(prev => prev.map(r => r.evalJobId === evalJobId ? { ...r, ...patch } : r));
+    setRuns((prev) =>
+      prev.map((r) => (r.evalJobId === evalJobId ? { ...r, ...patch } : r)),
+    );
   };
 
   // ── connectSSE: kết nối SSE cho 1 eval run ───────────────────────────
   const connectSSE = (evalJobId: string) => {
     if (sseMapRef.current.has(evalJobId)) return; // đã có rồi
-    etaMapRef.current.set(evalJobId, { seconds: null, lastStage: 'unknown' });
+    etaMapRef.current.set(evalJobId, { seconds: null, lastStage: "unknown" });
 
     const es = new EventSource(`/api/model-eval/stream/${evalJobId}`);
     sseMapRef.current.set(evalJobId, es);
@@ -505,85 +660,143 @@ export const ModelEvalRunScreen: React.FC = () => {
         const payload = JSON.parse(e.data);
         const p = payload as Record<string, unknown>;
 
-        const progressPatch = typeof payload.progress === 'number' ? {
-          progress: {
-            pct: payload.progress,
-            stage_label: payload.stage_label || '',
-            stage_detail: payload.stage_detail || '',
-            current: payload.stage_current || 0,
-            total: payload.stage_total || 0,
-          }
-        } : {};
+        const progressPatch =
+          typeof payload.progress === "number"
+            ? {
+                progress: {
+                  pct: payload.progress,
+                  stage_label: payload.stage_label || "",
+                  stage_detail: payload.stage_detail || "",
+                  current: payload.stage_current || 0,
+                  total: payload.stage_total || 0,
+                },
+              }
+            : {};
 
         // ETA
         const eta = etaMapRef.current.get(evalJobId)!;
         const currentStage = detectEvalStage(p);
         const etaRecalc = computeEtaFromPayload(p);
         if (etaRecalc !== null) {
-          const isTransition = currentStage !== 'unknown' && currentStage !== eta.lastStage;
-          if (isTransition) { eta.seconds = etaRecalc; eta.lastStage = currentStage; }
-          else if (eta.seconds === null) { eta.seconds = etaRecalc; }
-          else if (etaRecalc < eta.seconds) { eta.seconds = etaRecalc; }
-        } else if (typeof p.stage_total === 'number' && p.stage_total > 0 && eta.seconds === null) {
+          const isTransition =
+            currentStage !== "unknown" && currentStage !== eta.lastStage;
+          if (isTransition) {
+            eta.seconds = etaRecalc;
+            eta.lastStage = currentStage;
+          } else if (eta.seconds === null) {
+            eta.seconds = etaRecalc;
+          } else if (etaRecalc < eta.seconds) {
+            eta.seconds = etaRecalc;
+          }
+        } else if (
+          typeof p.stage_total === "number" &&
+          p.stage_total > 0 &&
+          eta.seconds === null
+        ) {
           eta.seconds = SEC_INIT + p.stage_total * SEC_PER_SAMPLE_INIT;
         }
-        if (currentStage !== 'unknown') eta.lastStage = currentStage;
+        if (currentStage !== "unknown") eta.lastStage = currentStage;
 
         updateRun(evalJobId, {
           ...progressPatch,
           etaSeconds: eta.seconds,
-          ...(payload.logs?.length ? {
-            logs: (() => {
-              let updated: string[] = [];
-              setRuns(prev => {
-                const run = prev.find(r => r.evalJobId === evalJobId);
-                const existing = run?.logs ?? [];
-                const newLogs = payload.logs.filter((l: string) => !existing.includes(l));
-                updated = [...existing, ...newLogs];
-                return prev;
-              });
-              return updated;
-            })()
-          } : {}),
-          ...(payload.current_sample ? { currentSample: payload.current_sample } : {}),
+          ...(payload.logs?.length
+            ? {
+                logs: (() => {
+                  let updated: string[] = [];
+                  setRuns((prev) => {
+                    const run = prev.find((r) => r.evalJobId === evalJobId);
+                    const existing = run?.logs ?? [];
+                    const newLogs = payload.logs.filter(
+                      (l: string) => !existing.includes(l),
+                    );
+                    updated = [...existing, ...newLogs];
+                    return prev;
+                  });
+                  return updated;
+                })(),
+              }
+            : {}),
+          ...(payload.current_sample
+            ? { currentSample: payload.current_sample }
+            : {}),
         });
 
         // logs cần update riêng để tránh closure stale
         if (payload.logs?.length) {
-          setRuns(prev => prev.map(r => {
-            if (r.evalJobId !== evalJobId) return r;
-            const newLogs = payload.logs.filter((l: string) => !r.logs.includes(l));
-            return newLogs.length ? { ...r, logs: [...r.logs, ...newLogs] } : r;
-          }));
+          setRuns((prev) =>
+            prev.map((r) => {
+              if (r.evalJobId !== evalJobId) return r;
+              const newLogs = payload.logs.filter(
+                (l: string) => !r.logs.includes(l),
+              );
+              return newLogs.length
+                ? { ...r, logs: [...r.logs, ...newLogs] }
+                : r;
+            }),
+          );
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
 
-    es.addEventListener('end', (e) => {
+    es.addEventListener("end", (e) => {
       try {
         const payload = JSON.parse((e as MessageEvent).data);
-        if (payload.status === 'COMPLETED') {
+        if (payload.status === "COMPLETED") {
           updateRun(evalJobId, {
-            phase: 'done',
+            phase: "done",
             doneEvalId: evalJobId,
-            logs: (() => { let l: string[] = []; setRuns(prev => { l = [...(prev.find(r=>r.evalJobId===evalJobId)?.logs??[]), '[🎉] Đánh giá hoàn tất!']; return prev; }); return l; })(),
+            logs: (() => {
+              let l: string[] = [];
+              setRuns((prev) => {
+                l = [
+                  ...(prev.find((r) => r.evalJobId === evalJobId)?.logs ?? []),
+                  "[🎉] Đánh giá hoàn tất!",
+                ];
+                return prev;
+              });
+              return l;
+            })(),
           });
-          setRuns(prev => prev.map(r => r.evalJobId === evalJobId
-            ? { ...r, phase: 'done', doneEvalId: evalJobId, logs: [...r.logs, '[🎉] Đánh giá hoàn tất!'],
-                completedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
-            : r
-          ));
+          setRuns((prev) =>
+            prev.map((r) =>
+              r.evalJobId === evalJobId
+                ? {
+                    ...r,
+                    phase: "done",
+                    doneEvalId: evalJobId,
+                    logs: [...r.logs, "[🎉] Đánh giá hoàn tất!"],
+                    completedAt: new Date().toLocaleTimeString("vi-VN", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }),
+                  }
+                : r,
+            ),
+          );
         } else {
-          updateRun(evalJobId, { phase: 'error', errorMsg: payload.error || 'Eval thất bại' });
+          updateRun(evalJobId, {
+            phase: "error",
+            errorMsg: payload.error || "Eval thất bại",
+          });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       es.close();
       sseMapRef.current.delete(evalJobId);
     });
 
-    es.addEventListener('error', (e) => {
-      try { updateRun(evalJobId, { phase: 'error', errorMsg: JSON.parse((e as MessageEvent).data).error || 'Lỗi kết nối' }); } catch {
-        updateRun(evalJobId, { phase: 'error', errorMsg: 'Lỗi kết nối SSE' });
+    es.addEventListener("error", (e) => {
+      try {
+        updateRun(evalJobId, {
+          phase: "error",
+          errorMsg: JSON.parse((e as MessageEvent).data).error || "Lỗi kết nối",
+        });
+      } catch {
+        updateRun(evalJobId, { phase: "error", errorMsg: "Lỗi kết nối SSE" });
       }
       es.close();
       sseMapRef.current.delete(evalJobId);
@@ -592,116 +805,235 @@ export const ModelEvalRunScreen: React.FC = () => {
 
   // ── Validate file ─────────────────────────────────────────────────────
   const validateAndSetFile = (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    if (!['json', 'jsonl'].includes(ext ?? '')) {
-      setSubmitError('Chỉ chấp nhận file .json hoặc .jsonl');
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!["json", "jsonl"].includes(ext ?? "")) {
+      setSubmitError("Chỉ chấp nhận file .json hoặc .jsonl");
       return;
     }
     setEvalFile(file);
-    setSubmitError('');
+    setSubmitError("");
+    setDatasetPreview(null);
+    setExpandedSample(null);
+
+    // Parse preview client-side — không upload, chỉ đọc
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        let convs: { messages: { role: string; content: string }[] }[] = [];
+
+        if (ext === "jsonl") {
+          convs = text
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => {
+              try {
+                return JSON.parse(line);
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean);
+        } else {
+          const parsed = JSON.parse(text);
+          convs = Array.isArray(parsed) ? parsed : [parsed];
+        }
+
+        // Turn distribution
+        const buckets: Record<string, number> = {
+          "1-2": 0,
+          "3-5": 0,
+          "6-10": 0,
+          "11+": 0,
+        };
+        let hasSystem = false;
+        convs.forEach((c) => {
+          const msgs = c.messages ?? [];
+          const n = msgs.filter((m: any) => m.role !== "system").length;
+          if (msgs.some((m: any) => m.role === "system")) hasSystem = true;
+          if (n <= 2) buckets["1-2"]++;
+          else if (n <= 5) buckets["3-5"]++;
+          else if (n <= 10) buckets["6-10"]++;
+          else buckets["11+"]++;
+        });
+
+        setDatasetPreview({
+          totalConvs: convs.length,
+          turnDist: Object.entries(buckets).map(([label, count]) => ({
+            label,
+            count,
+          })),
+          samples: convs.slice(0, 3).map((c) => ({ turns: c.messages ?? [] })),
+          hasSystemPrompt: hasSystem,
+        });
+      } catch {
+        setSubmitError("File không đúng format JSON/JSONL");
+        setEvalFile(null);
+      }
+    };
+    reader.readAsText(file);
   };
 
   // ── Submit eval mới ───────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!selectedJobId || !evalFile) return;
-    setSubmitPhase('uploading');
-    setSubmitError('');
+    setSubmitPhase("uploading");
+    setSubmitError("");
 
     try {
       const formData = new FormData();
-      formData.append('eval_file', evalFile);
-      formData.append('judge_model', judgeModel);
+      formData.append("eval_file", evalFile);
+      formData.append("judge_model", judgeModel);
 
-      const res = await fetch(`/api/model-eval/run/${selectedJobId}`, { method: 'POST', body: formData });
+      const res = await fetch(`/api/model-eval/run/${selectedJobId}`, {
+        method: "POST",
+        body: formData,
+      });
       const data = await res.json();
 
       if (!res.ok) {
-        setSubmitPhase('error');
-        if (res.status === 503 && data.error === 'worker_busy') {
-          setSubmitError('Tất cả workers đang bận. Vui lòng thử lại sau ít phút.');
+        setSubmitPhase("error");
+        if (res.status === 503 && data.error === "worker_busy") {
+          setSubmitError(
+            "Tất cả workers đang bận. Vui lòng thử lại sau ít phút.",
+          );
         } else {
-          setSubmitError(data.error || 'Không thể bắt đầu đánh giá');
+          setSubmitError(data.error || "Không thể bắt đầu đánh giá");
         }
         return;
       }
 
       const newEvalJobId: string = data.eval_job_id;
-      const selectedJob = jobs.find(j => j.jobId === selectedJobId);
+      const selectedJob = jobs.find((j) => j.jobId === selectedJobId);
       const newRun: EvalRun = {
         evalJobId: newEvalJobId,
         jobId: selectedJobId,
         projectName: selectedJob?.projectName ?? selectedJobId,
         judgeModel,
-        phase: 'running',
+        phase: "running",
         progress: null,
         etaSeconds: null,
         logs: [`[✅] Eval job bắt đầu: ${newEvalJobId}`],
-        errorMsg: '',
+        errorMsg: "",
         doneEvalId: null,
         currentSample: null,
       };
 
-      setRuns(prev => [newRun, ...prev]);
+      setRuns((prev) => [newRun, ...prev]);
       connectSSE(newEvalJobId);
       setExpandedRunId(newEvalJobId);
 
       // Reset modal
       setShowModal(false);
-      setSubmitPhase('idle');
-      setSelectedJobId('');
+      setSubmitPhase("idle");
+      setSelectedJobId("");
       setEvalFile(null);
-      setJobSearch('');
+      setJobSearch("");
     } catch (err: any) {
-      setSubmitPhase('error');
-      setSubmitError(err.message || 'Lỗi không xác định');
+      setSubmitPhase("error");
+      setSubmitError(err.message || "Lỗi không xác định");
     }
   };
 
   // ── Derived ───────────────────────────────────────────────────────────
-  const activeRuns = runs.filter(r => r.phase === 'running' || r.phase === 'uploading');
-  const todayRuns = runs.filter(r => r.phase === 'done' || r.phase === 'error');
-  const selectedJob = jobs.find(j => j.jobId === selectedJobId);
-  const filteredJobs = jobs.filter(j => {
+  const activeRuns = runs.filter(
+    (r) => r.phase === "running" || r.phase === "uploading",
+  );
+  const todayRuns = runs.filter(
+    (r) => r.phase === "done" || r.phase === "error",
+  );
+  const selectedJob = jobs.find((j) => j.jobId === selectedJobId);
+  const filteredJobs = jobs.filter((j) => {
     const q = jobSearch.toLowerCase();
-    return j.projectName.toLowerCase().includes(q) || j.baseModel.toLowerCase().includes(q) || j.hfRepoId.toLowerCase().includes(q);
+    return (
+      j.projectName.toLowerCase().includes(q) ||
+      j.baseModel.toLowerCase().includes(q) ||
+      j.hfRepoId.toLowerCase().includes(q)
+    );
   });
-  const canSubmit = !!selectedJobId && !!evalFile && !!judgeModel && submitPhase === 'idle';
-  const maxEta = activeRuns.reduce((max, r) => Math.max(max, r.etaSeconds ?? 0), 0);
+  const canSubmit =
+    !!selectedJobId && !!evalFile && !!judgeModel && submitPhase === "idle";
+  const maxEta = activeRuns.reduce(
+    (max, r) => Math.max(max, r.etaSeconds ?? 0),
+    0,
+  );
   // can_create_eval từ GPU (VRAM + slots), fallback về slot count nếu GPU offline
-  const canCreateEval = gpuStatus ? gpuStatus.can_create_eval : activeRuns.length < 3;
-  const vramUsedPct = gpuStatus ? Math.round(gpuStatus.vram_used_mb / gpuStatus.vram_total_mb * 100) : null;
+  const gpuOnline = gpuStatus !== null;
+  const canCreateEval = gpuOnline && gpuStatus!.can_create_eval;
+  const vramUsedPct = gpuStatus
+    ? Math.round((gpuStatus.vram_used_mb / gpuStatus.vram_total_mb) * 100)
+    : null;
 
   return (
     <div className="min-h-screen bg-slate-50 pb-16">
-
       {/* Header */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <button onClick={() => navigate('/model-eval/leaderboard')} className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            <button
+              onClick={() => navigate("/model-eval/leaderboard")}
+              className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 19l-7-7 7-7"
+                />
               </svg>
             </button>
             <div>
-              <h1 className="text-xl font-bold text-slate-800">Đánh giá model</h1>
+              <h1 className="text-xl font-bold text-slate-800">
+                Đánh giá model
+              </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                {gpuStatus === null && !gpuLoading
-                  ? <span className="text-red-400">GPU offline</span>
-                  : activeRuns.length > 0
-                  ? `${activeRuns.length} đang chạy · ${3 - activeRuns.length} slot trống`
-                  : 'Chưa có eval nào đang chạy'}
+                {gpuStatus === null && !gpuLoading ? (
+                  <span className="text-red-400">GPU offline</span>
+                ) : activeRuns.length > 0 ? (
+                  `${activeRuns.length} đang chạy · ${3 - activeRuns.length} slot trống`
+                ) : (
+                  "Chưa có eval nào đang chạy"
+                )}
               </p>
             </div>
           </div>
           <button
-            onClick={() => { if (canCreateEval) { setShowModal(true); setSubmitPhase('idle'); setSubmitError(''); } }}
+            onClick={() => {
+              if (canCreateEval) {
+                setShowModal(true);
+                setSubmitPhase("idle");
+                setSubmitError("");
+              }
+            }}
             disabled={!canCreateEval}
-            title={!canCreateEval && gpuStatus ? `GPU bận (${gpuStatus.active_evals}/${gpuStatus.max_evals} slots, VRAM free: ${Math.round(gpuStatus.vram_free_mb/1024)}GB)` : undefined}
+            title={
+              !gpuOnline
+                ? "GPU service chưa kết nối — hãy chạy Colab trước"
+                : !canCreateEval
+                  ? `GPU bận (${gpuStatus!.active_evals}/${gpuStatus!.max_evals} slots, VRAM free: ${Math.round(gpuStatus!.vram_free_mb / 1024)}GB)`
+                  : undefined
+            }
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 4v16m8-8H4"
+              />
             </svg>
             Tạo eval mới
           </button>
@@ -709,56 +1041,82 @@ export const ModelEvalRunScreen: React.FC = () => {
       </div>
 
       <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
-
         {/* Summary bar */}
         <div className="grid grid-cols-3 gap-3">
           <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">GPU</p>
+            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+              GPU
+            </p>
             {gpuStatus ? (
               <>
                 <p className="text-2xl font-bold text-slate-800">
                   {Math.round(gpuStatus.vram_used_mb / 1024)}
-                  <span className="text-slate-300 font-normal text-base"> / {Math.round(gpuStatus.vram_total_mb / 1024)}GB</span>
+                  <span className="text-slate-300 font-normal text-base">
+                    {" "}
+                    / {Math.round(gpuStatus.vram_total_mb / 1024)}GB
+                  </span>
                 </p>
                 <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                   <div
-                    className={`h-full rounded-full transition-all duration-500 ${(vramUsedPct ?? 0) > 85 ? 'bg-red-400' : (vramUsedPct ?? 0) > 60 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                    className={`h-full rounded-full transition-all duration-500 ${(vramUsedPct ?? 0) > 85 ? "bg-red-400" : (vramUsedPct ?? 0) > 60 ? "bg-amber-400" : "bg-emerald-400"}`}
                     style={{ width: `${vramUsedPct ?? 0}%` }}
                   />
                 </div>
-                <p className="text-[11px] text-slate-400 mt-1">Util {gpuStatus.gpu_util}%</p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Util {gpuStatus.gpu_util}%
+                </p>
               </>
             ) : (
-              <p className="text-sm text-slate-300 mt-1">{gpuLoading ? 'Đang tải...' : 'Offline'}</p>
+              <p className="text-sm text-slate-300 mt-1">
+                {gpuLoading ? "Đang tải..." : "Offline"}
+              </p>
             )}
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Đang chạy</p>
-            <p className="text-2xl font-bold text-slate-800">{activeRuns.length}</p>
+            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+              Đang chạy
+            </p>
+            <p className="text-2xl font-bold text-slate-800">
+              {activeRuns.length}
+            </p>
             <p className="text-[11px] text-slate-400 mt-1">
-              {maxEta > 0 ? `còn ~${formatEtaCountdown(maxEta)}` : activeRuns.length > 0 ? 'Đang khởi động...' : '—'}
+              {maxEta > 0
+                ? `còn ~${formatEtaCountdown(maxEta)}`
+                : activeRuns.length > 0
+                  ? "Đang khởi động..."
+                  : "—"}
             </p>
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-4">
-            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">Hôm nay</p>
+            <p className="text-[11px] text-slate-400 uppercase tracking-wide mb-1">
+              Hôm nay
+            </p>
             <p className="text-2xl font-bold text-slate-800">{runs.length}</p>
-            <p className="text-[11px] text-slate-400 mt-1">{todayRuns.filter(r => r.phase === 'done').length} completed</p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {todayRuns.filter((r) => r.phase === "done").length} completed
+            </p>
           </div>
         </div>
 
         {/* Active runs */}
         {activeRuns.length > 0 && (
           <div>
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-3">Đang chạy</p>
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-3">
+              Đang chạy
+            </p>
             <div className="space-y-3">
-              {activeRuns.map(run => (
+              {activeRuns.map((run) => (
                 <RunCard
                   key={run.evalJobId}
                   run={run}
                   expanded={expandedRunId === run.evalJobId}
                   expandedTab={expandedTab}
                   logEndRef={logEndRef}
-                  onToggle={() => setExpandedRunId(prev => prev === run.evalJobId ? null : run.evalJobId)}
+                  onToggle={() =>
+                    setExpandedRunId((prev) =>
+                      prev === run.evalJobId ? null : run.evalJobId,
+                    )
+                  }
                   onTabChange={setExpandedTab}
                   onNavigate={navigate}
                 />
@@ -771,16 +1129,22 @@ export const ModelEvalRunScreen: React.FC = () => {
         {todayRuns.length > 0 && (
           <div>
             <div className="border-t border-slate-200 pt-6">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-3">Hôm nay</p>
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-3">
+                Hôm nay
+              </p>
               <div className="space-y-2">
-                {todayRuns.map(run => (
+                {todayRuns.map((run) => (
                   <RunCard
                     key={run.evalJobId}
                     run={run}
                     expanded={expandedRunId === run.evalJobId}
                     expandedTab={expandedTab}
                     logEndRef={logEndRef}
-                    onToggle={() => setExpandedRunId(prev => prev === run.evalJobId ? null : run.evalJobId)}
+                    onToggle={() =>
+                      setExpandedRunId((prev) =>
+                        prev === run.evalJobId ? null : run.evalJobId,
+                      )
+                    }
                     onTabChange={setExpandedTab}
                     onNavigate={navigate}
                   />
@@ -793,10 +1157,22 @@ export const ModelEvalRunScreen: React.FC = () => {
         {/* Empty state */}
         {runs.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
-            <svg className="w-10 h-10 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            <svg
+              className="w-10 h-10 text-slate-200"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+              />
             </svg>
-            <p className="text-sm">Chưa có eval nào. Bấm "Tạo eval mới" để bắt đầu.</p>
+            <p className="text-sm">
+              Chưa có eval nào. Bấm "Tạo eval mới" để bắt đầu.
+            </p>
           </div>
         )}
       </div>
@@ -805,15 +1181,32 @@ export const ModelEvalRunScreen: React.FC = () => {
       {showModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={e => { if (e.target === e.currentTarget) setShowModal(false); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowModal(false);
+          }}
         >
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
             {/* Modal header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-              <h2 className="text-base font-bold text-slate-800">Tạo eval mới</h2>
-              <button onClick={() => setShowModal(false)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <h2 className="text-base font-bold text-slate-800">
+                Tạo eval mới
+              </h2>
+              <button
+                onClick={() => setShowModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
@@ -821,28 +1214,60 @@ export const ModelEvalRunScreen: React.FC = () => {
             <div className="px-6 py-5 space-y-5">
               {/* Step 1 + Step 2 */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-
                 {/* Step 1 — Fine-tuned model */}
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col">
                   <div className="px-6 pt-5 pb-4 border-b border-slate-100">
                     <div className="flex items-center gap-2">
-                      <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">1</span>
-                      <h2 className="text-sm font-bold text-slate-800">Model cần đánh giá</h2>
+                      <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                        1
+                      </span>
+                      <h2 className="text-sm font-bold text-slate-800">
+                        Model cần đánh giá
+                      </h2>
                     </div>
-                    <p className="text-[11px] text-slate-400 mt-1 ml-7">Chọn job đã fine-tune có trạng thái COMPLETED</p>
+                    <p className="text-[11px] text-slate-400 mt-1 ml-7">
+                      Chọn job đã fine-tune có trạng thái COMPLETED
+                    </p>
                   </div>
                   <div className="px-4 py-3 border-b border-slate-100">
                     <div className="relative">
-                      <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+                      <svg
+                        className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"
+                        />
                       </svg>
-                      <input type="text" placeholder="Tìm project, base model, HF repo..."
-                        value={jobSearch} onChange={e => setJobSearch(e.target.value)}
-                        className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 transition bg-slate-50" />
+                      <input
+                        type="text"
+                        placeholder="Tìm project, base model, HF repo..."
+                        value={jobSearch}
+                        onChange={(e) => setJobSearch(e.target.value)}
+                        className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 transition bg-slate-50"
+                      />
                       {jobSearch && (
-                        <button onClick={() => setJobSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500">
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        <button
+                          onClick={() => setJobSearch("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500"
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M6 18L18 6M6 6l12 12"
+                            />
                           </svg>
                         </button>
                       )}
@@ -851,33 +1276,61 @@ export const ModelEvalRunScreen: React.FC = () => {
                   <div className="overflow-y-auto max-h-52 px-3 py-2">
                     {loadingJobs ? (
                       <div className="flex items-center justify-center py-6 gap-2 text-xs text-slate-400">
-                        <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />Đang tải...
+                        <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+                        Đang tải...
                       </div>
                     ) : filteredJobs.length === 0 ? (
                       <div className="py-6 text-center text-xs text-slate-400">
-                        {jobs.length === 0 ? 'Chưa có model COMPLETED nào có HF Repo.' : 'Không tìm thấy kết quả.'}
+                        {jobs.length === 0
+                          ? "Chưa có model COMPLETED nào có HF Repo."
+                          : "Không tìm thấy kết quả."}
                       </div>
-                    ) : filteredJobs.map(job => (
-                      <button key={job.jobId} onClick={() => setSelectedJobId(job.jobId)}
-                        className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1 transition ${selectedJobId === job.jobId ? 'bg-slate-800' : 'hover:bg-slate-50'}`}>
-                        <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${selectedJobId === job.jobId ? 'border-white' : 'border-slate-300'}`}>
-                          {selectedJobId === job.jobId && <div className="w-2 h-2 rounded-full bg-white" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className={`text-xs font-semibold truncate ${selectedJobId === job.jobId ? 'text-white' : 'text-slate-800'}`}>{job.projectName}</div>
-                          <div className={`text-[10px] mt-0.5 ${selectedJobId === job.jobId ? 'text-slate-400' : 'text-slate-400'}`}>
-                            {job.baseModel.split('/').pop()} · {new Date(job.completedAt).toLocaleDateString('vi-VN')}
+                    ) : (
+                      filteredJobs.map((job) => (
+                        <button
+                          key={job.jobId}
+                          onClick={() => setSelectedJobId(job.jobId)}
+                          className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1 transition ${selectedJobId === job.jobId ? "bg-slate-800" : "hover:bg-slate-50"}`}
+                        >
+                          <div
+                            className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${selectedJobId === job.jobId ? "border-white" : "border-slate-300"}`}
+                          >
+                            {selectedJobId === job.jobId && (
+                              <div className="w-2 h-2 rounded-full bg-white" />
+                            )}
                           </div>
-                        </div>
-                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${selectedJobId === job.jobId ? 'bg-slate-700 border-slate-600 text-slate-300' : 'bg-slate-100 border-slate-200 text-slate-500'}`}>
-                          {job.hfRepoId.split('/').pop()}
-                        </span>
-                      </button>
-                    ))}
+                          <div className="flex-1 min-w-0">
+                            <div
+                              className={`text-xs font-semibold truncate ${selectedJobId === job.jobId ? "text-white" : "text-slate-800"}`}
+                            >
+                              {job.projectName}
+                            </div>
+                            <div
+                              className={`text-[10px] mt-0.5 ${selectedJobId === job.jobId ? "text-slate-400" : "text-slate-400"}`}
+                            >
+                              {job.baseModel.split("/").pop()} ·{" "}
+                              {new Date(job.completedAt).toLocaleDateString(
+                                "vi-VN",
+                              )}
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${selectedJobId === job.jobId ? "bg-slate-700 border-slate-600 text-slate-300" : "bg-slate-100 border-slate-200 text-slate-500"}`}
+                          >
+                            {job.hfRepoId.split("/").pop()}
+                          </span>
+                        </button>
+                      ))
+                    )}
                   </div>
                   {selectedJob && (
                     <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50 rounded-b-2xl">
-                      <p className="text-[10px] text-slate-500">Đã chọn: <span className="font-semibold text-slate-700">{selectedJob.projectName}</span></p>
+                      <p className="text-[10px] text-slate-500">
+                        Đã chọn:{" "}
+                        <span className="font-semibold text-slate-700">
+                          {selectedJob.projectName}
+                        </span>
+                      </p>
                     </div>
                   )}
                 </div>
@@ -886,26 +1339,51 @@ export const ModelEvalRunScreen: React.FC = () => {
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col">
                   <div className="px-6 pt-5 pb-4 border-b border-slate-100">
                     <div className="flex items-center gap-2">
-                      <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">2</span>
-                      <h2 className="text-sm font-bold text-slate-800">Model chấm điểm</h2>
+                      <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                        2
+                      </span>
+                      <h2 className="text-sm font-bold text-slate-800">
+                        Model chấm điểm
+                      </h2>
                     </div>
-                    <p className="text-[11px] text-slate-400 mt-1 ml-7">AI model dùng để đánh giá chất lượng câu trả lời</p>
+                    <p className="text-[11px] text-slate-400 mt-1 ml-7">
+                      AI model dùng để đánh giá chất lượng câu trả lời
+                    </p>
                   </div>
                   <div className="px-4 py-4 space-y-2 flex-1">
-                    {JUDGE_MODELS.map(m => (
-                      <button key={m.id} onClick={() => setJudgeModel(m.id)}
-                        className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border transition ${judgeModel === m.id ? 'border-slate-800 bg-slate-800' : 'border-slate-200 hover:border-slate-300 bg-white'}`}>
-                        <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${judgeModel === m.id ? 'border-white' : 'border-slate-300'}`}>
-                          {judgeModel === m.id && <div className="w-2 h-2 rounded-full bg-white" />}
+                    {JUDGE_MODELS.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => setJudgeModel(m.id)}
+                        className={`w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border transition ${judgeModel === m.id ? "border-slate-800 bg-slate-800" : "border-slate-200 hover:border-slate-300 bg-white"}`}
+                      >
+                        <div
+                          className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${judgeModel === m.id ? "border-white" : "border-slate-300"}`}
+                        >
+                          {judgeModel === m.id && (
+                            <div className="w-2 h-2 rounded-full bg-white" />
+                          )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className={`text-xs font-semibold flex items-center gap-2 ${judgeModel === m.id ? 'text-white' : 'text-slate-800'}`}>
+                          <div
+                            className={`text-xs font-semibold flex items-center gap-2 ${judgeModel === m.id ? "text-white" : "text-slate-800"}`}
+                          >
                             {m.name}
-                            {m.recommended && <span className="text-[9px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded">★ Khuyên dùng</span>}
+                            {m.recommended && (
+                              <span className="text-[9px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded">
+                                ★ Khuyên dùng
+                              </span>
+                            )}
                           </div>
-                          <div className={`text-[10px] mt-0.5 ${judgeModel === m.id ? 'text-slate-400' : 'text-slate-400'}`}>{m.note}</div>
+                          <div
+                            className={`text-[10px] mt-0.5 ${judgeModel === m.id ? "text-slate-400" : "text-slate-400"}`}
+                          >
+                            {m.note}
+                          </div>
                         </div>
-                        <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${judgeModel === m.id ? 'bg-slate-700 border-slate-600 text-slate-300' : PROVIDER_COLORS[m.provider]}`}>
+                        <span
+                          className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${judgeModel === m.id ? "bg-slate-700 border-slate-600 text-slate-300" : PROVIDER_COLORS[m.provider]}`}
+                        >
                           {m.provider}
                         </span>
                       </button>
@@ -917,66 +1395,279 @@ export const ModelEvalRunScreen: React.FC = () => {
               {/* Step 3 — Upload file */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">3</span>
-                  <h2 className="text-sm font-bold text-slate-800">Upload file đánh giá</h2>
-                  <span className="text-[11px] text-slate-400">— .json hoặc .jsonl</span>
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                    3
+                  </span>
+                  <h2 className="text-sm font-bold text-slate-800">
+                    Upload file đánh giá
+                  </h2>
+                  <span className="text-[11px] text-slate-400">
+                    — .json hoặc .jsonl
+                  </span>
                 </div>
                 <div
-                  onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) validateAndSetFile(f); }}
-                  onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const f = e.dataTransfer.files[0];
+                    if (f) validateAndSetFile(f);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOver(true);
+                  }}
                   onDragLeave={() => setDragOver(false)}
                   onClick={() => fileInputRef.current?.click()}
-                  className={`border-2 border-dashed rounded-xl py-6 text-center cursor-pointer transition ${dragOver ? 'border-slate-500 bg-slate-50' : evalFile ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-400'}`}
+                  className={`border-2 border-dashed rounded-xl py-6 text-center cursor-pointer transition ${dragOver ? "border-slate-500 bg-slate-50" : evalFile ? "border-emerald-300 bg-emerald-50" : "border-slate-200 hover:border-slate-400"}`}
                 >
-                  <input ref={fileInputRef} type="file" accept=".json,.jsonl" className="hidden"
-                    onChange={e => e.target.files?.[0] && validateAndSetFile(e.target.files[0])} />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".json,.jsonl"
+                    className="hidden"
+                    onChange={(e) =>
+                      e.target.files?.[0] &&
+                      validateAndSetFile(e.target.files[0])
+                    }
+                  />
                   {evalFile ? (
                     <div className="flex items-center justify-center gap-4">
-                      <svg className="w-6 h-6 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      <svg
+                        className="w-6 h-6 text-emerald-500 shrink-0"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                        />
                       </svg>
                       <div className="text-left">
-                        <p className="text-sm font-semibold text-slate-700">{evalFile.name}</p>
-                        <p className="text-xs text-slate-400">{(evalFile.size / 1024).toFixed(1)} KB</p>
+                        <p className="text-sm font-semibold text-slate-700">
+                          {evalFile.name}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {(evalFile.size / 1024).toFixed(1)} KB
+                        </p>
                       </div>
-                      <button onClick={e => { e.stopPropagation(); setEvalFile(null); }}
-                        className="text-xs text-red-500 hover:text-red-700 border border-red-200 px-2 py-1 rounded-lg">Xóa</button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEvalFile(null);
+                          setDatasetPreview(null);
+                          setExpandedSample(null);
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700 border border-red-200 px-2 py-1 rounded-lg"
+                      >
+                        Xóa
+                      </button>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-1.5 text-slate-400">
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      <svg
+                        className="w-6 h-6"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={1.5}
+                          d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                        />
                       </svg>
-                      <p className="text-sm font-medium">Kéo thả hoặc click để chọn file</p>
+                      <p className="text-sm font-medium">
+                        Kéo thả hoặc click để chọn file
+                      </p>
                       <p className="text-xs">.json / .jsonl · tối đa 50MB</p>
                     </div>
                   )}
                 </div>
-                {submitError && <p className="mt-2 text-xs text-red-500 font-medium">{submitError}</p>}
+                {submitError && (
+                  <p className="mt-2 text-xs text-red-500 font-medium">
+                    {submitError}
+                  </p>
+                )}
+
+                {/* Dataset Preview */}
+                {datasetPreview && (
+                  <div className="mt-4 space-y-3">
+                    {/* Stats row */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+                        <span className="text-xs font-bold text-slate-700">
+                          {datasetPreview.totalConvs}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          conversations
+                        </span>
+                      </div>
+                      {datasetPreview.hasSystemPrompt ? (
+                        <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-1 rounded-full">
+                          System prompt ✓
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-full">
+                          Không có system prompt — sẽ dùng mặc định
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Turn distribution */}
+                    <div>
+                      <p className="text-[10px] uppercase font-semibold text-slate-400 mb-1.5 tracking-wide">
+                        Phân phối số turns
+                      </p>
+                      <div className="flex gap-2">
+                        {datasetPreview.turnDist.map(({ label, count }) => {
+                          const pct =
+                            datasetPreview.totalConvs > 0
+                              ? count / datasetPreview.totalConvs
+                              : 0;
+                          return (
+                            <div key={label} className="flex-1 text-center">
+                              <div className="h-8 bg-slate-100 rounded-md overflow-hidden flex items-end">
+                                <div
+                                  className="w-full bg-slate-600 rounded-md transition-all"
+                                  style={{
+                                    height: `${Math.max(pct * 100, count > 0 ? 8 : 0)}%`,
+                                  }}
+                                />
+                              </div>
+                              <p className="text-[9px] text-slate-500 mt-1">
+                                {label}
+                              </p>
+                              <p className="text-[10px] font-semibold text-slate-700">
+                                {count}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Sample conversations */}
+                    <div>
+                      <p className="text-[10px] uppercase font-semibold text-slate-400 mb-1.5 tracking-wide">
+                        Mẫu ({datasetPreview.samples.length} conversation đầu)
+                      </p>
+                      <div className="space-y-1.5">
+                        {datasetPreview.samples.map((sample, si) => {
+                          const userTurns = sample.turns.filter(
+                            (t) => t.role === "user",
+                          );
+                          const isExpanded = expandedSample === si;
+                          const firstUser = userTurns[0]?.content ?? "";
+                          return (
+                            <div
+                              key={si}
+                              className="border border-slate-200 rounded-lg overflow-hidden"
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedSample(isExpanded ? null : si)
+                                }
+                                className="w-full text-left px-3 py-2 flex items-center gap-2 bg-slate-50 hover:bg-slate-100 transition"
+                              >
+                                <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                                  #{si + 1}
+                                </span>
+                                <span className="text-[11px] text-slate-600 flex-1 truncate">
+                                  {firstUser.length > 80
+                                    ? firstUser.slice(0, 80) + "…"
+                                    : firstUser}
+                                </span>
+                                <span className="text-[10px] text-slate-400 shrink-0">
+                                  {userTurns.length} turns
+                                </span>
+                                <svg
+                                  className={`w-3 h-3 text-slate-400 shrink-0 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 9l-7 7-7-7"
+                                  />
+                                </svg>
+                              </button>
+                              {isExpanded && (
+                                <div className="px-3 py-2 space-y-1.5 max-h-48 overflow-y-auto bg-white">
+                                  {sample.turns
+                                    .filter((t) => t.role !== "system")
+                                    .map((turn, ti) => (
+                                      <div
+                                        key={ti}
+                                        className={`flex gap-2 ${turn.role === "assistant" ? "flex-row-reverse" : ""}`}
+                                      >
+                                        <span
+                                          className={`text-[9px] font-bold shrink-0 mt-0.5 ${turn.role === "user" ? "text-blue-400" : "text-purple-400"}`}
+                                        >
+                                          {turn.role === "user" ? "HS" : "GT"}
+                                        </span>
+                                        <p
+                                          className={`text-[11px] leading-relaxed rounded-lg px-2.5 py-1.5 max-w-[85%] ${turn.role === "user" ? "bg-blue-50 text-slate-700" : "bg-purple-50 text-slate-700"}`}
+                                        >
+                                          {turn.content.length > 200
+                                            ? turn.content.slice(0, 200) + "…"
+                                            : turn.content}
+                                        </p>
+                                      </div>
+                                    ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Submit row */}
               <div className="flex items-center justify-between gap-4 pt-1">
                 <div className="text-xs text-slate-400">
-                  {gpuStatus && !gpuStatus.can_create_eval
-                    ? <span className="text-amber-600 font-medium">
-                        {gpuStatus.active_evals >= gpuStatus.max_evals
-                          ? `Đã đạt giới hạn ${gpuStatus.max_evals} eval đồng thời`
-                          : `VRAM không đủ (free: ${Math.round(gpuStatus.vram_free_mb/1024)}GB)`}
-                      </span>
-                    : gpuStatus
-                    ? `${gpuStatus.max_evals - gpuStatus.active_evals} slot còn trống · VRAM free ${Math.round(gpuStatus.vram_free_mb/1024)}GB`
-                    : `${3 - activeRuns.length} slot còn trống`}
+                  {!gpuOnline ? (
+                    <span className="text-red-500 font-medium">
+                      GPU offline — hãy chạy Colab trước khi tạo eval
+                    </span>
+                  ) : !gpuStatus!.can_create_eval ? (
+                    <span className="text-amber-600 font-medium">
+                      {gpuStatus!.active_evals >= gpuStatus!.max_evals
+                        ? `Đã đạt giới hạn ${gpuStatus!.max_evals} eval đồng thời`
+                        : `VRAM không đủ (free: ${Math.round(gpuStatus!.vram_free_mb / 1024)}GB)`}
+                    </span>
+                  ) : (
+                    `${gpuStatus!.max_evals - gpuStatus!.active_evals} slot còn trống · VRAM free ${Math.round(gpuStatus!.vram_free_mb / 1024)}GB`
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
-                  <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition">Huỷ</button>
+                  <button
+                    onClick={() => setShowModal(false)}
+                    className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition"
+                  >
+                    Huỷ
+                  </button>
                   <button
                     onClick={handleSubmit}
                     disabled={!canSubmit || !canCreateEval}
                     className="flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                   >
-                    {submitPhase === 'uploading' && <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
-                    {submitPhase === 'uploading' ? 'Đang gửi...' : 'Bắt đầu đánh giá'}
+                    {submitPhase === "uploading" && (
+                      <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    )}
+                    {submitPhase === "uploading"
+                      ? "Đang gửi..."
+                      : "Bắt đầu đánh giá"}
                   </button>
                 </div>
               </div>

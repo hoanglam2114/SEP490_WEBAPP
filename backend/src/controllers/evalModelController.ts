@@ -4,7 +4,7 @@ import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import { ModelEvaluation } from '../models/Evaluation';
+import { ModelEvaluation, IEvalResult } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';
 dotenv.config();
 
@@ -23,12 +23,12 @@ async function getGpuStatus(): Promise<{
   gpu_util: number;
 } | null> {
   try {
-    const resp = await fetch(`${GPU_SERVICE_URL}/api/system/resources`, {
+    const resp = await fetch(`${GPU_SERVICE_URL}/api/system-eval/resources`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
       signal: AbortSignal.timeout(5000),
     });
     if (!resp.ok) return null;
-    const data = await resp.json();
+    const data = await resp.json() as any;
     console.log('[Backend] GPU status response:', data);
 
     // Ensure all required fields are present, calculate missing ones
@@ -42,7 +42,6 @@ async function getGpuStatus(): Promise<{
       gpu_util: data.gpu_util ?? 0,
     };
 
-    console.log('[Backend] Processed GPU status:', result);
     return result;
   } catch (err) {
     console.error('[Backend] GPU status error:', err);
@@ -73,6 +72,40 @@ async function fetchWithForm(url: string, form: FormData): Promise<ReturnType<ty
       );
     });
   });
+}
+
+function normalizePerConvResults(perConvResults: unknown): IEvalResult[] {
+  if (!Array.isArray(perConvResults)) return [];
+  return perConvResults
+    .filter((r: any) => r !== null && r !== undefined)
+    .map((r: any) => ({
+      conv_index:      Number(r.conv_index ?? 0),
+      num_turns:       Number(r.num_turns ?? 0),
+      avg_latency_ms:  Number(r.avg_latency_ms ?? 0),
+      criteria_scores: r.criteria_scores ?? {},
+      criteria_reasons: r.criteria_reasons ?? {},
+      group_scores:    r.group_scores ?? {},
+      non_scoring:     r.non_scoring ?? {},
+    }));
+}
+
+function normalizeEvalResult(result: any) {
+  const normalizedResults = normalizePerConvResults(
+    result.perConvResults ?? result.per_conv_results ?? result.results ?? []
+  );
+
+  // summary từ GPU đã đúng format — chỉ cần pass through + fallback
+  const summary = result.summary && typeof result.summary === 'object'
+    ? result.summary
+    : {};
+
+  return {
+    totalConversations:  Number(result.totalConversations ?? result.totalSamples ?? normalizedResults.length),
+    validConversations:  Number(result.validConversations ?? normalizedResults.length),
+    results:  normalizedResults,
+    summary,
+    gpuResult: result,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +149,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
       hf_repo_id: history.hfRepoId,
       hf_token: history.hfToken || '',
       model_max_length: history.parameters?.modelMaxLength || 2048,
-      judge_model: req.body.judge_model || req.body['judge_model'] || 'claude-haiku-4-5-20251001',
+      judge_model: req.body.judge_model || req.body['judge_model'] || 'claude-sonnet-4-5-20251001',
     };
 
     // 4. Tạo Evaluation record trong MongoDB với status PENDING
@@ -124,14 +157,15 @@ export const runEvaluation = async (req: Request, res: Response) => {
       modelEvalId: eval_job_id,
       jobId,
       status: 'PENDING',
-      totalSamples: 0,
-      subjectBreakdown: {},
-      skippedBySimilarity: 0,
+      totalConversations: 0,
+      validConversations: 0,
       results: [],
       judgeModel: config.judge_model,
       summary: {
-        overall: { base_avg: 0, ft_avg: 0, improvement_pct: 0 },
-        by_subject: {},
+        overall: 0,
+        group_a: 0, group_b: 0, group_c: 0, group_d: 0,
+        criteria: {},
+        non_scoring: {},
         max_possible: 5,
       },
       startedAt: new Date(),
@@ -305,16 +339,19 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
       return;
     }
 
+    const normalized = normalizeEvalResult(result);
+
     // Lưu vào Evaluation collection
     await ModelEvaluation.findOneAndUpdate(
       { modelEvalId: evalJobId },
       {
         status: 'COMPLETED',
-        totalSamples: result.totalSamples ?? 0,
-        subjectBreakdown: result.subjectBreakdown ?? {},
-        skippedBySimilarity: result.skippedBySimilarity ?? 0,
-        results: result.results ?? [],
-        summary: result.summary,
+        totalConversations: normalized.totalConversations,
+        validConversations: normalized.validConversations,
+        results: normalized.results,
+        summary: normalized.summary,
+        gpuResult: normalized.gpuResult,
+        judgeModel: result.judgeModel ?? undefined,
         startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
         completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
       },
@@ -360,17 +397,19 @@ export const saveEvalResult = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing modelEvalId or jobId in body' });
     }
 
+    const normalized = normalizeEvalResult(result);
+
     await ModelEvaluation.findOneAndUpdate(
       { modelEvalId: result.modelEvalId },
       {
         modelEvalId: result.modelEvalId,
         jobId: result.jobId,
         status: result.status || 'COMPLETED',
-        totalSamples: result.totalSamples ?? 0,
-        subjectBreakdown: result.subjectBreakdown ?? {},
-        skippedBySimilarity: result.skippedBySimilarity ?? 0,
-        results: result.results ?? [],
-        summary: result.summary,
+        totalConversations: normalized.totalConversations,
+        validConversations: normalized.validConversations,
+        results: normalized.results,
+        summary: normalized.summary,
+        gpuResult: normalized.gpuResult,
         startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
         completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
       },
@@ -456,12 +495,16 @@ export const getEvaluatedModels = async (_req: Request, res: Response) => {
           modelEvalId,
           pinnedEvalId: h.pinnedEvalId ?? null,
           judgeModel: displayEval?.judgeModel ?? null,
-          totalSamples: displayEval?.totalSamples ?? 0,
+          totalConversations: displayEval?.totalConversations ?? 0,
           scores: {
-            overall: displayEval?.summary?.overall ?? null,
-            quality: displayEval?.summary?.quality ?? null,
-            hallucination: displayEval?.summary?.hallucination ?? null,
-            speed: displayEval?.summary?.speed ?? null,
+            overall:  displayEval?.summary?.overall  ?? null,
+            group_a:  displayEval?.summary?.group_a  ?? null,
+            group_b:  displayEval?.summary?.group_b  ?? null,
+            group_c:  displayEval?.summary?.group_c  ?? null,
+            group_d:  displayEval?.summary?.group_d  ?? null,
+            criteria: displayEval?.summary?.criteria ?? null,
+            avg_latency_ms: displayEval?.summary?.avg_latency_ms ?? null,
+            non_scoring:    displayEval?.summary?.non_scoring    ?? null,
           },
         };
       })
@@ -486,7 +529,7 @@ export const getEvalHistory = async (req: Request, res: Response) => {
 
     const evals = await ModelEvaluation.find({ jobId, status: 'COMPLETED' })
       .sort({ completedAt: -1 })
-      .select('modelEvalId jobId status totalSamples judgeModel summary startedAt completedAt')
+      .select('modelEvalId jobId status totalConversations judgeModel summary startedAt completedAt')
       .lean();
 
     // Gắn isPinned vào từng eval
@@ -624,41 +667,37 @@ export const compareEvaluations = async (req: Request, res: Response) => {
       TrainingHistory.findOne({ jobId: evalB.jobId }).select('projectName').lean(),
     ]);
 
-    const mapA = new Map<string, (typeof evalA.results)[0]>();
+    const mapA = new Map<number, (typeof evalA.results)[0]>();
     for (const r of evalA.results || []) {
-      if (!mapA.has(r.instruction)) mapA.set(r.instruction, r);
+      if (r.conv_index != null) mapA.set(r.conv_index, r);
     }
 
     const matchedSamples: {
-      instruction: string;
-      subject: string;
-      expected: string;
-      ft_answer_a: string;
-      ft_answer_b: string;
-      ft_score_a: number;
-      ft_score_b: number;
-      delta_ft: number;
+      conv_index: number;
+      num_turns_a: number;
+      num_turns_b: number;
+      overall_a: number;
+      overall_b: number;
+      delta_overall: number;
     }[] = [];
 
     for (const rowB of evalB.results || []) {
-      const rowA = mapA.get(rowB.instruction);
+      const rowA = mapA.get(rowB.conv_index);
       if (!rowA) continue;
       matchedSamples.push({
-        instruction: rowB.instruction,
-        subject: rowB.subject,
-        expected: rowB.expected,
-        ft_answer_a: rowA.ft_answer,
-        ft_answer_b: rowB.ft_answer,
-        ft_score_a: rowA.ft_score,
-        ft_score_b: rowB.ft_score,
-        delta_ft: rowB.ft_score - rowA.ft_score,
+        conv_index: rowB.conv_index,
+        num_turns_a: rowA.num_turns,
+        num_turns_b: rowB.num_turns,
+        overall_a: rowA.group_scores?.overall ?? 0,
+        overall_b: rowB.group_scores?.overall ?? 0,
+        delta_overall: (rowB.group_scores?.overall ?? 0) - (rowA.group_scores?.overall ?? 0),
       });
     }
 
     const lenA = evalA.results?.length ?? 0;
     const lenB = evalB.results?.length ?? 0;
     const differentTestSets =
-      evalA.totalSamples !== evalB.totalSamples ||
+      evalA.totalConversations !== evalB.totalConversations ||
       lenA !== lenB ||
       matchedSamples.length < lenA ||
       matchedSamples.length < lenB;
@@ -666,41 +705,41 @@ export const compareEvaluations = async (req: Request, res: Response) => {
     const sA = evalA.summary;
     const sB = evalB.summary;
 
-    const bleuA = sA?.reference_metrics?.bleu?.ft ?? null;
-    const bleuB = sB?.reference_metrics?.bleu?.ft ?? null;
-    const rougeA = sA?.reference_metrics?.rouge_l?.ft ?? null;
-    const rougeB = sB?.reference_metrics?.rouge_l?.ft ?? null;
-
     const scoreSummary = {
       overall: {
-        a: sA?.overall?.ft_avg ?? null,
-        b: sB?.overall?.ft_avg ?? null,
-        winner: scoreWinner(sA?.overall?.ft_avg, sB?.overall?.ft_avg),
+        a: sA?.overall ?? null,
+        b: sB?.overall ?? null,
+        winner: scoreWinner(sA?.overall, sB?.overall),
       },
-      quality: {
-        a: sA?.quality?.ft_avg ?? null,
-        b: sB?.quality?.ft_avg ?? null,
-        winner: scoreWinner(sA?.quality?.ft_avg, sB?.quality?.ft_avg),
+      group_a: {
+        a: sA?.group_a ?? null,
+        b: sB?.group_a ?? null,
+        winner: scoreWinner(sA?.group_a, sB?.group_a),
       },
-      hallucination: {
-        a: sA?.hallucination?.ft_avg ?? null,
-        b: sB?.hallucination?.ft_avg ?? null,
-        winner: scoreWinner(sA?.hallucination?.ft_avg, sB?.hallucination?.ft_avg),
+      group_b: {
+        a: sA?.group_b ?? null,
+        b: sB?.group_b ?? null,
+        winner: scoreWinner(sA?.group_b, sB?.group_b),
       },
-      speed: {
-        a: sA?.speed?.ft_score ?? null,
-        b: sB?.speed?.ft_score ?? null,
-        winner: scoreWinner(sA?.speed?.ft_score, sB?.speed?.ft_score),
+      group_c: {
+        a: sA?.group_c ?? null,
+        b: sB?.group_c ?? null,
+        winner: scoreWinner(sA?.group_c, sB?.group_c),
+      },
+      group_d: {
+        a: sA?.group_d ?? null,
+        b: sB?.group_d ?? null,
+        winner: scoreWinner(sA?.group_d, sB?.group_d),
       },
       bleu: {
-        a: bleuA,
-        b: bleuB,
-        winner: scoreWinner(bleuA, bleuB),
+        a: sA?.non_scoring?.bleu ?? null,
+        b: sB?.non_scoring?.bleu ?? null,
+        winner: scoreWinner(sA?.non_scoring?.bleu, sB?.non_scoring?.bleu),
       },
       rouge_l: {
-        a: rougeA,
-        b: rougeB,
-        winner: scoreWinner(rougeA, rougeB),
+        a: sA?.non_scoring?.rouge_l ?? null,
+        b: sB?.non_scoring?.rouge_l ?? null,
+        winner: scoreWinner(sA?.non_scoring?.rouge_l, sB?.non_scoring?.rouge_l),
       },
     };
 
@@ -710,7 +749,7 @@ export const compareEvaluations = async (req: Request, res: Response) => {
       projectName: histA?.projectName ?? '',
       judgeModel: evalA.judgeModel ?? '',
       completedAt: evalA.completedAt,
-      totalSamples: evalA.totalSamples,
+      totalConversations: evalA.totalConversations,
     };
     const runB = {
       modelEvalId: evalB.modelEvalId,
@@ -718,7 +757,7 @@ export const compareEvaluations = async (req: Request, res: Response) => {
       projectName: histB?.projectName ?? '',
       judgeModel: evalB.judgeModel ?? '',
       completedAt: evalB.completedAt,
-      totalSamples: evalB.totalSamples,
+      totalConversations: evalB.totalConversations,
     };
 
     return res.json({

@@ -99,6 +99,71 @@ export interface SampleEvaluation {
   };
 }
 
+// New evaluation types matching backend schema
+export interface IEvalResult {
+  conv_index: number;
+  num_turns: number;
+  avg_latency_ms: number;
+  criteria_scores: {
+    A1: number; A2: number; A3: number;
+    B1: number; B2: number;
+    C1: number; C2: number; C3: number;
+    D1: number; D2: number;
+  };
+  criteria_reasons: Record<string, string>;
+  group_scores: {
+    group_a: number;
+    group_b: number;
+    group_c: number;
+    group_d: number;
+    overall: number;
+    a1_hard_constraint_triggered: boolean;
+  };
+  non_scoring: {
+    bleu: number;
+    rouge_l: number;
+    question_detection_rate: number;
+  };
+}
+
+export interface ModelEvalItem {
+  jobId: string;
+  projectName: string;
+  baseModel: string;
+  completedAt: string;
+  trainingDuration: number;
+  modelEvalId: string | null;
+  evalId?: string | null;
+  pinnedEvalId: string | null;
+  judgeModel: string | null;
+  totalConversations: number;
+  scores: {
+    overall: number | null;
+    group_a: number | null;
+    group_b: number | null;
+    group_c: number | null;
+    group_d: number | null;
+    criteria: Record<string, any> | null;
+    avg_latency_ms: number | null;
+    non_scoring: Record<string, any> | null;
+  };
+}
+
+export interface EvaluationData {
+  modelEvalId: string;
+  jobId: string;
+  projectName?: string;
+  isPinned?: boolean;
+  status: string;
+  totalConversations: number;
+  validConversations: number;
+  results: IEvalResult[];
+  judgeModel?: string;
+  summary: Record<string, any>;
+  startedAt: string;
+  completedAt: string;
+}
+
 export interface EvaluationResult {
   sampleSize: number;
   evaluated: number;
