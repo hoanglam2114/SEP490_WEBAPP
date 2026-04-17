@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 import { apiService } from "../services/api";
 import {
     Menu, Plus, MessageSquare, MoreVertical,
@@ -127,8 +128,8 @@ function ParamsSummaryBar({ params, onToggleLogs, showLogsActive }: { params: In
                 <button
                     onClick={onToggleLogs}
                     className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border transition-all whitespace-nowrap ml-1
-                        ${showLogsActive 
-                            ? "bg-slate-800 text-white border-slate-800" 
+                        ${showLogsActive
+                            ? "bg-slate-800 text-white border-slate-800"
                             : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100"}`}
                 >
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -168,11 +169,10 @@ function GlobalLogsPanel({ logs, onClose }: { logs: LogEntry[], onClose: () => v
                         <div key={i} className="flex gap-2.5 items-start leading-relaxed">
                             <span className="text-slate-500 shrink-0 select-none">[{new Date(L.ts).toLocaleTimeString()}]</span>
                             {L.instanceId && <span className="text-violet-400 font-semibold shrink-0 select-none">[Model {L.instanceId}]</span>}
-                            <div className={`flex-1 min-w-0 ${
-                                L.type === 'error' ? 'text-red-400' :
+                            <div className={`flex-1 min-w-0 ${L.type === 'error' ? 'text-red-400' :
                                 L.type === 'success' ? 'text-emerald-400' :
-                                L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
-                            }`}>
+                                    L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
+                                }`}>
                                 <p className="break-words">{L.message}</p>
                                 {L.data && (
                                     <pre className="text-[10px] mt-1.5 p-2 bg-slate-950/50 rounded-lg text-slate-400 overflow-x-auto whitespace-pre-wrap word-break">
@@ -373,7 +373,7 @@ interface ChatPanelProps {
     instanceId: number;
     showSidebar?: boolean;
     onSidebarToggle?: (isOpen: boolean) => void;
-    externalInput?: string;
+    externalInput?: { text: string; ts: number } | null;
     onExternalSend?: (text: string) => void;
     isCompareMode?: boolean;
     onModelLoadedChange?: (loaded: boolean) => void;
@@ -394,6 +394,8 @@ function ChatPanel({
     const [messages, setMessages] = useState<Message[]>([]);
     const [loading, setLoading] = useState(false);
     const [hfHubId, setHfHubId] = useState("");
+    const [provider, setProvider] = useState<string>("local");
+    const [activeModelId, setActiveModelId] = useState<string>("");
     const [modelLoaded, setModelLoaded] = useState(false);
     const [isSidebarOpen, setSidebarOpen] = useState(true);
     const [chatSessions, setChatSessions] = useState<any[]>([]);
@@ -459,7 +461,9 @@ function ChatPanel({
     // sendMessage can be called externally (compare mode) or internally
     const sendMessage = useCallback(async (textOverride?: string) => {
         const text = textOverride ?? "";
-        if (!text.trim() || loading || !hfHubId.trim() || !modelLoaded) return;
+        const isLocal = provider === "local";
+        if (!text.trim() || loading) return;
+        if (isLocal && (!hfHubId.trim() || !modelLoaded)) return;
 
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
@@ -467,17 +471,17 @@ function ChatPanel({
         const userMessage: Message = { role: "user", content: text };
         setMessages((prev) => [...prev, userMessage]);
         setLoading(true);
-        onLog?.({ 
-            message: `Bắt đầu inference...`, 
-            type: "info", 
-            instanceId, 
-            data: params.systemPrompt ? { systemPrompt: params.systemPrompt } : undefined 
+        onLog?.({
+            message: `Bắt đầu inference...`,
+            type: "info",
+            instanceId,
+            data: params.systemPrompt ? { systemPrompt: params.systemPrompt } : undefined
         });
 
         const startTime = Date.now();
         let aiContent = "";
 
-        setMessages((prev) => [...prev, { role: "ai", content: "", model: hfHubId }]);
+        setMessages((prev) => [...prev, { role: "ai", content: "", model: isLocal ? hfHubId : provider }]);
 
         try {
             const options = {
@@ -488,6 +492,7 @@ function ChatPanel({
                 top_k: params.topK === "" ? undefined : params.topK,
                 top_p: params.topP === "" ? undefined : params.topP,
                 repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
+                provider: isLocal ? undefined : provider,
                 signal: abortController.signal,
                 onFinalInfo: (info: any) => {
                     if (info.input_parameters) {
@@ -545,9 +550,13 @@ function ChatPanel({
 
         } catch (error: any) {
             if (!error.name?.includes("Abort") && !error.message?.includes("aborted")) {
+                const errorMsg = error.response?.data?.error || error.message;
+                setLoadError(errorMsg); // Hiển thị lỗi lên badge trạng thái
+                toast.error(`Lỗi model: ${errorMsg}`); // Hiển thị toast thông báo
+
                 setMessages((prev) => {
                     const arr = [...prev];
-                    arr[arr.length - 1] = { ...arr[arr.length - 1], content: `[Lỗi: ${error.message}]` };
+                    arr[arr.length - 1] = { ...arr[arr.length - 1], content: `[Lỗi: ${errorMsg}]` };
                     return arr;
                 });
                 onLog?.({ message: `Lỗi inference: ${error.message}`, type: "error", instanceId });
@@ -558,7 +567,7 @@ function ChatPanel({
             setLoading(false);
             abortControllerRef.current = null;
         }
-    }, [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId]);
+    }, [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId, provider]);
 
     // Expose sendMessage for compare mode via ref
     const sendMessageRef = useRef(sendMessage);
@@ -566,12 +575,31 @@ function ChatPanel({
 
     // Listen for external send trigger in compare mode
     useEffect(() => {
-        if (externalInput !== undefined && externalInput !== "") {
-            sendMessageRef.current(externalInput);
+        if (externalInput && externalInput.text.trim() !== "") {
+            sendMessageRef.current(externalInput.text);
         }
-    }, [externalInput]);
+    }, [externalInput?.ts]);
 
     const handleConfirmModel = async () => {
+        if (provider !== "local") {
+            setLoading(true);
+            setLoadError(null);
+            try {
+                // Validate external model before setting it active
+                await apiService.validateModel(hfHubId, provider);
+                setActiveModelId(hfHubId || "(Default Model)");
+                setModelLoaded(true);
+                toast.success(`Đã kết nối model: ${hfHubId || "Mặc định"}`);
+            } catch (error: any) {
+                const errorMsg = error.response?.data?.error || error.message;
+                setLoadError(errorMsg);
+                setModelLoaded(false);
+                toast.error(`Model không hợp lệ: ${errorMsg}`);
+            } finally {
+                setLoading(false);
+            }
+            return;
+        }
         if (!hfHubId.trim()) return;
         setLoading(true);
         setModelLoaded(false);
@@ -588,7 +616,9 @@ function ChatPanel({
                 repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
             };
             await apiService.loadModel(hfHubId, options);
+            setActiveModelId(hfHubId);
             setModelLoaded(true);
+            toast.success("Model đã được tải thành công!");
             onLog?.({ message: `Load model thành công: ${hfHubId}`, type: "success", instanceId });
         } catch (error: any) {
             const errorMsg = error.response?.data?.error || error.message;
@@ -613,15 +643,15 @@ function ChatPanel({
             </div>
         );
         if (loadError) return (
-            <div className="flex items-center gap-1.5 text-xs text-red-500 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full" title={loadError}>
-                <AlertCircle size={12} />
-                <span>Lỗi</span>
+            <div className="flex items-center gap-2 text-[12px] text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl shadow-sm animate-in fade-in slide-in-from-top-1">
+                <AlertCircle size={14} className="shrink-0" />
+                <span className="font-medium">Lỗi: {loadError}</span>
             </div>
         );
         if (modelLoaded) return (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+            <div className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full shadow-sm">
                 <CheckCircle2 size={12} />
-                <span>Sẵn sàng</span>
+                <span className="font-medium truncate max-w-[150px]">Active: {activeModelId}</span>
             </div>
         );
         return null;
@@ -676,30 +706,46 @@ function ChatPanel({
                 {/* Panel header */}
                 <div className="border-b border-slate-200 bg-white px-4 py-3">
                     <div className="flex items-center gap-2">
+                        <select
+                            value={provider}
+                            onChange={(e) => {
+                                setProvider(e.target.value);
+                                setModelLoaded(e.target.value !== "local");
+                                setLoadError(null);
+                            }}
+                            className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
+                        >
+                            <option value="local">GPU Service</option>
+                            <option value="openrouter">OpenRouter</option>
+                        </select>
                         <div className="flex-1 relative">
                             <input
                                 type="text"
                                 className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
                                     focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
                                     ${loadError ? "border-red-200" : "border-slate-200"}`}
-                                placeholder={isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID"}
+                                placeholder={
+                                    provider === "local"
+                                        ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
+                                        : "Model ID (tùy chọn, VD: openai/gpt-4o)"
+                                }
                                 value={hfHubId}
-                                onChange={(e) => { setHfHubId(e.target.value); setModelLoaded(false); setLoadError(null); }}
+                                onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
                                 disabled={loading}
                             />
                         </div>
                         <button
                             onClick={handleConfirmModel}
-                            disabled={!hfHubId.trim() || loading || modelLoaded}
+                            disabled={(provider === "local" && !hfHubId.trim()) || loading || (provider === "local" && modelLoaded)}
                             className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
-                                ${modelLoaded
+                                ${modelLoaded && provider === "local"
                                     ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
                                     : loading
                                         ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
                                         : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
                                 }`}
                         >
-                            {loading && !modelLoaded ? "Tải..." : modelLoaded ? "✓ Sẵn sàng" : "Load"}
+                            {loading && !modelLoaded ? "Tải..." : modelLoaded && provider === "local" ? "✓ Sẵn sàng" : provider !== "local" ? "Sử dụng API" : "Load"}
                         </button>
                         <ModelStatus />
                     </div>
@@ -847,7 +893,7 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                 <ChatPanel
                     instanceId={1}
                     showSidebar={true}
-                    externalInput={sendTrigger ? sendTrigger.text : undefined}
+                    externalInput={sendTrigger}
                     isCompareMode={false}
                     onModelLoadedChange={setPanelModelLoaded}
                     externalParams={params}
@@ -867,10 +913,10 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                     )}
 
                     {/* Params summary */}
-                    <ParamsSummaryBar 
-                        params={params} 
-                        onToggleLogs={() => setShowLogs(!showLogs)} 
-                        showLogsActive={showLogs} 
+                    <ParamsSummaryBar
+                        params={params}
+                        onToggleLogs={() => setShowLogs(!showLogs)}
+                        showLogsActive={showLogs}
                     />
 
                     <div className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
@@ -1011,7 +1057,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                         instanceId={1}
                         showSidebar={false}
                         isCompareMode={true}
-                        externalInput={sendTrigger ? sendTrigger.text : undefined}
+                        externalInput={sendTrigger}
                         onModelLoadedChange={setModel1Loaded}
                         externalParams={params}
                         onLog={handleLog}
@@ -1022,7 +1068,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                         instanceId={2}
                         showSidebar={false}
                         isCompareMode={true}
-                        externalInput={sendTrigger ? sendTrigger.text : undefined}
+                        externalInput={sendTrigger}
                         onModelLoadedChange={setModel2Loaded}
                         externalParams={params}
                         onLog={handleLog}
@@ -1033,7 +1079,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
             {/* Unified input bar */}
             <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0 relative">
                 {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
-                
+
                 {!bothLoaded && (
                     <div className="flex items-center gap-2 text-xs mb-2 text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
                         <AlertCircle size={13} />
@@ -1045,10 +1091,10 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                 )}
 
                 {/* Params summary — shared cho cả 2 */}
-                <ParamsSummaryBar 
-                    params={params} 
-                    onToggleLogs={() => setShowLogs(!showLogs)} 
-                    showLogsActive={showLogs} 
+                <ParamsSummaryBar
+                    params={params}
+                    onToggleLogs={() => setShowLogs(!showLogs)}
+                    showLogsActive={showLogs}
                 />
 
                 <div className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all

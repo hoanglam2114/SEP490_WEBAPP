@@ -158,11 +158,12 @@ export class EvaluationService {
         try {
             const rawText = await this.provider.generateContent(prompt);
 
-            let jsonString = rawText;
-            const jsonMatch = rawText.match(/\[[\s\S]*\]/);
-            if (jsonMatch) {
-                jsonString = jsonMatch[0];
-            }
+            // Robust JSON extraction: Find first [ and last ]
+            const firstBracket = rawText.indexOf('[');
+            const lastBracket = rawText.lastIndexOf(']');
+            let jsonString = (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket)
+                ? rawText.substring(firstBracket, lastBracket + 1)
+                : rawText;
 
             let parsedArray: any[];
             try {
@@ -322,9 +323,25 @@ export class EvaluationService {
 
             try {
                 const rawText = await this.provider.generateContent(prompt);
-                const jsonMatch = rawText.match(/\[[\s\S]*\]/);
-                const jsonString = jsonMatch ? jsonMatch[0] : rawText;
-                const parsed = JSON.parse(jsonString);
+                
+                // Robust JSON extraction: Find first [ and last ]
+                const firstBracket = rawText.indexOf('[');
+                const lastBracket = rawText.lastIndexOf(']');
+                let jsonString = (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket)
+                    ? rawText.substring(firstBracket, lastBracket + 1)
+                    : rawText;
+                
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(jsonString);
+                } catch (parseErr: any) {
+                    console.error("[RefineBatch] JSON Parse failed. Error:", parseErr.message);
+                    console.error("[RefineBatch] Raw text snippet:", rawText.substring(0, 500) + "...");
+                    // Try to recover by trimming or other means if necessary, 
+                    // or just fallback to empty array for this chunk
+                    parsed = [];
+                }
+
                 const arr = Array.isArray(parsed) ? parsed : [parsed];
 
                 const mapped = new Map<number, any>();

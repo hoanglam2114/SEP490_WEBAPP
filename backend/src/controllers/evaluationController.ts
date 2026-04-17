@@ -214,6 +214,7 @@ export class EvaluationController {
     if (normalizedProvider === 'deepseek') {
       return new EvaluationService(new DeepseekProvider());
     }
+
     return new EvaluationService(new GeminiProvider());
   }
 
