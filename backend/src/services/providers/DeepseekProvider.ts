@@ -17,7 +17,8 @@ export class DeepseekProvider implements ILlmProvider {
     }
   }
 
-  async generateContent(prompt: string, modelOverride?: string): Promise<string> {
+  async generateContent(prompt: string, modelOverride?: string, systemPrompt?: string): Promise<string> {
+    const finalSystemPrompt = systemPrompt || 'You are a strict data formatter. You must return ONLY a raw, valid JSON array. Do NOT wrap the JSON in markdown formatting (like ```json). Do NOT include any explanations, greetings, or conversational text. Just the raw JSON array starting with [ and ending with ].';
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
       {
@@ -25,7 +26,7 @@ export class DeepseekProvider implements ILlmProvider {
         messages: [
           {
             role: 'system',
-            content: 'You are a strict data formatter. You must return ONLY a raw, valid JSON array. Do NOT wrap the JSON in markdown formatting (like ```json). Do NOT include any explanations, greetings, or conversational text. Just the raw JSON array starting with [ and ending with ].'
+            content: finalSystemPrompt
           },
           {
             role: 'user',

@@ -649,57 +649,57 @@ export const EvaluationHistory: React.FC = () => {
                       const evaluatedBySummary = getEvaluatedBySummary(item);
 
                       return (
-                      <tr key={item.sampleId} className="border-t border-slate-100 align-top hover:bg-slate-50">
-                        <td className="px-3 py-3 text-slate-800 align-top break-words">{renderDataCell(item)}</td>
-                        <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{formatScoreDisplay(averageScores.overall)}</td>
-                        <td className="px-3 py-3 text-slate-700 align-top break-words">{latest?.reason || latest?.scores?.reason || ''}</td>
-                        <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{evaluatedBySummary || latest?.evaluatedBy || 'none'}</td>
-                        <td className="px-3 py-3 text-slate-500 text-xs align-top whitespace-nowrap">{toDateTime(latest?.timestamp || item.updatedAt || item.createdAt)}</td>
-                        <td className="p-0 align-middle relative whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setOpenActionMenuSampleId((prev) => (prev === item.sampleId ? null : item.sampleId));
-                            }}
-                            className="w-full h-full min-h-[64px] flex items-center justify-center text-slate-600 hover:bg-slate-100 transition-colors"
-                            title="Actions"
-                            aria-label="Actions"
-                          >
-                            <MoreVertical className="w-3.5 h-3.5" />
-                          </button>
-
-                          {openActionMenuSampleId === item.sampleId && (
-                            <div
-                              className="absolute right-full top-1/2 z-20 mr-1 w-32 -translate-y-1/2 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
-                              onClick={(event) => event.stopPropagation()}
+                        <tr key={item.sampleId} className="border-t border-slate-100 align-top hover:bg-slate-50">
+                          <td className="px-3 py-3 text-slate-800 align-top break-words">{renderDataCell(item)}</td>
+                          <td className="px-3 py-3 text-slate-800 font-semibold align-top whitespace-nowrap">{formatScoreDisplay(averageScores.overall)}</td>
+                          <td className="px-3 py-3 text-slate-700 align-top break-words">{latest?.reason || latest?.scores?.reason || ''}</td>
+                          <td className="px-3 py-3 text-slate-700 align-top whitespace-nowrap">{evaluatedBySummary || latest?.evaluatedBy || 'none'}</td>
+                          <td className="px-3 py-3 text-slate-500 text-xs align-top whitespace-nowrap">{toDateTime(latest?.timestamp || item.updatedAt || item.createdAt)}</td>
+                          <td className="p-0 align-middle relative whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenActionMenuSampleId((prev) => (prev === item.sampleId ? null : item.sampleId));
+                              }}
+                              className="w-full h-full min-h-[64px] flex items-center justify-center text-slate-600 hover:bg-slate-100 transition-colors"
+                              title="Actions"
+                              aria-label="Actions"
                             >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleOpenScoreHistory(item);
-                                  setOpenActionMenuSampleId(null);
-                                }}
-                                className="block w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                              <MoreVertical className="w-3.5 h-3.5" />
+                            </button>
+
+                            {openActionMenuSampleId === item.sampleId && (
+                              <div
+                                className="absolute right-full top-1/2 z-20 mr-1 w-32 -translate-y-1/2 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+                                onClick={(event) => event.stopPropagation()}
                               >
-                                View all scores
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleDeleteItem(item);
-                                  setOpenActionMenuSampleId(null);
-                                }}
-                                disabled={deleteMutation.isPending}
-                                className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Delete</span>
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleOpenScoreHistory(item);
+                                    setOpenActionMenuSampleId(null);
+                                  }}
+                                  className="block w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                >
+                                  View all scores
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleDeleteItem(item);
+                                    setOpenActionMenuSampleId(null);
+                                  }}
+                                  disabled={deleteMutation.isPending}
+                                  className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
                       );
                     })}
 

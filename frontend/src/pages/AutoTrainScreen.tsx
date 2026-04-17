@@ -820,16 +820,7 @@ export const AutoTrainScreen: React.FC = () => {
             </div>
           )}
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate("/model-eval/run")}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded-xl text-sm font-semibold transition-all"
-              title="Go to Model Evaluation"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-              Evaluation
-            </button>
+
             <button
               onClick={() => navigate("/training-history")}
               className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-medium transition-all"
@@ -849,6 +840,17 @@ export const AutoTrainScreen: React.FC = () => {
                 />
               </svg>
               History
+            </button>
+
+            <button
+              onClick={() => navigate("/model-eval/leaderboard")}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded-xl text-sm font-semibold transition-all"
+              title="Go to Model Evaluation"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              Evaluation
             </button>
           </div>
         </div>
@@ -931,8 +933,8 @@ export const AutoTrainScreen: React.FC = () => {
                   </label>
                   <input
                     className={`w-full border rounded-xl px-4 py-2.5 text-sm transition-all focus:outline-none focus:ring-2 ${validationErrors.projectName
-                        ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
-                        : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
+                      ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
+                      : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
                       }`}
                     value={projectName}
                     onChange={(e) => {
@@ -971,8 +973,8 @@ export const AutoTrainScreen: React.FC = () => {
                   </label>
                   <select
                     className={`w-full border rounded-xl px-4 py-2.5 text-sm transition-all focus:outline-none focus:ring-2 appearance-none bg-white ${validationErrors.baseModel
-                        ? "border-red-300 bg-red-50 focus:ring-red-200"
-                        : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
+                      ? "border-red-300 bg-red-50 focus:ring-red-200"
+                      : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
                       }`}
                     value={baseModel}
                     onChange={(e) => setBaseModel(e.target.value)}
@@ -1032,8 +1034,8 @@ export const AutoTrainScreen: React.FC = () => {
                               key={col}
                               onClick={() => setColumnMapping(col)}
                               className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${columnMapping === col
-                                  ? "bg-blue-100 text-blue-700 border border-blue-200"
-                                  : "bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200"
+                                ? "bg-blue-100 text-blue-700 border border-blue-200"
+                                : "bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200"
                                 }`}
                             >
                               {col}
@@ -1053,14 +1055,14 @@ export const AutoTrainScreen: React.FC = () => {
                     </label>
                     <label
                       className={`flex flex-col items-center justify-center w-full h-28 border-2 border-dashed rounded-xl cursor-pointer transition-all group ${validationErrors.dataset
-                          ? "border-red-300 bg-red-50/30 hover:border-red-400"
-                          : "border-slate-200 hover:border-blue-400 hover:bg-blue-50/30"
+                        ? "border-red-300 bg-red-50/30 hover:border-red-400"
+                        : "border-slate-200 hover:border-blue-400 hover:bg-blue-50/30"
                         }`}
                     >
                       <div
                         className={`flex flex-col items-center ${validationErrors.dataset
-                            ? "text-red-400 group-hover:text-red-500"
-                            : "text-slate-400 group-hover:text-blue-500"
+                          ? "text-red-400 group-hover:text-red-500"
+                          : "text-slate-400 group-hover:text-blue-500"
                           }`}
                       >
                         <svg
@@ -1134,8 +1136,8 @@ export const AutoTrainScreen: React.FC = () => {
                       </span>
                       <input
                         className={`w-full border rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-all ${validationErrors.dataset
-                            ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
-                            : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
+                          ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
+                          : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
                           }`}
                         value={hubPath}
                         onChange={(e) => {
@@ -1183,8 +1185,8 @@ export const AutoTrainScreen: React.FC = () => {
                         <input
                           type="password"
                           className={`w-full border rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-all ${validationErrors.hfToken
-                              ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
-                              : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
+                            ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
+                            : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
                             }`}
                           value={hfToken}
                           onChange={(e) => {
@@ -1228,8 +1230,8 @@ export const AutoTrainScreen: React.FC = () => {
                         </span>
                         <input
                           className={`w-full border rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 transition-all ${validationErrors.hfRepoId
-                              ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
-                              : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
+                            ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-800 placeholder-red-300"
+                            : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
                             }`}
                           value={hfRepoId}
                           onChange={(e) => {
@@ -1373,8 +1375,8 @@ export const AutoTrainScreen: React.FC = () => {
                 <button
                   onClick={handleJsonModeToggle}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${jsonMode
-                      ? "bg-purple-100 text-purple-700 hover:bg-purple-200"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    ? "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                     }`}
                 >
                   <svg
@@ -1414,8 +1416,8 @@ export const AutoTrainScreen: React.FC = () => {
                           {meta.type === "select" ? (
                             <select
                               className={`w-full border rounded-xl px-4 py-2.5 text-sm transition-all focus:outline-none focus:ring-2 appearance-none bg-white ${hasError
-                                  ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
-                                  : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
+                                ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
+                                : "border-slate-200 focus:ring-blue-200 focus:border-blue-400"
                                 }`}
                               value={value}
                               onChange={(e) =>
@@ -1432,8 +1434,8 @@ export const AutoTrainScreen: React.FC = () => {
                             <input
                               type="text"
                               className={`w-full border rounded-xl px-4 py-2.5 text-sm transition-all focus:outline-none focus:ring-2 ${hasError
-                                  ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
-                                  : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
+                                ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
+                                : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
                                 }`}
                               value={value}
                               onChange={(e) =>
@@ -1452,8 +1454,8 @@ export const AutoTrainScreen: React.FC = () => {
                                     : 1
                               }
                               className={`w-full border rounded-xl px-4 py-2.5 text-sm transition-all focus:outline-none focus:ring-2 ${hasError
-                                  ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
-                                  : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
+                                ? "border-red-300 bg-red-50 focus:ring-red-200 text-red-700"
+                                : "border-slate-200 bg-white focus:ring-blue-200 focus:border-blue-400"
                                 }`}
                               value={value}
                               onChange={(e) =>
@@ -1485,8 +1487,8 @@ export const AutoTrainScreen: React.FC = () => {
                   <div>
                     <textarea
                       className={`w-full h-72 border rounded-xl px-4 py-3 font-mono text-xs leading-relaxed transition-all focus:outline-none focus:ring-2 ${hasParamErrors()
-                          ? "border-red-300 bg-red-50/50 focus:ring-red-200"
-                          : "border-slate-200 bg-slate-50 focus:ring-blue-200 focus:border-blue-400"
+                        ? "border-red-300 bg-red-50/50 focus:ring-red-200"
+                        : "border-slate-200 bg-slate-50 focus:ring-blue-200 focus:border-blue-400"
                         }`}
                       value={jsonText}
                       onChange={handleJsonTextChange}
@@ -1528,8 +1530,8 @@ export const AutoTrainScreen: React.FC = () => {
             <div className="flex flex-col gap-3">
               <button
                 className={`w-full py-4 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 shadow-sm ${activeJobCount >= 3
-                    ? "bg-slate-300 text-slate-500 cursor-not-allowed"
-                    : "bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 hover:shadow-md active:scale-[0.98]"
+                  ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                  : "bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 hover:shadow-md active:scale-[0.98]"
                   }`}
                 onClick={handleStartTraining}
                 disabled={activeJobCount >= 3}
@@ -1715,10 +1717,10 @@ export const AutoTrainScreen: React.FC = () => {
                           <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
                             <div
                               className={`h-2.5 rounded-full transition-all duration-700 ease-out ${status.status === "COMPLETED"
-                                  ? "bg-emerald-500"
-                                  : status.status === "STOPPED"
-                                    ? "bg-red-500"
-                                    : "bg-blue-600 animate-pulse"
+                                ? "bg-emerald-500"
+                                : status.status === "STOPPED"
+                                  ? "bg-red-500"
+                                  : "bg-blue-600 animate-pulse"
                                 }`}
                               style={{ width: `${status.progress ?? 0}%` }}
                             />
@@ -1754,8 +1756,8 @@ export const AutoTrainScreen: React.FC = () => {
                                 Overfit Gap
                               </div>
                               <div className={`text-lg font-bold font-mono ${status.metrics?.eval_loss && status.metrics?.loss
-                                  ? (status.metrics.eval_loss - status.metrics.loss) > 0.5 ? "text-red-600" : "text-amber-700"
-                                  : "text-slate-400"
+                                ? (status.metrics.eval_loss - status.metrics.loss) > 0.5 ? "text-red-600" : "text-amber-700"
+                                : "text-slate-400"
                                 }`}>
                                 {status.metrics?.eval_loss && status.metrics?.loss
                                   ? (status.metrics.eval_loss - status.metrics.loss).toFixed(4)

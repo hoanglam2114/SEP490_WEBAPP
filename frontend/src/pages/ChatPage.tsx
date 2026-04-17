@@ -170,8 +170,8 @@ function GlobalLogsPanel({ logs, onClose }: { logs: LogEntry[], onClose: () => v
                             <span className="text-slate-500 shrink-0 select-none">[{new Date(L.ts).toLocaleTimeString()}]</span>
                             {L.instanceId && <span className="text-violet-400 font-semibold shrink-0 select-none">[Model {L.instanceId}]</span>}
                             <div className={`flex-1 min-w-0 ${L.type === 'error' ? 'text-red-400' :
-                                    L.type === 'success' ? 'text-emerald-400' :
-                                        L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
+                                L.type === 'success' ? 'text-emerald-400' :
+                                    L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
                                 }`}>
                                 <p className="break-words">{L.message}</p>
                                 {L.data && (
@@ -717,9 +717,6 @@ function ChatPanel({
                         >
                             <option value="local">GPU Service</option>
                             <option value="openrouter">OpenRouter</option>
-                            <option value="gemini">Gemini</option>
-                            <option value="openai">OpenAI</option>
-                            <option value="deepseek">Deepseek</option>
                         </select>
                         <div className="flex-1 relative">
                             <input

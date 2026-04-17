@@ -108,12 +108,13 @@ Nhiệm vụ:
   + Trả về LẠI TOÀN BỘ mảng hội thoại: các lượt sửa thì mang giá trị mới, lượt không sửa thì giữ nguyên.
 - Giữ đúng ngôn ngữ và ý định giáo dục ban đầu.
 - Không thêm thông tin bịa đặt.
+- CHỈ trả về một JSON array duy nhất. TUYỆT ĐỐI không thêm lời dẫn, không giải thích, không dùng markdown block. Chỉ bắt đầu bằng '[' và kết thúc bằng ']'.
 
 DỮ LIỆU CẦN TINH CHỈNH:
 \${samplesJson}
 
 Yêu cầu output:
-- CHỈ trả về JSON array hợp lệ.
+- CHỈ trả về JSON array hợp lệ, không kèm văn bản nào khác ngoài JSON.
 - Mỗi phần tử phải có: index, refinedOutput.
 - Nếu input "assistant" là một CHUỖI, "refinedOutput" cũng phải là CHUỖI chứa nội dung đã sửa.
 - Nếu input "assistant" là một MẢNG, "refinedOutput" cũng phải là một MẢNG các lượt với cấu trúc y hệt input (ví dụ: [{"user": "...", "assistant": "..."}]), trong đó "assistant" ở các lượt lỗi đã được sửa đổi.

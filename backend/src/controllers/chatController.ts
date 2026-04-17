@@ -2,9 +2,6 @@ import { Request, Response } from 'express';
 import fetch from 'node-fetch'; // assuming node-fetch is available based on package.json
 import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
-import { GeminiProvider } from '../services/providers/GeminiProvider';
-import { OpenAIProvider } from '../services/providers/OpenAIProvider';
-import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 
 const rawGpuUrl = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
 // Split by comma and take the first one, or handle based on instanceId
@@ -21,7 +18,7 @@ const getGpuUrl = (instanceId?: number) => {
 export const validateModel = async (req: Request, res: Response): Promise<void> => {
   try {
     const { model, provider } = req.body;
-    
+
     if (!provider || provider === 'local') {
       // Local model validation (existing logic if any, or just return ok for now)
       res.json({ valid: true });
@@ -31,9 +28,6 @@ export const validateModel = async (req: Request, res: Response): Promise<void> 
     let llmProvider;
     const normalizedProvider = String(provider).toLowerCase();
     if (normalizedProvider === 'openrouter') llmProvider = new OpenRouterProvider();
-    else if (normalizedProvider === 'gemini') llmProvider = new GeminiProvider();
-    else if (normalizedProvider === 'openai') llmProvider = new OpenAIProvider();
-    else if (normalizedProvider === 'deepseek') llmProvider = new DeepseekProvider();
 
     if (llmProvider) {
       // Test the model with a very simple, short prompt
@@ -50,16 +44,16 @@ export const validateModel = async (req: Request, res: Response): Promise<void> 
 
 export const chatWithAI = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { 
-      text_input, 
-      hf_hub_id, 
-      message, 
-      model, 
-      system_prompt, 
-      max_new_tokens, 
-      temperature, 
-      top_k, 
-      top_p, 
+    const {
+      text_input,
+      hf_hub_id,
+      message,
+      model,
+      system_prompt,
+      max_new_tokens,
+      temperature,
+      top_k,
+      top_p,
       repetition_penalty,
       provider // New: external provider like 'openrouter', 'gemini', etc.
     } = req.body;
@@ -76,25 +70,19 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
     if (provider) {
       let llmProvider;
       const normalizedProvider = String(provider).toLowerCase();
-      
+
       if (normalizedProvider === 'openrouter') {
         llmProvider = new OpenRouterProvider();
-      } else if (normalizedProvider === 'gemini') {
-        llmProvider = new GeminiProvider();
-      } else if (normalizedProvider === 'openai') {
-        llmProvider = new OpenAIProvider();
-      } else if (normalizedProvider === 'deepseek') {
-        llmProvider = new DeepseekProvider();
       }
 
       if (llmProvider) {
-         console.log(`[chatWithAI] Using external provider: ${normalizedProvider}`);
-         // If using OpenRouter, we can pass the model ID if it looks like a HF model ID or OpenRouter model ID
-         const modelOverride = normalizedProvider === 'openrouter' ? actualModelId : undefined;
-         const reply = await llmProvider.generateContent(actualMessage, modelOverride);
-         res.json({ reply, result: reply });
-         return;
-       }
+        console.log(`[chatWithAI] Using external provider: ${normalizedProvider}`);
+        // If using OpenRouter, we can pass the model ID if it looks like a HF model ID or OpenRouter model ID
+        const modelOverride = normalizedProvider === 'openrouter' ? actualModelId : undefined;
+        const reply = await llmProvider.generateContent(actualMessage, modelOverride);
+        res.json({ reply, result: reply });
+        return;
+      }
     }
 
     // --- CASE 2: Fine-tuned Model (Local/GPU Service) ---
@@ -105,12 +93,12 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
-    
+
     const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true' 
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
         hf_model_id: actualModelId,
@@ -136,14 +124,14 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
 export const inferWithAI = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { 
-      text_input, 
-      hf_model_id, 
-      system_prompt, 
-      max_new_tokens, 
-      temperature, 
-      top_k, 
-      top_p, 
+    const {
+      text_input,
+      hf_model_id,
+      system_prompt,
+      max_new_tokens,
+      temperature,
+      top_k,
+      top_p,
       repetition_penalty,
       provider // New: support external providers
     } = req.body;
@@ -158,9 +146,6 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       let llmProvider;
       const normalizedProvider = String(provider).toLowerCase();
       if (normalizedProvider === 'openrouter') llmProvider = new OpenRouterProvider();
-      else if (normalizedProvider === 'gemini') llmProvider = new GeminiProvider();
-      else if (normalizedProvider === 'openai') llmProvider = new OpenAIProvider();
-      else if (normalizedProvider === 'deepseek') llmProvider = new DeepseekProvider();
 
       if (llmProvider) {
         console.log(`[inferWithAI] Using external provider: ${normalizedProvider}`);
@@ -181,9 +166,9 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
     const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true' 
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
         hf_model_id: hf_model_id,
@@ -209,18 +194,18 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
 export const chatWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { 
-      text_input, 
-      hf_hub_id, 
-      message, 
-      model, 
-      system_prompt, 
-      max_new_tokens, 
-      temperature, 
-      top_k, 
-      top_p, 
+    const {
+      text_input,
+      hf_hub_id,
+      message,
+      model,
+      system_prompt,
+      max_new_tokens,
+      temperature,
+      top_k,
+      top_p,
       repetition_penalty,
-      provider 
+      provider
     } = req.body;
 
     const actualMessage = text_input || message;
@@ -236,9 +221,6 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       let llmProvider;
       const normalizedProvider = String(provider).toLowerCase();
       if (normalizedProvider === 'openrouter') llmProvider = new OpenRouterProvider();
-      else if (normalizedProvider === 'gemini') llmProvider = new GeminiProvider();
-      else if (normalizedProvider === 'openai') llmProvider = new OpenAIProvider();
-      else if (normalizedProvider === 'deepseek') llmProvider = new DeepseekProvider();
 
       if (llmProvider) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -248,7 +230,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
         const modelOverride = normalizedProvider === 'openrouter' ? actualModelId : undefined;
         const reply = await llmProvider.generateContent(actualMessage, modelOverride);
-        
+
         res.write(`data: ${JSON.stringify({ text: reply })}\n\n`);
         res.write(`data: ${JSON.stringify({ is_final: true })}\n\n`);
         res.end();
@@ -268,9 +250,9 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true' 
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
         hf_model_id: actualModelId,
@@ -340,16 +322,16 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
 export const inferWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { 
-      text_input, 
-      hf_model_id, 
-      system_prompt, 
-      max_new_tokens, 
-      temperature, 
-      top_k, 
-      top_p, 
+    const {
+      text_input,
+      hf_model_id,
+      system_prompt,
+      max_new_tokens,
+      temperature,
+      top_k,
+      top_p,
       repetition_penalty,
-      provider 
+      provider
     } = req.body;
 
     if (!text_input) {
@@ -362,9 +344,6 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       let llmProvider;
       const normalizedProvider = String(provider).toLowerCase();
       if (normalizedProvider === 'openrouter') llmProvider = new OpenRouterProvider();
-      else if (normalizedProvider === 'gemini') llmProvider = new GeminiProvider();
-      else if (normalizedProvider === 'openai') llmProvider = new OpenAIProvider();
-      else if (normalizedProvider === 'deepseek') llmProvider = new DeepseekProvider();
 
       if (llmProvider) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -392,9 +371,9 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true' 
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
         hf_model_id: hf_model_id,
@@ -466,7 +445,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 export const saveChatHistory = async (req: Request, res: Response): Promise<void> => {
   try {
     const { userMessage, aiMessage, model, responseTime } = req.body;
-    
+
     if (!userMessage || !aiMessage || !model || responseTime === undefined) {
       res.status(400).json({ error: 'Missing required fields' });
       return;
@@ -493,7 +472,7 @@ export const getChatHistory = async (req: Request, res: Response): Promise<void>
     const history = await ChatHistory.find()
       .sort({ createdAt: -1 })
       .limit(limit);
-      
+
     res.json(history);
   } catch (error: any) {
     console.error('Get Chat History Error:', error);
@@ -516,9 +495,9 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
 
     const loadResponse = await fetch(`${targetUrl}/api/model/load`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true' 
+        'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({ hf_model_id, instance_id: instanceId ?? 1, system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty })
     });
@@ -541,7 +520,7 @@ export const getInferenceLogs = async (req: Request, res: Response): Promise<voi
   try {
     const { inference_id, instanceId } = req.query;
     const targetUrl = getGpuUrl(instanceId ? Number(instanceId) : undefined);
-    
+
     let url = `${targetUrl}/api/infer/logs`;
     if (inference_id) {
       url += `/${inference_id}`;
@@ -552,7 +531,7 @@ export const getInferenceLogs = async (req: Request, res: Response): Promise<voi
         'ngrok-skip-browser-warning': 'true'
       }
     });
-    
+
     if (!response.ok) {
       const errorData: any = await response.json().catch(() => ({}));
       throw new Error(errorData.error || `Lỗi từ Python backend: ${response.statusText}`);

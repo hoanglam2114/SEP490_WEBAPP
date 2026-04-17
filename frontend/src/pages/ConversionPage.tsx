@@ -33,7 +33,7 @@ import type { ConversionResult } from '../types';
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type PreviewMode = 'alpaca' | 'openai';
-type AiProvider = 'gemini' | 'openai' | 'deepseek' | 'openrouter';
+type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type EvaluationScores = {
   accuracy?: number | null;
@@ -45,7 +45,7 @@ type EvaluationScores = {
   overall: number | null;
 };
 
-type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'openrouter' | 'none';
+type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
 
 type EvaluationRecord = {
   evaluatedBy: EvaluatedBy;
@@ -369,7 +369,7 @@ const METRIC_TOOLTIPS: Record<string, string> = {
 
 const CLEANING_TOOLTIPS = {
   removeBoilerplate:
-    'Xóa các câu trả lời mẫu/canned response ít giá trị huấn luyện như: "Xin lỗi, tôi không thể...", "As an AI model...", "Tôi không có quyền truy cập...", "Okay/Được rồi" đơn lẻ. Hệ thống sẽ kiểm tra cả instruction và output để loại các mẫu boilerplate này.',
+    'Xóa các câu trả lời mẫu/canned response ít giá trị huấn luyện như: "Xin lỗi, tôi không thể...", "As an AI model...", "Tôi không có quyền truy cập...", "Okay/Được rồi" đơn lẻ.',
 };
 
 function parseThinkContent(content: string): { thinkText: string; assistantText: string } {
@@ -703,7 +703,6 @@ function EvaluateModal({
           <option value="gemini">Gemini</option>
           <option value="openai">OpenAI</option>
           <option value="deepseek">Deepseek</option>
-          <option value="openrouter">OpenRouter</option>
         </select>
       </div>
     </ActionModalFrame>
@@ -751,7 +750,6 @@ function RefineModal({
           <option value="gemini">Gemini</option>
           <option value="openai">OpenAI</option>
           <option value="deepseek">Deepseek</option>
-          <option value="openrouter">OpenRouter</option>
         </select>
       </div>
 
@@ -2699,8 +2697,8 @@ export function ConversionPage() {
           const normalizedRefinedText = typeof refinedOutput === 'string'
             ? refinedOutput
             : (Array.isArray(refinedOutput)
-                ? refinedOutput.map((t: any) => String(t.assistant || '').trim()).filter(Boolean).join('\n\n')
-                : '');
+              ? refinedOutput.map((t: any) => String(t.assistant || '').trim()).filter(Boolean).join('\n\n')
+              : '');
           nextRefineHistoryMap[row.id] = {
             original: String(row.assistantText || ''),
             refined: normalizedRefinedText,
