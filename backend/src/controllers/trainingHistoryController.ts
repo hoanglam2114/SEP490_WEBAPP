@@ -93,9 +93,21 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
       existing.columnMapping = columnMapping;
       existing.parameters = parameters;
       existing.pushToHub = pushToHub ?? false;
-      existing.hfRepoId = hfRepoId ?? '';
+      existing.hfRepoId = hfRepoId || '';
       existing.status = status;
-      existing.finalMetrics = finalMetrics;
+
+      // Only update finalMetrics if the incoming ones are not empty/zero,
+      // or if the existing ones are empty. This prevents overwriting with 0s.
+      const hasIncomingMetrics = finalMetrics && (finalMetrics.loss > 0 || finalMetrics.accuracy > 0);
+      if (hasIncomingMetrics || !existing.finalMetrics || (existing.finalMetrics.loss === 0 && existing.finalMetrics.accuracy === 0)) {
+        existing.finalMetrics = {
+          loss: finalMetrics?.loss || 0,
+          accuracy: finalMetrics?.accuracy || 0,
+          vram: finalMetrics?.vram || 0,
+          gpu_util: finalMetrics?.gpu_util || 0,
+        };
+      }
+
       existing.lastLogLine = lastLogLine;
       existing.trainingDuration = trainingDuration;
       existing.startedAt = new Date(startedAt);

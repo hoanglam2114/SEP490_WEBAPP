@@ -533,4 +533,57 @@ export const apiService = {
     const response = await api.delete(`/chat/sessions/${id}`);
     return response.data;
   },
+
+  // Model Registry API
+  listModelRegistries: async () => {
+    const response = await api.get('/model-registry');
+    return response.data;
+  },
+  createModelRegistry: async (payload: { name: string; description?: string; baseModel: string }) => {
+    const response = await api.post('/model-registry', payload);
+    return response.data;
+  },
+  getModelRegistry: async (id: string) => {
+    const response = await api.get(`/model-registry/${id}`);
+    return response.data;
+  },
+  updateModelRegistry: async (id: string, payload: any) => {
+    const response = await api.put(`/model-registry/${id}`, payload);
+    return response.data;
+  },
+  deleteModelRegistry: async (id: string) => {
+    const response = await api.delete(`/model-registry/${id}`);
+    return response.data;
+  },
+
+  // Model Version API
+  listModelVersions: async (registryId: string) => {
+    const response = await api.get(`/model-registry/${registryId}/versions`);
+    return response.data;
+  },
+  registerModelVersion: async (payload: {
+    modelRegistryId: string;
+    version: string;
+    trainingHistoryId?: string;
+    evaluationId?: string;
+    hfRepoId?: string;
+    notes?: string;
+    status?: string;
+    promptVersion?: string;
+  }) => {
+    const response = await api.post('/model-versions', payload);
+    return response.data;
+  },
+  updateModelVersionStatus: async (id: string, status: string) => {
+    const response = await api.put(`/model-versions/${id}/status`, { status });
+    return response.data;
+  },
+  deleteModelVersion: async (id: string) => {
+    const response = await api.delete(`/model-versions/${id}`);
+    return response.data;
+  },
+  getEvaluationsByJob: async (jobId: string) => {
+    const response = await api.get(`/model-versions/evaluations/${jobId}`);
+    return response.data;
+  },
 };

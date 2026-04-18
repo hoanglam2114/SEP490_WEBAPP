@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import fetch from 'node-fetch'; // assuming node-fetch is available based on package.json
 import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
+import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
 
 const rawGpuUrl = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
 // Split by comma and take the first one, or handle based on instanceId
@@ -49,6 +50,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       hf_hub_id,
       message,
       model,
+      modelRegistryId, // New: support using production model from registry
       system_prompt,
       max_new_tokens,
       temperature,
@@ -59,7 +61,22 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
     } = req.body;
 
     const actualMessage = text_input || message;
-    const actualModelId = hf_hub_id || model;
+    let actualModelId = hf_hub_id || model;
+
+    // If modelRegistryId is provided, fetch the Production version's HF ID
+    if (modelRegistryId && !actualModelId) {
+      const productionVersion = await ModelVersion.findOne({
+        modelRegistryId,
+        status: ModelVersionStatus.PRODUCTION
+      });
+      if (productionVersion && productionVersion.hfRepoId) {
+        actualModelId = productionVersion.hfRepoId;
+        console.log(`[chatWithAI] Using Production model from Registry ${modelRegistryId}: ${actualModelId}`);
+      } else {
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Production nào cho Model Registry này.' });
+        return;
+      }
+    }
 
     if (!actualMessage) {
       res.status(400).json({ error: 'message là bắt buộc' });
@@ -127,6 +144,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
     const {
       text_input,
       hf_model_id,
+      modelRegistryId, // New: support registry for single inference
       system_prompt,
       max_new_tokens,
       temperature,
@@ -141,6 +159,22 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
+    let actualModelId = hf_model_id;
+
+    // If modelRegistryId is provided, fetch the Production version's HF ID
+    if (modelRegistryId && !actualModelId) {
+      const productionVersion = await ModelVersion.findOne({
+        modelRegistryId,
+        status: ModelVersionStatus.PRODUCTION
+      });
+      if (productionVersion && productionVersion.hfRepoId) {
+        actualModelId = productionVersion.hfRepoId;
+      } else {
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        return;
+      }
+    }
+
     // --- CASE 1: External LLM Provider ---
     if (provider) {
       let llmProvider;
@@ -149,14 +183,14 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
       if (llmProvider) {
         console.log(`[inferWithAI] Using external provider: ${normalizedProvider}`);
-        const result = await llmProvider.generateContent(text_input, hf_model_id, system_prompt);
+        const result = await llmProvider.generateContent(text_input, actualModelId, system_prompt);
         res.json({ result });
         return;
       }
     }
 
     // --- CASE 2: GPU Service ---
-    if (!hf_model_id) {
+    if (!actualModelId) {
       res.status(400).json({ error: 'hf_model_id là bắt buộc khi không dùng external provider' });
       return;
     }
@@ -171,7 +205,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
         'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
-        hf_model_id: hf_model_id,
+        hf_model_id: actualModelId,
         text_input: text_input,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
@@ -199,6 +233,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       hf_hub_id,
       message,
       model,
+      modelRegistryId, // New: support using production model from registry
       system_prompt,
       max_new_tokens,
       temperature,
@@ -209,7 +244,21 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
     } = req.body;
 
     const actualMessage = text_input || message;
-    const actualModelId = hf_hub_id || model;
+    let actualModelId = hf_hub_id || model;
+
+    // If modelRegistryId is provided, fetch the Production version's HF ID
+    if (modelRegistryId && !actualModelId) {
+      const productionVersion = await ModelVersion.findOne({
+        modelRegistryId,
+        status: ModelVersionStatus.PRODUCTION
+      });
+      if (productionVersion && productionVersion.hfRepoId) {
+        actualModelId = productionVersion.hfRepoId;
+      } else {
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        return;
+      }
+    }
 
     if (!actualMessage) {
       res.status(400).json({ error: 'message là bắt buộc' });
@@ -283,8 +332,8 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
     // Pipe the response body from Python server to Express response
     if (inferResponse.body) {
-      inferResponse.body.pipe(res, { end: false });
-      inferResponse.body.on('end', () => {
+      (inferResponse.body as any).pipe(res, { end: false });
+      (inferResponse.body as any).on('end', () => {
         const input_parameters = {
           do_sample: true,
           max_new_tokens,
@@ -325,6 +374,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
     const {
       text_input,
       hf_model_id,
+      modelRegistryId, // New: support registry for single inference stream
       system_prompt,
       max_new_tokens,
       temperature,
@@ -339,6 +389,22 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    let actualModelId = hf_model_id;
+
+    // If modelRegistryId is provided, fetch the Production version's HF ID
+    if (modelRegistryId && !actualModelId) {
+      const productionVersion = await ModelVersion.findOne({
+        modelRegistryId,
+        status: ModelVersionStatus.PRODUCTION
+      });
+      if (productionVersion && productionVersion.hfRepoId) {
+        actualModelId = productionVersion.hfRepoId;
+      } else {
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        return;
+      }
+    }
+
     // --- CASE 1: External Provider (Non-streaming fallback) ---
     if (provider) {
       let llmProvider;
@@ -351,7 +417,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
         res.setHeader('Connection', 'keep-alive');
         res.flushHeaders();
 
-        const result = await llmProvider.generateContent(text_input, hf_model_id, system_prompt);
+        const result = await llmProvider.generateContent(text_input, actualModelId, system_prompt);
         res.write(`data: ${JSON.stringify({ text: result })}\n\n`);
         res.write(`data: ${JSON.stringify({ is_final: true })}\n\n`);
         res.end();
@@ -360,7 +426,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
     }
 
     // --- CASE 2: GPU Service Stream ---
-    if (!hf_model_id) {
+    if (!actualModelId) {
       res.status(400).json({ error: 'hf_model_id là bắt buộc khi không dùng external provider' });
       return;
     }
@@ -376,7 +442,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
         'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
-        hf_model_id: hf_model_id,
+        hf_model_id: actualModelId,
         text_input: text_input,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
@@ -403,8 +469,8 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     // Pipe the response body
     if (inferResponse.body) {
-      inferResponse.body.pipe(res, { end: false });
-      inferResponse.body.on('end', () => {
+      (inferResponse.body as any).pipe(res, { end: false });
+      (inferResponse.body as any).on('end', () => {
         const input_parameters = {
           do_sample: true,
           max_new_tokens,

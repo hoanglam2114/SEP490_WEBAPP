@@ -28,6 +28,7 @@ import {
   deleteSession
 } from '../controllers/chatSessionController';
 import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize } from '../controllers/clusterController';
+import { ModelRegistryController } from '../controllers/modelRegistryController';
 
 
 import {
@@ -48,6 +49,7 @@ const router = express.Router();
 const controller = new ConversionController();
 const hfController = new HuggingFaceController();
 const evalController = new EvaluationController();
+const registryController = new ModelRegistryController();
 
 // Cấu hình multer cho upload
 // Cấu hình multer cho upload
@@ -145,5 +147,20 @@ router.get('/model-eval/compare', compareEvaluations);         // ⚠️ trướ
 router.delete('/model-eval/:evalId', deleteEvaluation);        // ⚠️ trước GET /:evalId
 router.get('/model-eval/:evalId', getEvaluation);              // ⚠️ wildcard — đứng cuối cùng
 
+// Model Registry Routes
+router.get('/model-registry', (req, res) => registryController.listRegistries(req, res));
+router.post('/model-registry', (req, res) => registryController.createRegistry(req, res));
+router.get('/model-registry/:id', (req, res) => registryController.getRegistry(req, res));
+router.put('/model-registry/:id', (req, res) => registryController.updateRegistry(req, res));
+router.delete('/model-registry/:id', (req, res) => registryController.deleteRegistry(req, res));
+
+// Model Version Routes
+router.get('/model-registry/:registryId/versions', (req, res) => registryController.listVersions(req, res));
+router.post('/model-versions', (req, res) => registryController.registerVersion(req, res));
+router.put('/model-versions/:id/status', (req, res) => registryController.updateVersionStatus(req, res));
+router.delete('/model-versions/:id', (req, res) => registryController.deleteVersion(req, res));
+router.get('/model-versions/evaluations/:jobId', (req, res) => registryController.getEvaluationsByJob(req, res));
+router.get('/model-versions/download-dataset/:id', (req, res) => registryController.downloadDataset(req, res));
+router.get('/model-registry/:registryId/production', (req, res) => registryController.getProductionVersion(req, res));
 
 export default router;

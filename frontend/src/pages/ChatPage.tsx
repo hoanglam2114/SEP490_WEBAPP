@@ -395,6 +395,8 @@ function ChatPanel({
     const [loading, setLoading] = useState(false);
     const [hfHubId, setHfHubId] = useState("");
     const [provider, setProvider] = useState<string>("local");
+    const [registries, setRegistries] = useState<any[]>([]);
+    const [selectedRegistryId, setSelectedRegistryId] = useState<string>("");
     const [activeModelId, setActiveModelId] = useState<string>("");
     const [modelLoaded, setModelLoaded] = useState(false);
     const [isSidebarOpen, setSidebarOpen] = useState(true);
@@ -424,9 +426,46 @@ function ChatPanel({
         }
     };
 
+    const fetchRegistries = async () => {
+        try {
+            const data = await apiService.listModelRegistries();
+            setRegistries(data);
+        } catch (error) {
+            console.error("Failed to fetch registries:", error);
+        }
+    };
+
     useEffect(() => {
         if (showSidebar) fetchChatSessions();
+        fetchRegistries();
     }, [showSidebar]);
+
+    const handleRegistryChange = async (registryId: string) => {
+        setSelectedRegistryId(registryId);
+        if (!registryId) return;
+
+        setLoading(true);
+        try {
+            const response = await fetch(`/api/model-registry/${registryId}/production`);
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.message || 'Không tìm thấy bản Production');
+            }
+            const productionVersion = await response.json();
+            setHfHubId(productionVersion.hfRepoId);
+            setLoadError(null);
+            onLog?.({
+                message: `Đã tự động chọn bản Production: ${productionVersion.version} (${productionVersion.hfRepoId})`,
+                type: "success",
+                instanceId
+            });
+        } catch (error: any) {
+            setLoadError(error.message);
+            onLog?.({ message: error.message, type: "error", instanceId });
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -461,7 +500,7 @@ function ChatPanel({
     // sendMessage can be called externally (compare mode) or internally
     const sendMessage = useCallback(async (textOverride?: string) => {
         const text = textOverride ?? "";
-        const isLocal = provider === "local";
+        const isLocal = provider === "local" || provider === "registry";
         if (!text.trim() || loading) return;
         if (isLocal && (!hfHubId.trim() || !modelLoaded)) return;
 
@@ -486,13 +525,14 @@ function ChatPanel({
         try {
             const options = {
                 instanceId,
+                modelRegistryId: provider === "registry" ? selectedRegistryId : undefined,
                 system_prompt: params.systemPrompt || undefined,
                 max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
                 temperature: params.temperature === "" ? undefined : params.temperature,
                 top_k: params.topK === "" ? undefined : params.topK,
                 top_p: params.topP === "" ? undefined : params.topP,
                 repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
-                provider: isLocal ? undefined : provider,
+                provider: (provider === "local" || provider === "registry") ? undefined : provider,
                 signal: abortController.signal,
                 onFinalInfo: (info: any) => {
                     if (info.input_parameters) {
@@ -581,7 +621,8 @@ function ChatPanel({
     }, [externalInput?.ts]);
 
     const handleConfirmModel = async () => {
-        if (provider !== "local") {
+        const isLocalOrRegistry = provider === "local" || provider === "registry";
+        if (!isLocalOrRegistry) {
             setLoading(true);
             setLoadError(null);
             try {
@@ -600,13 +641,16 @@ function ChatPanel({
             }
             return;
         }
-        if (!hfHubId.trim()) return;
+        if (!hfHubId.trim()) {
+            setLoadError(provider === "registry" ? "Vui lòng chọn Model Registry" : "Vui lòng nhập Hugging Face Hub ID");
+            return;
+        }
         setLoading(true);
         setModelLoaded(false);
         setLoadError(null);
         onLog?.({ message: `Bắt đầu load model: ${hfHubId}`, type: "info", instanceId });
         try {
-            const options = {
+            const options: any = {
                 instanceId,
                 system_prompt: params.systemPrompt || undefined,
                 max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
@@ -614,6 +658,7 @@ function ChatPanel({
                 top_k: params.topK === "" ? undefined : params.topK,
                 top_p: params.topP === "" ? undefined : params.topP,
                 repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
+                provider: "local" //Registry cũng sử dụng GPU service cục bộ
             };
             await apiService.loadModel(hfHubId, options);
             setActiveModelId(hfHubId);
@@ -706,47 +751,72 @@ function ChatPanel({
                 {/* Panel header */}
                 <div className="border-b border-slate-200 bg-white px-4 py-3">
                     <div className="flex items-center gap-2">
-                        <select
-                            value={provider}
-                            onChange={(e) => {
-                                setProvider(e.target.value);
-                                setModelLoaded(e.target.value !== "local");
-                                setLoadError(null);
-                            }}
-                            className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
-                        >
-                            <option value="local">GPU Service</option>
-                            <option value="openrouter">OpenRouter</option>
-                        </select>
-                        <div className="flex-1 relative">
-                            <input
-                                type="text"
-                                className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
-                                    focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
-                                    ${loadError ? "border-red-200" : "border-slate-200"}`}
-                                placeholder={
-                                    provider === "local"
-                                        ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
-                                        : "Model ID (tùy chọn, VD: openai/gpt-4o)"
-                                }
-                                value={hfHubId}
-                                onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
-                                disabled={loading}
-                            />
-                        </div>
-                        <button
-                            onClick={handleConfirmModel}
-                            disabled={(provider === "local" && !hfHubId.trim()) || loading || (provider === "local" && modelLoaded)}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
-                                ${modelLoaded && provider === "local"
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
-                                    : loading
-                                        ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
-                                        : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
-                                }`}
-                        >
-                            {loading && !modelLoaded ? "Tải..." : modelLoaded && provider === "local" ? "✓ Sẵn sàng" : provider !== "local" ? "Sử dụng API" : "Load"}
-                        </button>
+                            <select
+                                value={provider}
+                                onChange={(e) => {
+                                    const newProvider = e.target.value;
+                                    setProvider(newProvider);
+                                    setModelLoaded(newProvider !== "local" && newProvider !== "registry");
+                                    setLoadError(null);
+                                    if (newProvider === "registry" && registries.length > 0) {
+                                        handleRegistryChange(registries[0]._id);
+                                    }
+                                }}
+                                className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
+                            >
+                                <option value="local">Manual ID</option>
+                                <option value="registry">Model Registry</option>
+                                <option value="openrouter">OpenRouter</option>
+                            </select>
+
+                            {provider === "registry" ? (
+                                <div className="flex-1 relative">
+                                    <select
+                                        value={selectedRegistryId}
+                                        onChange={(e) => handleRegistryChange(e.target.value)}
+                                        className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
+                                            focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:opacity-60
+                                            ${loadError ? "border-red-200" : "border-slate-200"}`}
+                                        disabled={loading}
+                                    >
+                                        <option value="">Chọn Model Registry...</option>
+                                        {registries.map(r => (
+                                            <option key={r._id} value={r._id}>{r.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ) : (
+                                <div className="flex-1 relative">
+                                    <input
+                                        type="text"
+                                        className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
+                                            focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
+                                            ${loadError ? "border-red-200" : "border-slate-200"}`}
+                                        placeholder={
+                                            provider === "local"
+                                                ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
+                                                : "Model ID (tùy chọn, VD: openai/gpt-4o)"
+                                        }
+                                        value={hfHubId}
+                                        onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
+                                        disabled={loading}
+                                    />
+                                </div>
+                            )}
+
+                            <button
+                                onClick={handleConfirmModel}
+                                disabled={(provider === "local" && !hfHubId.trim()) || (provider === "registry" && !hfHubId.trim()) || loading || ((provider === "local" || provider === "registry") && modelLoaded)}
+                                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
+                                    ${modelLoaded && (provider === "local" || provider === "registry")
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
+                                        : loading
+                                            ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                                            : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
+                                    }`}
+                            >
+                                {loading && !modelLoaded ? "Tải..." : modelLoaded && (provider === "local" || provider === "registry") ? "✓ Sẵn sàng" : provider !== "local" && provider !== "registry" ? "Sử dụng API" : "Load"}
+                            </button>
                         <ModelStatus />
                     </div>
                 </div>

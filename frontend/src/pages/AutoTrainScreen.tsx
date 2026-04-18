@@ -472,14 +472,19 @@ export const AutoTrainScreen: React.FC = () => {
     es.onmessage = (event) => {
       try {
         const status: TrainingStatus = JSON.parse(event.data);
-        useTrainingStore.getState().updateJobStatus(jobId, status);
+        const currentStore = useTrainingStore.getState();
+        
+        // Cập nhật status chung
+        currentStore.updateJobStatus(jobId, status);
 
-        if (status.metrics && typeof status.metrics.loss === "number") {
-          useTrainingStore.getState().updateLossHistory(jobId, status.progress || 0, status.metrics.loss);
+        // Xử lý Loss: Chỉ cập nhật nếu loss > 0 để tránh drop biểu đồ ở cuối
+        if (status.metrics && typeof status.metrics.loss === "number" && status.metrics.loss > 0) {
+          currentStore.updateLossHistory(jobId, status.progress || 0, status.metrics.loss);
         }
 
-        if (status.metrics && typeof status.metrics.eval_loss === "number") {
-          useTrainingStore.getState().updateEvalLossHistory(jobId, status.progress || 0, status.metrics.eval_loss);
+        // Xử lý Eval Loss (Overfit)
+        if (status.metrics && typeof status.metrics.eval_loss === "number" && status.metrics.eval_loss > 0) {
+          currentStore.updateEvalLossHistory(jobId, status.progress || 0, status.metrics.eval_loss);
         }
 
         if (
