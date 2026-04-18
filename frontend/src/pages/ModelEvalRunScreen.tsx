@@ -75,13 +75,7 @@ const JUDGE_MODELS = [
     provider: "Google",
     note: "Nhanh, chi phí thấp",
     recommended: false,
-  },
-  {
-    id: "deepseek-chat",
-    name: "Deepseek Chat",
-    provider: "Deepseek",
-    note: "Chính xác, chi phí thấp",
-    recommended: false,
+    disabled: true,
   },
 ];
 
@@ -449,17 +443,11 @@ const RunCard: React.FC<{
                     <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
                       Câu #{run.currentSample.index + 1}
                     </span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                      Live
-                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Conv #{run.currentSample.index + 1}</span>
                   </div>
                   <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">
-                      Câu hỏi
-                    </p>
-                    <p className="text-xs text-slate-800 leading-relaxed">
-                      {run.currentSample.instruction}
-                    </p>
+                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Turn đầu tiên</p>
+                    <p className="text-xs text-slate-800 leading-relaxed">{run.currentSample.instruction}</p>
                   </div>
                   <div className="bg-purple-50 rounded-lg p-2.5 border border-purple-100">
                     <p className="text-[10px] uppercase font-bold text-purple-500 mb-1">

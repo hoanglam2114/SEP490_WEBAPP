@@ -29,7 +29,7 @@ async function getGpuStatus(): Promise<{
     });
     if (!resp.ok) return null;
     const data = await resp.json() as any;
-    console.log('[Backend] GPU status response:', data);
+    // console.log('[Backend] GPU status response:', data);
 
     // Ensure all required fields are present, calculate missing ones
     const result = {
@@ -82,10 +82,12 @@ function normalizePerConvResults(perConvResults: unknown): IEvalResult[] {
       conv_index:      Number(r.conv_index ?? 0),
       num_turns:       Number(r.num_turns ?? 0),
       avg_latency_ms:  Number(r.avg_latency_ms ?? 0),
+      replay_turns:     Array.isArray(r.replay_turns) ? r.replay_turns : [],
       criteria_scores: r.criteria_scores ?? {},
       criteria_reasons: r.criteria_reasons ?? {},
       group_scores:    r.group_scores ?? {},
       non_scoring:     r.non_scoring ?? {},
+      confidence: r.confidence ?? null,
     }));
 }
 
@@ -104,6 +106,7 @@ function normalizeEvalResult(result: any) {
     validConversations:  Number(result.validConversations ?? normalizedResults.length),
     results:  normalizedResults,
     summary,
+    flags: Array.isArray(result.flags) ? result.flags : [],
     gpuResult: result,
   };
 }
@@ -354,6 +357,7 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
         judgeModel: result.judgeModel ?? undefined,
         startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
         completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
+        flags: normalized.flags,
       },
       { upsert: true }
     );
@@ -496,6 +500,7 @@ export const getEvaluatedModels = async (_req: Request, res: Response) => {
           pinnedEvalId: h.pinnedEvalId ?? null,
           judgeModel: displayEval?.judgeModel ?? null,
           totalConversations: displayEval?.totalConversations ?? 0,
+          flags: displayEval?.flags ?? [],
           scores: {
             overall:  displayEval?.summary?.overall  ?? null,
             group_a:  displayEval?.summary?.group_a  ?? null,

@@ -12,6 +12,7 @@ interface ConvResult {
   conv_index: number;
   num_turns: number;
   avg_latency_ms: number;
+  replay_turns?: { user: string; model: string; latency_ms: number }[];
   criteria_scores: Record<string, number>;
   criteria_reasons: Record<string, string>;
   group_scores: {
@@ -19,6 +20,11 @@ interface ConvResult {
     overall: number; a1_hard_constraint_triggered: boolean;
   };
   non_scoring: { bleu: number; rouge_l: number; question_detection_rate: number };
+  confidence?: {
+    overall: number;
+    by_group: Record<string, number>;
+    is_low: boolean;
+  };
 }
 
 interface EvaluationData {
@@ -39,6 +45,8 @@ interface EvaluationData {
     group_d: number;
     criteria: Record<string, number>;
     avg_latency_ms: number;
+    avg_confidence?: number;
+    low_confidence_count?: number;
     non_scoring: { bleu: number; rouge_l: number; question_detection_rate: number };
     max_possible: number;
   };
@@ -188,6 +196,240 @@ function CriteriaRow({ code, score, reason }: { code: string; score: number; rea
 
 const PAGE_SIZE = 15;
 
+function RubricTab() {
+  const RUBRIC = [
+    {
+      group: 'A', label: 'Socratic Compliance', weight: '40%',
+      color: 'indigo', textColor: 'text-indigo-700', bgColor: 'bg-indigo-50', borderColor: 'border-indigo-200',
+      intro: 'Đây là nhóm cốt lõi, phản ánh trực tiếp mục tiêu fine-tune theo phương pháp Socratic. Hard constraint: nếu A1=0, toàn nhóm A bị giới hạn ở 1.0 bất kể các tiêu chí khác.',
+      criteria: [
+        {
+          code: 'A1', name: 'Answer Withholding', weight: '50%',
+          desc: 'Model có tự đưa ra đáp án cuối cùng không — kể cả khi học sinh hỏi thẳng, nài nỉ, hoặc nói "khó quá".',
+          scale: [
+            { score: '5', desc: 'Không bao giờ đưa đáp án trực tiếp trong toàn bộ hội thoại. Mọi turn đều dẫn dắt.' },
+            { score: '3–4', desc: 'Phần lớn giữ được, nhưng 1–2 turn có hint rõ đến mức gần như lộ đáp án.' },
+            { score: '1–2', desc: 'Có ít nhất 1 turn đưa đáp án trực tiếp dù học sinh chưa tự tìm ra.' },
+            { score: '0', desc: 'Đưa đáp án ngay từ đầu hoặc đưa liên tục khi học sinh yêu cầu.' },
+          ],
+        },
+        {
+          code: 'A2', name: 'Scaffolding Quality', weight: '30%',
+          desc: 'Câu hỏi gợi mở có đủ cụ thể để học sinh biết suy nghĩ tiếp không? Có theo đúng flow bài học không? Tránh câu hỏi chung chung vô nghĩa như "Bạn nghĩ sao?".',
+          scale: [
+            { score: '5', desc: 'Câu hỏi cụ thể, bám sát nội dung, từng bước thu hẹp khoảng cách nhận thức.' },
+            { score: '3–4', desc: 'Câu hỏi đúng hướng nhưng đôi khi quá chung hoặc không kết nối với câu trả lời trước.' },
+            { score: '1–2', desc: 'Câu hỏi lặp lại, không dựa trên context, học sinh không biết phải trả lời gì.' },
+            { score: '0', desc: 'Không có câu hỏi dẫn dắt, hoặc câu hỏi hoàn toàn lạc đề.' },
+          ],
+        },
+        {
+          code: 'A3', name: 'Adaptive Response', weight: '20%',
+          desc: 'Model phản ứng đúng với từng kiểu input: đúng→khen+tiếp theo; sai→gợi ý không phán xét; lạc đề→redirect khéo; mơ hồ→làm rõ.',
+          scale: [
+            { score: '5', desc: 'Phản ứng phù hợp 100% với tất cả kiểu input học sinh trong hội thoại.' },
+            { score: '3–4', desc: 'Phần lớn đúng, có 1–2 turn xử lý chưa khéo (ví dụ: phán xét thay vì gợi ý khi học sinh sai).' },
+            { score: '1–2', desc: 'Thường phản ứng cứng nhắc, không thích ứng với context học sinh.' },
+            { score: '0', desc: 'Bỏ qua hoàn toàn context của học sinh, trả lời theo kịch bản cố định.' },
+          ],
+        },
+      ],
+    },
+    {
+      group: 'B', label: 'Độ chính xác nội dung', weight: '25%',
+      color: 'orange', textColor: 'text-orange-700', bgColor: 'bg-orange-50', borderColor: 'border-orange-200',
+      intro: 'Đánh giá kiến thức được trình bày trong hội thoại có chính xác và phù hợp trình độ không.',
+      criteria: [
+        {
+          code: 'B1', name: 'Factual Accuracy', weight: '60%',
+          desc: 'Kiến thức được trình bày trong các turn của model có chính xác không — đặc biệt ở phần lý thuyết đầu hội thoại.',
+          scale: [
+            { score: '5', desc: 'Không có lỗi kiến thức nào trong toàn bộ hội thoại.' },
+            { score: '3–4', desc: 'Có 1 lỗi nhỏ hoặc diễn đạt chưa chính xác, nhưng không gây hiểu nhầm nghiêm trọng.' },
+            { score: '1–2', desc: 'Có 1–2 lỗi kiến thức rõ ràng, học sinh có thể học sai.' },
+            { score: '0', desc: 'Sai kiến thức nghiêm trọng, hoặc bịa đặt nội dung bài học (hallucinate).' },
+          ],
+        },
+        {
+          code: 'B2', name: 'Grade-level Appropriateness', weight: '40%',
+          desc: 'Ngôn ngữ, ví dụ, và độ phức tạp có phù hợp với học sinh cấp 2–3 không?',
+          scale: [
+            { score: '5', desc: 'Ngôn ngữ thân thiện, ví dụ gần gũi, độ khó vừa đủ với THCS/THPT.' },
+            { score: '3–4', desc: 'Phần lớn phù hợp, có vài chỗ dùng thuật ngữ quá chuyên sâu hoặc giải thích quá dài.' },
+            { score: '1–2', desc: 'Nhiều đoạn quá học thuật hoặc quá đơn giản so với trình độ mục tiêu.' },
+            { score: '0', desc: 'Hoàn toàn không phù hợp trình độ — quá khó hoặc quá trẻ con.' },
+          ],
+        },
+      ],
+    },
+    {
+      group: 'C', label: 'Chất lượng sư phạm', weight: '25%',
+      color: 'teal', textColor: 'text-teal-700', bgColor: 'bg-teal-50', borderColor: 'border-teal-200',
+      intro: 'Đánh giá tổng thể về mạch lạc, xử lý tình huống và giọng điệu của hội thoại.',
+      criteria: [
+        {
+          code: 'C1', name: 'Robustness', weight: '40%',
+          desc: 'Khi học sinh gửi "xin chào", "ok", "khó quá", hay input không liên quan, model xử lý thế nào.',
+          scale: [
+            { score: '5', desc: 'Luôn xử lý mượt — redirect về bài học tự nhiên hoặc phản hồi phù hợp context.' },
+            { score: '3–4', desc: 'Hầu hết ổn, đôi khi bị confuse hoặc phản hồi không nhất quán với 1–2 turn.' },
+            { score: '1–2', desc: 'Thường xuyên bị mất hướng với input đơn giản như "xin chào" hay "ok".' },
+            { score: '0', desc: 'Bịa context bài học từ system prompt không có thông tin.' },
+          ],
+        },
+        {
+          code: 'C2', name: 'Conversational Coherence', weight: '40%',
+          desc: 'Các turn sau có nhớ và kế thừa context các turn trước không? Flow hội thoại có tự nhiên, không bị lặp lại hay nhảy cóc không?',
+          scale: [
+            { score: '5', desc: 'Hội thoại mạch lạc xuyên suốt, mỗi turn kế thừa tốt câu trả lời trước của học sinh.' },
+            { score: '3–4', desc: 'Phần lớn mạch lạc, có 1–2 turn bị lặp câu hỏi hoặc không kết nối context.' },
+            { score: '1–2', desc: 'Thường xuyên không nhớ context, hội thoại rời rạc.' },
+            { score: '0', desc: 'Mỗi turn hoàn toàn độc lập, không có sự kết nối.' },
+          ],
+        },
+        {
+          code: 'C3', name: 'Tone & Encouragement', weight: '20%',
+          desc: 'Có thân thiện, động viên học sinh không? Khi học sinh sai có phản hồi tích cực và không phán xét không?',
+          scale: [
+            { score: '5', desc: 'Tone nhất quán — ấm áp, khích lệ, không phán xét, phù hợp lứa tuổi học sinh.' },
+            { score: '3–4', desc: 'Phần lớn tốt, đôi khi hơi lạnh hoặc quá trang trọng.' },
+            { score: '1–2', desc: 'Tone khô khan hoặc có hàm ý phán xét khi học sinh trả lời sai.' },
+            { score: '0', desc: 'Không có bất kỳ yếu tố động viên nào, hoặc tone không phù hợp lứa tuổi.' },
+          ],
+        },
+      ],
+    },
+    {
+      group: 'D', label: 'Hallucination + Tốc độ', weight: '10%',
+      color: 'sky', textColor: 'text-sky-700', bgColor: 'bg-sky-50', borderColor: 'border-sky-200',
+      intro: 'D1 đánh giá bịa đặt thông tin trong hội thoại. D2 đo latency. Cả hai đều qua judge trừ D2 tính từ timestamp thực.',
+      criteria: [
+        {
+          code: 'D1', name: 'Hallucination Score', weight: '50%',
+          desc: 'Trong context hội thoại, hallucination không chỉ là sai fact mà còn là bịa ra context bài học, bịa lịch sử hội thoại trước, hoặc tự bịa câu trả lời của học sinh.',
+          scale: [
+            { score: '5', desc: 'Không có bất kỳ nội dung bịa đặt nào trong toàn hội thoại.' },
+            { score: '3–4', desc: 'Có 1 chi tiết nhỏ không chắc chắn nhưng không gây hại.' },
+            { score: '1–2', desc: 'Bịa 1–2 thông tin cụ thể (tên, số liệu, sự kiện không có thật).' },
+            { score: '0', desc: 'Bịa context bài học, bịa câu trả lời của học sinh, hoặc sai fact nghiêm trọng.' },
+          ],
+        },
+        {
+          code: 'D2', name: 'Tốc độ phản hồi', weight: '50%',
+          desc: 'Đo latency trung bình mỗi turn trong quá trình replay. Không qua LLM judge — tính trực tiếp từ timestamp.',
+          scale: [
+            { score: '5', desc: '≤ 2,000ms trung bình' },
+            { score: '4', desc: '2,000 – 4,000ms' },
+            { score: '3', desc: '4,000 – 7,000ms' },
+            { score: '2', desc: '7,000 – 12,000ms' },
+            { score: '1', desc: '> 12,000ms' },
+          ],
+        },
+      ],
+    },
+  ];
+
+  return (
+    <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+
+      {/* Header */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+        <h2 className="text-base font-bold text-slate-800 mb-2">Rubric chấm điểm — Socratic Tutor Evaluation</h2>
+        <p className="text-sm text-slate-500 leading-relaxed mb-4">
+          Hệ thống sử dụng <strong>LLM-as-Judge</strong> (Claude Sonnet) để chấm 9 tiêu chí A1–D1 trên mỗi conversation. Judge đọc toàn bộ lịch sử hội thoại và cho điểm từng tiêu chí kèm lý giải. D2 tính độc lập từ latency đo thực tế.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: 'A · Socratic', weight: '40%', color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+            { label: 'B · Accuracy', weight: '25%', color: 'bg-orange-50 border-orange-200 text-orange-700' },
+            { label: 'C · Pedagogy', weight: '25%', color: 'bg-teal-50 border-teal-200 text-teal-700' },
+            { label: 'D · Hall+Speed', weight: '10%', color: 'bg-sky-50 border-sky-200 text-sky-700' },
+          ].map(g => (
+            <div key={g.label} className={`rounded-xl border px-4 py-3 ${g.color}`}>
+              <div className="text-xs font-bold">{g.label}</div>
+              <div className="text-2xl font-black mt-1">{g.weight}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 bg-slate-50 rounded-xl border border-slate-200 px-4 py-3">
+          <p className="text-[11px] font-mono text-slate-600">
+            Overall = A×0.40 + B×0.25 + C×0.25 + D×0.10
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            A = A1×0.5 + A2×0.3 + A3×0.2
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            B = B1×0.6 + B2×0.4
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            C = C1×0.4 + C2×0.4 + C3×0.2
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            D = D1×0.5 + D2×0.5
+          </p>
+        </div>
+        <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-2">
+          <p className="text-[11px] text-red-700 font-semibold">
+            ⚠ Hard constraint: Nếu A1 = 0 (model đưa đáp án trực tiếp) → toàn nhóm A bị cap ở 1.0, bất kể A2/A3 đạt bao nhiêu điểm.
+          </p>
+        </div>
+      </div>
+
+      {/* 4 nhóm */}
+      {RUBRIC.map(g => (
+        <div key={g.group} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Group header */}
+          <div className={`px-6 py-4 ${g.bgColor} border-b ${g.borderColor}`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <span className={`text-sm font-bold ${g.textColor}`}>Nhóm {g.group} · {g.label}</span>
+                <span className="ml-3 text-xs text-slate-500">Trọng số {g.weight}</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">{g.intro}</p>
+          </div>
+
+          {/* Criteria */}
+          <div className="divide-y divide-slate-100">
+            {g.criteria.map(c => (
+              <div key={c.code} className="px-6 py-5">
+                <div className="flex items-start gap-3 mb-3">
+                  <span className={`shrink-0 text-xs font-bold px-2 py-1 rounded-lg ${g.bgColor} ${g.textColor} border ${g.borderColor}`}>
+                    {c.code}
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-800">{c.name}</span>
+                      <span className="text-[10px] text-slate-400">({c.weight} trong nhóm {g.group})</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{c.desc}</p>
+                  </div>
+                </div>
+
+                {/* Scale table */}
+                <div className="ml-10 grid grid-cols-1 gap-1.5">
+                  {c.scale.map(s => {
+                    const scoreNum = parseFloat(s.score);
+                    const bgClass = scoreNum >= 5 ? 'bg-emerald-50 border-emerald-100' :
+                                    scoreNum >= 3 ? 'bg-amber-50 border-amber-100' :
+                                    scoreNum >= 1 ? 'bg-red-50 border-red-100' :
+                                    'bg-red-100 border-red-200';
+                    const textClass = scoreNum >= 5 ? 'text-emerald-700' :
+                                      scoreNum >= 3 ? 'text-amber-700' : 'text-red-700';
+                    return (
+                      <div key={s.score} className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${bgClass}`}>
+                        <span className={`shrink-0 text-xs font-black w-8 tabular-nums ${textClass}`}>{s.score}đ</span>
+                        <p className="text-[11px] text-slate-600 leading-relaxed">{s.desc}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+    </div>
+  );
+}
+
 export const ModelEvalResultScreen: React.FC = () => {
   const { evalId } = useParams();
   const navigate = useNavigate();
@@ -198,6 +440,8 @@ export const ModelEvalResultScreen: React.FC = () => {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [tablePage, setTablePage] = useState(1);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [sampleTab, setSampleTab] = useState<'fail' | 'pass'>('fail');
+  const [activeTab, setActiveTab] = useState<'result' | 'rubric'>('result');
 
   useEffect(() => {
     if (!evalId) return;
@@ -273,6 +517,18 @@ export const ModelEvalResultScreen: React.FC = () => {
 
   // A1 hard constraint triggered count
   const constraintCount = data.results.filter(r => r.group_scores?.a1_hard_constraint_triggered).length;
+  // Notable samples — top 3 fail và top 3 pass có replay_turns
+  const failSamples = [...data.results]
+    .filter(r => r.replay_turns && r.replay_turns.length > 0)
+    .sort((a, b) => (a.group_scores?.overall ?? 0) - (b.group_scores?.overall ?? 0))
+    .slice(0, 3);
+
+  const passSamples = [...data.results]
+    .filter(r => r.replay_turns && r.replay_turns.length > 0)
+    .sort((a, b) => (b.group_scores?.overall ?? 0) - (a.group_scores?.overall ?? 0))
+    .slice(0, 3);
+
+  const hasReplayData = data.results.some(r => r.replay_turns && r.replay_turns.length > 0);
 
   return (
     <div className="min-h-screen bg-slate-50 pb-16">
@@ -318,347 +574,563 @@ export const ModelEvalResultScreen: React.FC = () => {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+      {/* Tab bar */}
+      <div className="bg-white border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-6 flex gap-0">
+          {([['result', 'Kết quả đánh giá'], ['rubric', 'Rubric chấm điểm']] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              className={`px-5 py-3 text-sm font-semibold border-b-2 transition -mb-px ${
+                activeTab === tab
+                  ? 'border-slate-800 text-slate-800'
+                  : 'border-transparent text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-        {/* ═══════════════════════════════════════════════════════
-            ZONE 1 — Tổng quan điểm số
-        ═══════════════════════════════════════════════════════ */}
-        <section>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-sm font-bold text-slate-700">Tổng quan điểm số</h2>
-            <span className="text-[11px] text-slate-400">— thang 0–{max}, đánh giá {data.totalConversations} conversations</span>
-          </div>
+      {activeTab === 'result' ? (
+        <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Overall ring + radar */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col items-center gap-4">
-              <div className="text-center">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Overall Score</div>
-                <ScoreRing value={data.summary.overall} max={max} label="Overall" color="purple" />
-                <p className="text-[11px] text-slate-500 mt-2 max-w-[160px] text-center leading-relaxed">
-                  Tổng hợp từ 4 nhóm A·B·C·D theo trọng số
-                </p>
-              </div>
-              {constraintCount > 0 && (
-                <div className="w-full rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-center">
-                  <p className="text-[10px] text-red-700 font-semibold">
-                    ⚠ {constraintCount} conversation vi phạm A1=0 (hard constraint)
-                  </p>
-                  <p className="text-[10px] text-red-500 mt-0.5">Nhóm A bị giới hạn ở 1.0 trong {constraintCount} trường hợp</p>
-                </div>
-              )}
-              {/* 4 rings nhóm */}
-              <div className="grid grid-cols-2 gap-3 w-full">
-                {[
-                  { key: 'group_a', val: data.summary.group_a, label: 'A · Socratic', color: 'indigo' },
-                  { key: 'group_b', val: data.summary.group_b, label: 'B · Accuracy', color: 'orange' },
-                  { key: 'group_c', val: data.summary.group_c, label: 'C · Pedagogy', color: 'teal' },
-                  { key: 'group_d', val: data.summary.group_d, label: 'D · Hall+Spd', color: 'sky' },
-                ].map(g => (
-                  <ScoreRing key={g.key} value={g.val} max={max} label={g.label} color={g.color} />
-                ))}
-              </div>
+          {/* ═══════════════════════════════════════════════════════
+              ZONE 1 — Tổng quan điểm số
+          ═══════════════════════════════════════════════════════ */}
+          <section>
+            <div className="flex items-center gap-2 mb-3">
+              <h2 className="text-sm font-bold text-slate-700">Tổng quan điểm số</h2>
+              <span className="text-[11px] text-slate-400">— thang 0–{max}, đánh giá {data.totalConversations} conversations</span>
             </div>
 
-            {/* Radar chart */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-              <div className="text-[11px] font-semibold text-slate-500 mb-1">Radar — 4 nhóm tiêu chí</div>
-              <p className="text-[10px] text-slate-400 mb-3">Mỗi trục là điểm trung bình của 1 nhóm tiêu chí</p>
-              <div className="h-52">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Overall ring + radar */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col items-center gap-4">
+                <div className="text-center">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Overall Score</div>
+                  <ScoreRing value={data.summary.overall} max={max} label="Overall" color="purple" />
+                  <p className="text-[11px] text-slate-500 mt-2 max-w-[160px] text-center leading-relaxed">
+                    Tổng hợp từ 4 nhóm A·B·C·D theo trọng số
+                  </p>
+                </div>
+                {constraintCount > 0 && (
+                  <div className="w-full rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-center">
+                    <p className="text-[10px] text-red-700 font-semibold">
+                      ⚠ {constraintCount} conversation vi phạm A1=0 (hard constraint)
+                    </p>
+                    <p className="text-[10px] text-red-500 mt-0.5">Nhóm A bị giới hạn ở 1.0 trong {constraintCount} trường hợp</p>
+                  </div>
+                )}
+                {/* 4 rings nhóm */}
+                <div className="grid grid-cols-2 gap-3 w-full">
+                  {[
+                    { key: 'group_a', val: data.summary.group_a, label: 'A · Socratic', color: 'indigo' },
+                    { key: 'group_b', val: data.summary.group_b, label: 'B · Accuracy', color: 'orange' },
+                    { key: 'group_c', val: data.summary.group_c, label: 'C · Pedagogy', color: 'teal' },
+                    { key: 'group_d', val: data.summary.group_d, label: 'D · Hall+Spd', color: 'sky' },
+                  ].map(g => (
+                    <ScoreRing key={g.key} value={g.val} max={max} label={g.label} color={g.color} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Radar chart */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                <div className="text-[11px] font-semibold text-slate-500 mb-1">Radar — 4 nhóm tiêu chí</div>
+                <p className="text-[10px] text-slate-400 mb-3">Mỗi trục là điểm trung bình của 1 nhóm tiêu chí</p>
+                <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RadarChart data={radarData} outerRadius="70%">
+                      <PolarGrid stroke="#E2E8F0" />
+                      <PolarAngleAxis dataKey="axis" tick={{ fontSize: 11, fill: '#64748b' }} />
+                      <PolarRadiusAxis domain={[0, max]} tick={{ fontSize: 9 }} />
+                      <Radar dataKey="value" stroke="#6366F1" fill="#6366F1" fillOpacity={0.2} />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Stats bên phải */}
+              <div className="space-y-3">
+                {/* Latency */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Latency trung bình / turn</div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-2xl font-bold text-slate-800">{data.summary.avg_latency_ms?.toFixed(0) ?? '—'}</span>
+                    <span className="text-sm text-slate-400">ms</span>
+                  </div>
+                  <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${(data.summary.avg_latency_ms ?? 0) <= 2000 ? 'bg-emerald-400' : (data.summary.avg_latency_ms ?? 0) <= 7000 ? 'bg-amber-400' : 'bg-red-400'}`}
+                      style={{ width: `${Math.min(((data.summary.avg_latency_ms ?? 0) / 15000) * 100, 100)}%` }} />
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {(data.summary.avg_latency_ms ?? 0) <= 2000 ? '≤2s — 5đ (tốt nhất)' :
+                    (data.summary.avg_latency_ms ?? 0) <= 4000 ? '2–4s — 4đ' :
+                    (data.summary.avg_latency_ms ?? 0) <= 7000 ? '4–7s — 3đ' :
+                    (data.summary.avg_latency_ms ?? 0) <= 12000 ? '7–12s — 2đ' : '>12s — 1đ'}
+                  </p>
+                </div>
+
+                {/* Confidence */}
+                {data.summary.avg_confidence != null && (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                      Judge Confidence
+                    </div>
+                    <div className="flex items-baseline gap-1">
+                      <span className={`text-2xl font-bold ${
+                        data.summary.avg_confidence >= 0.8 ? 'text-emerald-700' :
+                        data.summary.avg_confidence >= 0.6 ? 'text-amber-700' : 'text-red-600'
+                      }`}>
+                        {(data.summary.avg_confidence * 100).toFixed(0)}%
+                      </span>
+                      <span className="text-sm text-slate-400">avg</span>
+                    </div>
+                    <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          data.summary.avg_confidence >= 0.8 ? 'bg-emerald-400' :
+                          data.summary.avg_confidence >= 0.6 ? 'bg-amber-400' : 'bg-red-400'
+                        }`}
+                        style={{ width: `${data.summary.avg_confidence * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                      {(data.summary.low_confidence_count ?? 0) > 0
+                        ? `${data.summary.low_confidence_count} conversation có điểm phân tán cao — judge có thể không nhất quán`
+                        : 'Điểm các tiêu chí đồng đều — judge nhất quán'}
+                    </p>
+                    <p className="text-[10px] text-slate-300 mt-1 italic">
+                      Tính từ độ lệch chuẩn giữa các tiêu chí trong cùng nhóm
+                    </p>
+                  </div>
+                )}
+
+                {/* Non-scoring metrics */}
+                {data.summary.non_scoring && (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Metric tham chiếu</div>
+                    <p className="text-[10px] text-slate-400 italic mb-3">Không tính vào điểm — chỉ để theo dõi xu hướng</p>
+                    <div className="space-y-2">
+                      {[
+                        { label: 'BLEU-4', val: data.summary.non_scoring.bleu, note: 'n-gram overlap (thấp với tiếng Việt là bình thường)' },
+                        { label: 'ROUGE-L', val: data.summary.non_scoring.rouge_l, note: 'Longest common subsequence' },
+                        { label: 'Question Rate', val: data.summary.non_scoring.question_detection_rate, note: '% turn kết thúc bằng câu hỏi' },
+                      ].map(m => (
+                        <div key={m.label}>
+                          <div className="flex items-center justify-between mb-0.5">
+                            <HoverTooltip text={m.note}>
+                              <span className="text-[11px] text-slate-600 flex items-center gap-1 cursor-help">{m.label} <InfoIcon /></span>
+                            </HoverTooltip>
+                            <span className="text-[11px] font-semibold tabular-nums text-slate-700">{m.val.toFixed(3)}</span>
+                          </div>
+                          <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-slate-400 rounded-full" style={{ width: `${Math.min(m.val * 100, 100)}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* ═══════════════════════════════════════════════════════
+              ZONE 2 — Chi tiết 9 tiêu chí
+          ═══════════════════════════════════════════════════════ */}
+          <section>
+            <div className="flex items-center gap-2 mb-3">
+              <h2 className="text-sm font-bold text-slate-700">Chi tiết 9 tiêu chí (A1–D1)</h2>
+              <span className="text-[11px] text-slate-400">— điểm trung bình trên tất cả conversations</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Hover vào badge tiêu chí để xem mô tả. Thanh màu phản ánh mức độ: <span className="text-emerald-600 font-semibold">xanh ≥4</span>, <span className="text-amber-600 font-semibold">vàng ≥2.5</span>, <span className="text-red-600 font-semibold">đỏ &lt;2.5</span>.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {(['A', 'B', 'C', 'D'] as const).map(gKey => {
+                const gm = GROUP_META[gKey];
+                const codes = Object.keys(CRITERIA_META).filter(k => k.startsWith(gKey));
+                const groupScore = data.summary[`group_${gKey.toLowerCase()}` as 'group_a' | 'group_b' | 'group_c' | 'group_d'];
+                return (
+                  <div key={gKey} className={`bg-white rounded-2xl border shadow-sm overflow-hidden`}>
+                    {/* Group header */}
+                    <div className={`px-5 py-3 border-b ${gm.bg} ${gm.border} flex items-center justify-between`}>
+                      <div>
+                        <span className={`text-sm font-bold ${gm.text}`}>{gm.label}</span>
+                        <span className="text-xs text-slate-400 ml-2">Trọng số {gm.weight}</span>
+                      </div>
+                      <div className={`text-lg font-black ${gm.text}`}>{groupScore.toFixed(2)}<span className="text-xs font-normal text-slate-400">/{max}</span></div>
+                    </div>
+
+                    {/* Criteria */}
+                    <div className="px-5 py-3">
+                      {codes.map(code => {
+                        const score = data.summary.criteria?.[code] ?? 0;
+                        // Lấy reason tổng hợp từ conversation đầu tiên (nếu có)
+                        // const sampleReason = data.results[0]?.criteria_reasons?.[`${code.toLowerCase()}_${CRITERIA_META[code]?.name.toLowerCase().replace(/ /g, '_')}`] ?? '';
+                        const barColor = score >= 4 ? 'bg-emerald-400' : score >= 2.5 ? 'bg-amber-400' : 'bg-red-400';
+                        return (
+                          <div key={code} className="flex items-center gap-3 py-2 border-b border-slate-50 last:border-0">
+                            <HoverTooltip text={`${CRITERIA_META[code]?.name} (${CRITERIA_META[code]?.weight}) — ${CRITERIA_META[code]?.desc}`}>
+                              <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded ${gm.bg} ${gm.text} border ${gm.border} cursor-help`}>{code}</span>
+                            </HoverTooltip>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${(score / max) * 100}%` }} />
+                                </div>
+                                <span className="text-xs font-bold tabular-nums text-slate-700 w-8 text-right">{score.toFixed(2)}</span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{CRITERIA_META[code]?.name}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {gKey === 'A' && (
+                        <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                          <p className="text-[10px] text-amber-700">
+                            <strong>Hard constraint:</strong> Nếu A1 = 0 → toàn nhóm A bị cap ở 1.0, bất kể A2/A3 đạt bao nhiêu.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Bar chart 9 tiêu chí */}
+            <div className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+              <div className="text-[11px] font-semibold text-slate-500 mb-1">So sánh trực quan 9 tiêu chí</div>
+              <p className="text-[10px] text-slate-400 mb-4">Hover vào cột để xem điểm số cụ thể</p>
+              <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <RadarChart data={radarData} outerRadius="70%">
-                    <PolarGrid stroke="#E2E8F0" />
-                    <PolarAngleAxis dataKey="axis" tick={{ fontSize: 11, fill: '#64748b' }} />
-                    <PolarRadiusAxis domain={[0, max]} tick={{ fontSize: 9 }} />
-                    <Radar dataKey="value" stroke="#6366F1" fill="#6366F1" fillOpacity={0.2} />
-                  </RadarChart>
+                  <BarChart data={criteriaChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748B' }} />
+                    <YAxis domain={[0, max]} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94A3B8' }} />
+                    <Tooltip
+                      content={({ active, payload }) => {
+                        if (!active || !payload?.[0]) return null;
+                        const d = payload[0].payload;
+                        const meta = CRITERIA_META[d.name];
+                        return (
+                          <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-lg text-xs max-w-[200px]">
+                            <div className="font-bold text-slate-800">{d.name} — {meta?.name}</div>
+                            <div className="text-indigo-600 font-semibold mt-0.5">{d.score}/{max}</div>
+                            {meta && <div className="text-slate-500 mt-1 leading-relaxed">{meta.desc}</div>}
+                          </div>
+                        );
+                      }}
+                    />
+                    <Bar dataKey="score" radius={[4, 4, 0, 0]} maxBarSize={36}>
+                      {criteriaChartData.map((entry, i) => {
+                        const gKey = entry.name[0];
+                        const colors: Record<string, string> = { A: '#6366F1', B: '#EA580C', C: '#0F766E', D: '#0284C7' };
+                        return <Cell key={i} fill={colors[gKey] ?? '#8B5CF6'} />;
+                      })}
+                    </Bar>
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
+          </section>
 
-            {/* Stats bên phải */}
-            <div className="space-y-3">
-              {/* Latency */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Latency trung bình / turn</div>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold text-slate-800">{data.summary.avg_latency_ms?.toFixed(0) ?? '—'}</span>
-                  <span className="text-sm text-slate-400">ms</span>
-                </div>
-                <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full ${(data.summary.avg_latency_ms ?? 0) <= 2000 ? 'bg-emerald-400' : (data.summary.avg_latency_ms ?? 0) <= 7000 ? 'bg-amber-400' : 'bg-red-400'}`}
-                    style={{ width: `${Math.min(((data.summary.avg_latency_ms ?? 0) / 15000) * 100, 100)}%` }} />
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  {(data.summary.avg_latency_ms ?? 0) <= 2000 ? '≤2s — 5đ (tốt nhất)' :
-                   (data.summary.avg_latency_ms ?? 0) <= 4000 ? '2–4s — 4đ' :
-                   (data.summary.avg_latency_ms ?? 0) <= 7000 ? '4–7s — 3đ' :
-                   (data.summary.avg_latency_ms ?? 0) <= 12000 ? '7–12s — 2đ' : '>12s — 1đ'}
-                </p>
+          {/* ═══════════════════════════════════════════════════════
+              ZONE 2.5 — Sample fail / pass conversations
+          ═══════════════════════════════════════════════════════ */}
+          {hasReplayData && (
+            <section>
+              <div className="flex items-center gap-2 mb-1">
+                <h2 className="text-sm font-bold text-slate-700">Mẫu hội thoại thực tế</h2>
+                <span className="text-[11px] text-slate-400">— để đối chiếu với điểm số của judge</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mb-4">
+                Xem nội dung hội thoại model đã trả lời trong lúc eval. Dùng để kiểm tra xem judge có chấm hợp lý không — đây là phần quan trọng nhất để xác nhận độ tin cậy.
+              </p>
+
+              {/* Tab fail / pass */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl w-fit mb-4">
+                <button
+                  type="button"
+                  onClick={() => setSampleTab('fail')}
+                  className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition ${sampleTab === 'fail' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                  Fail thấp nhất ({failSamples.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSampleTab('pass')}
+                  className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition ${sampleTab === 'pass' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                  Pass cao nhất ({passSamples.length})
+                </button>
               </div>
 
-              {/* Non-scoring metrics */}
-              {data.summary.non_scoring && (
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Metric tham chiếu</div>
-                  <p className="text-[10px] text-slate-400 italic mb-3">Không tính vào điểm — chỉ để theo dõi xu hướng</p>
-                  <div className="space-y-2">
-                    {[
-                      { label: 'BLEU-4', val: data.summary.non_scoring.bleu, note: 'n-gram overlap (thấp với tiếng Việt là bình thường)' },
-                      { label: 'ROUGE-L', val: data.summary.non_scoring.rouge_l, note: 'Longest common subsequence' },
-                      { label: 'Question Rate', val: data.summary.non_scoring.question_detection_rate, note: '% turn kết thúc bằng câu hỏi' },
-                    ].map(m => (
-                      <div key={m.label}>
-                        <div className="flex items-center justify-between mb-0.5">
-                          <HoverTooltip text={m.note}>
-                            <span className="text-[11px] text-slate-600 flex items-center gap-1 cursor-help">{m.label} <InfoIcon /></span>
-                          </HoverTooltip>
-                          <span className="text-[11px] font-semibold tabular-nums text-slate-700">{m.val.toFixed(3)}</span>
+              <div className="space-y-4">
+                {(sampleTab === 'fail' ? failSamples : passSamples).map((r) => {
+                  const ov = r.group_scores?.overall ?? 0;
+                  const constraint = r.group_scores?.a1_hard_constraint_triggered;
+                  const isFail = sampleTab === 'fail';
+                  const borderColor = isFail ? 'border-red-200' : 'border-emerald-200';
+                  const headerBg = isFail ? 'bg-red-50' : 'bg-emerald-50';
+                  const scoreColor = isFail ? 'text-red-700' : 'text-emerald-700';
+
+                  return (
+                    <div key={r.conv_index} className={`bg-white rounded-2xl border ${borderColor} shadow-sm overflow-hidden`}>
+                      {/* Header */}
+                      <div className={`px-5 py-3 ${headerBg} border-b ${borderColor} flex items-center justify-between`}>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-semibold text-slate-500">Conv #{r.conv_index + 1}</span>
+                          <span className={`text-base font-black tabular-nums ${scoreColor}`}>
+                            {ov.toFixed(3)}<span className="text-xs font-normal text-slate-400">/{data.summary.max_possible}</span>
+                          </span>
+                          {constraint && (
+                            <span className="text-[10px] bg-red-100 text-red-700 font-bold px-2 py-0.5 rounded-full border border-red-200">
+                              A1=0 · Hard constraint
+                            </span>
+                          )}
                         </div>
-                        <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-slate-400 rounded-full" style={{ width: `${Math.min(m.val * 100, 100)}%` }} />
+                        {/* Mini scores */}
+                        <div className="flex items-center gap-3 text-[10px]">
+                          {[
+                            { label: 'A', val: r.group_scores?.group_a, color: 'text-indigo-600' },
+                            { label: 'B', val: r.group_scores?.group_b, color: 'text-orange-600' },
+                            { label: 'C', val: r.group_scores?.group_c, color: 'text-teal-600' },
+                            { label: 'D', val: r.group_scores?.group_d, color: 'text-sky-600' },
+                          ].map(g => (
+                            <span key={g.label} className={`font-semibold ${g.color}`}>
+                              {g.label}:{g.val?.toFixed(1) ?? '—'}
+                            </span>
+                          ))}
+                          <span className="text-slate-400">{r.avg_latency_ms?.toFixed(0)}ms</span>
+                          <span className="text-slate-400">{r.num_turns} turns</span>
                         </div>
                       </div>
-                    ))}
+
+                      {/* Conversation turns */}
+                      <div className="px-5 py-4">
+                        <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                          {(r.replay_turns ?? []).map((turn, ti) => (
+                            <div key={ti} className="space-y-1.5">
+                              {/* User */}
+                              <div className="flex gap-2">
+                                <span className="shrink-0 text-[9px] font-bold text-blue-400 mt-1.5 w-5 text-right">HS</span>
+                                <div className="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-3 py-2 max-w-[85%]">
+                                  <p className="text-xs text-slate-700 leading-relaxed">{turn.user}</p>
+                                </div>
+                              </div>
+                              {/* Model */}
+                              <div className="flex gap-2 flex-row-reverse">
+                                <span className="shrink-0 text-[9px] font-bold text-purple-400 mt-1.5 w-5 text-left">GT</span>
+                                <div className="bg-purple-50 border border-purple-100 rounded-xl rounded-tr-sm px-3 py-2 max-w-[85%]">
+                                  <p className="text-xs text-slate-700 leading-relaxed">{turn.model}</p>
+                                  <p className="text-[9px] text-slate-400 mt-1 tabular-nums">{turn.latency_ms?.toFixed(0)}ms</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Judge reasons cho conv này */}
+                        {Object.keys(r.criteria_reasons ?? {}).length > 0 && (
+                          <div className="mt-4 pt-3 border-t border-slate-100">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Lý do judge</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+                              {Object.entries(r.criteria_reasons).map(([key, reason]) => {
+                                const code = key.split('_')[0].toUpperCase();
+                                const score = r.criteria_scores?.[code];
+                                const gKey = code[0] as keyof typeof GROUP_META;
+                                const gm = GROUP_META[gKey] ?? GROUP_META.A;
+                                if (!reason) return null;
+                                return (
+                                  <div key={key} className="flex items-start gap-1.5 py-1">
+                                    <HoverTooltip text={CRITERIA_META[code]?.desc ?? key}>
+                                      <span className={`shrink-0 text-[9px] font-bold px-1 py-0.5 rounded ${gm.bg} ${gm.text} border ${gm.border} cursor-help`}>{code}</span>
+                                    </HoverTooltip>
+                                    <div className="flex-1 min-w-0">
+                                      {score != null && (
+                                        <span className={`text-[10px] font-bold mr-1 ${score >= 4 ? 'text-emerald-600' : score >= 2.5 ? 'text-amber-600' : 'text-red-600'}`}>
+                                          {score}/5
+                                        </span>
+                                      )}
+                                      <span className="text-[10px] text-slate-500 leading-relaxed">{reason}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Note nếu chưa có replay data */}
+              {(sampleTab === 'fail' ? failSamples : passSamples).length === 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800">
+                  Không có dữ liệu hội thoại. Eval này chạy trước khi tính năng lưu turns được bật — cần chạy eval mới để xem mẫu.
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ═══════════════════════════════════════════════════════
+              ZONE 3 — Per-conversation breakdown
+          ═══════════════════════════════════════════════════════ */}
+          <section>
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="text-sm font-bold text-slate-700">Kết quả từng conversation</h2>
+              <span className="text-[11px] text-slate-400">— {sorted.length} conversations · click để xem chi tiết tiêu chí</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Mỗi hàng là 1 cuộc hội thoại được model replay lại. Điểm Overall tính theo công thức có trọng số. Badge đỏ <strong>A1=0</strong> nghĩa là conversation này vi phạm hard constraint.
+            </p>
+
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none" onClick={() => handleSort('index')}># <SortIcon k="index" /></th>
+                      <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none text-center" onClick={() => handleSort('overall')}>Overall <SortIcon k="overall" /></th>
+                      <th className="px-4 py-3 cursor-pointer hover:text-indigo-600 select-none text-center text-indigo-500" onClick={() => handleSort('group_a')}>
+                        A · Socratic <SortIcon k="group_a" />
+                      </th>
+                      <th className="px-4 py-3 cursor-pointer hover:text-orange-600 select-none text-center text-orange-500" onClick={() => handleSort('group_b')}>
+                        B · Accuracy <SortIcon k="group_b" />
+                      </th>
+                      <th className="px-4 py-3 text-center text-teal-500">C · Pedagogy</th>
+                      <th className="px-4 py-3 text-center text-sky-500">D · Hall+Spd</th>
+                      <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none text-center" onClick={() => handleSort('latency')}>Latency <SortIcon k="latency" /></th>
+                      <th className="px-4 py-3 text-center text-slate-400">Turns</th>
+                      <th className="px-4 py-3 text-center text-slate-400">Confidence</th>
+                      <th className="px-4 py-3 w-8" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginated.map((r) => {
+                      const ov   = r.group_scores?.overall  ?? 0;
+                      const ga   = r.group_scores?.group_a  ?? 0;
+                      const gb   = r.group_scores?.group_b  ?? 0;
+                      const gc   = r.group_scores?.group_c  ?? 0;
+                      const gd   = r.group_scores?.group_d  ?? 0;
+                      const constraint = r.group_scores?.a1_hard_constraint_triggered;
+                      const isExpanded = expandedRow === r.conv_index;
+
+                      const scoreColor = (v: number) =>
+                        v >= 4 ? 'text-emerald-700 font-bold' : v >= 2.5 ? 'text-amber-700 font-semibold' : 'text-red-600 font-semibold';
+
+                      return (
+                        <React.Fragment key={r.conv_index}>
+                          <tr
+                            className={`border-b border-slate-100 cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50' : 'hover:bg-slate-50/60'}`}
+                            onClick={() => setExpandedRow(isExpanded ? null : r.conv_index)}
+                          >
+                            <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{r.conv_index + 1}</td>
+                            <td className="px-4 py-3 text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                <span className={`text-sm tabular-nums ${scoreColor(ov)}`}>{ov.toFixed(3)}</span>
+                                {constraint && (
+                                  <HoverTooltip text="A1=0: model đã đưa đáp án trực tiếp — nhóm A bị giới hạn ở 1.0">
+                                    <span className="text-[9px] bg-red-100 text-red-600 font-bold px-1 py-0.5 rounded cursor-help">A1=0</span>
+                                  </HoverTooltip>
+                                )}
+                              </div>
+                            </td>
+                            <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(ga)}`}>{ga.toFixed(2)}</td>
+                            <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gb)}`}>{gb.toFixed(2)}</td>
+                            <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gc)}`}>{gc.toFixed(2)}</td>
+                            <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gd)}`}>{gd.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-center text-xs tabular-nums text-slate-500">{r.avg_latency_ms?.toFixed(0)}ms</td>
+                            <td className="px-4 py-3 text-center text-xs text-slate-400">{r.num_turns}</td>
+                            <td className="px-4 py-3 text-center">
+                              {r.confidence != null ? (
+                                <HoverTooltip text={`Độ nhất quán của judge: A=${((r.confidence.by_group?.A ?? 0) * 100).toFixed(0)}% B=${((r.confidence.by_group?.B ?? 0) * 100).toFixed(0)}% C=${((r.confidence.by_group?.C ?? 0) * 100).toFixed(0)}% D=${((r.confidence.by_group?.D ?? 0) * 100).toFixed(0)}%`}>
+                                  <span className={`text-[11px] font-semibold tabular-nums cursor-help ${
+                                    r.confidence.overall >= 0.8 ? 'text-emerald-600' :
+                                    r.confidence.overall >= 0.6 ? 'text-amber-600' : 'text-red-500'
+                                  }`}>
+                                    {(r.confidence.overall * 100).toFixed(0)}%
+                                    {r.confidence.is_low && <span className="ml-1">⚠</span>}
+                                  </span>
+                                </HoverTooltip>
+                              ) : <span className="text-slate-300 text-xs">—</span>}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <svg className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </td>
+                          </tr>
+
+                          {/* Expanded: chi tiết 9 tiêu chí + reasons */}
+                          {isExpanded && (
+                            <tr className="bg-slate-50/80">
+                              <td colSpan={9} className="px-6 py-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8">
+                                  {(['A', 'B', 'C', 'D'] as const).map(gKey => {
+                                    const gm = GROUP_META[gKey];
+                                    const codes = Object.keys(CRITERIA_META).filter(k => k.startsWith(gKey));
+                                    return (
+                                      <div key={gKey} className="mb-3">
+                                        <div className={`text-[10px] font-bold uppercase tracking-wider ${gm.text} mb-1.5`}>{gm.label}</div>
+                                        {codes.map(code => {
+                                          const score = r.criteria_scores?.[code] ?? 0;
+                                          // reason key dạng "A1_answer_withholding"
+                                          const reasonKey = Object.keys(r.criteria_reasons ?? {}).find(k => k.startsWith(code));
+                                          const reason = reasonKey ? r.criteria_reasons[reasonKey] : '';
+                                          return <CriteriaRow key={code} code={code} score={score} reason={reason} />;
+                                        })}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {totalPages > 1 && (
+                <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between">
+                  <p className="text-xs text-slate-400">Trang {safePage}/{totalPages} · {sorted.length} conversations</p>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setTablePage(p => Math.max(1, p - 1))} disabled={safePage === 1} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                    </button>
+                    {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+                      const pg = Math.max(1, Math.min(safePage - 2, totalPages - 4)) + i;
+                      return (
+                        <button key={pg} onClick={() => setTablePage(pg)} className={`w-8 h-8 text-xs rounded-lg border transition ${pg === safePage ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{pg}</button>
+                      );
+                    })}
+                    <button onClick={() => setTablePage(p => Math.min(totalPages, p + 1))} disabled={safePage === totalPages} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    </button>
                   </div>
                 </div>
               )}
             </div>
-          </div>
-        </section>
+          </section>
 
-        {/* ═══════════════════════════════════════════════════════
-            ZONE 2 — Chi tiết 9 tiêu chí
-        ═══════════════════════════════════════════════════════ */}
-        <section>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-sm font-bold text-slate-700">Chi tiết 9 tiêu chí (A1–D1)</h2>
-            <span className="text-[11px] text-slate-400">— điểm trung bình trên tất cả conversations</span>
-          </div>
-          <p className="text-[11px] text-slate-400 mb-4">
-            Hover vào badge tiêu chí để xem mô tả. Thanh màu phản ánh mức độ: <span className="text-emerald-600 font-semibold">xanh ≥4</span>, <span className="text-amber-600 font-semibold">vàng ≥2.5</span>, <span className="text-red-600 font-semibold">đỏ &lt;2.5</span>.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {(['A', 'B', 'C', 'D'] as const).map(gKey => {
-              const gm = GROUP_META[gKey];
-              const codes = Object.keys(CRITERIA_META).filter(k => k.startsWith(gKey));
-              const groupScore = data.summary[`group_${gKey.toLowerCase()}` as 'group_a' | 'group_b' | 'group_c' | 'group_d'];
-              return (
-                <div key={gKey} className={`bg-white rounded-2xl border shadow-sm overflow-hidden`}>
-                  {/* Group header */}
-                  <div className={`px-5 py-3 border-b ${gm.bg} ${gm.border} flex items-center justify-between`}>
-                    <div>
-                      <span className={`text-sm font-bold ${gm.text}`}>{gm.label}</span>
-                      <span className="text-xs text-slate-400 ml-2">Trọng số {gm.weight}</span>
-                    </div>
-                    <div className={`text-lg font-black ${gm.text}`}>{groupScore.toFixed(2)}<span className="text-xs font-normal text-slate-400">/{max}</span></div>
-                  </div>
-
-                  {/* Criteria */}
-                  <div className="px-5 py-3">
-                    {codes.map(code => {
-                      const score = data.summary.criteria?.[code] ?? 0;
-                      // Lấy reason tổng hợp từ conversation đầu tiên (nếu có)
-                      const sampleReason = data.results[0]?.criteria_reasons?.[`${code.toLowerCase()}_${CRITERIA_META[code]?.name.toLowerCase().replace(/ /g, '_')}`] ?? '';
-                      const barColor = score >= 4 ? 'bg-emerald-400' : score >= 2.5 ? 'bg-amber-400' : 'bg-red-400';
-                      return (
-                        <div key={code} className="flex items-center gap-3 py-2 border-b border-slate-50 last:border-0">
-                          <HoverTooltip text={`${CRITERIA_META[code]?.name} (${CRITERIA_META[code]?.weight}) — ${CRITERIA_META[code]?.desc}`}>
-                            <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded ${gm.bg} ${gm.text} border ${gm.border} cursor-help`}>{code}</span>
-                          </HoverTooltip>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${(score / max) * 100}%` }} />
-                              </div>
-                              <span className="text-xs font-bold tabular-nums text-slate-700 w-8 text-right">{score.toFixed(2)}</span>
-                            </div>
-                            <p className="text-[10px] text-slate-400 mt-0.5">{CRITERIA_META[code]?.name}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {gKey === 'A' && (
-                      <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                        <p className="text-[10px] text-amber-700">
-                          <strong>Hard constraint:</strong> Nếu A1 = 0 → toàn nhóm A bị cap ở 1.0, bất kể A2/A3 đạt bao nhiêu.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Bar chart 9 tiêu chí */}
-          <div className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            <div className="text-[11px] font-semibold text-slate-500 mb-1">So sánh trực quan 9 tiêu chí</div>
-            <p className="text-[10px] text-slate-400 mb-4">Hover vào cột để xem điểm số cụ thể</p>
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={criteriaChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748B' }} />
-                  <YAxis domain={[0, max]} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94A3B8' }} />
-                  <Tooltip
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.[0]) return null;
-                      const d = payload[0].payload;
-                      const meta = CRITERIA_META[d.name];
-                      return (
-                        <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-lg text-xs max-w-[200px]">
-                          <div className="font-bold text-slate-800">{d.name} — {meta?.name}</div>
-                          <div className="text-indigo-600 font-semibold mt-0.5">{d.score}/{max}</div>
-                          {meta && <div className="text-slate-500 mt-1 leading-relaxed">{meta.desc}</div>}
-                        </div>
-                      );
-                    }}
-                  />
-                  <Bar dataKey="score" radius={[4, 4, 0, 0]} maxBarSize={36}>
-                    {criteriaChartData.map((entry, i) => {
-                      const gKey = entry.name[0];
-                      const colors: Record<string, string> = { A: '#6366F1', B: '#EA580C', C: '#0F766E', D: '#0284C7' };
-                      return <Cell key={i} fill={colors[gKey] ?? '#8B5CF6'} />;
-                    })}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </section>
-
-        {/* ═══════════════════════════════════════════════════════
-            ZONE 3 — Per-conversation breakdown
-        ═══════════════════════════════════════════════════════ */}
-        <section>
-          <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-sm font-bold text-slate-700">Kết quả từng conversation</h2>
-            <span className="text-[11px] text-slate-400">— {sorted.length} conversations · click để xem chi tiết tiêu chí</span>
-          </div>
-          <p className="text-[11px] text-slate-400 mb-4">
-            Mỗi hàng là 1 cuộc hội thoại được model replay lại. Điểm Overall tính theo công thức có trọng số. Badge đỏ <strong>A1=0</strong> nghĩa là conversation này vi phạm hard constraint.
-          </p>
-
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-slate-500 text-xs font-semibold border-b border-slate-200">
-                  <tr>
-                    <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none" onClick={() => handleSort('index')}># <SortIcon k="index" /></th>
-                    <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none text-center" onClick={() => handleSort('overall')}>Overall <SortIcon k="overall" /></th>
-                    <th className="px-4 py-3 cursor-pointer hover:text-indigo-600 select-none text-center text-indigo-500" onClick={() => handleSort('group_a')}>
-                      A · Socratic <SortIcon k="group_a" />
-                    </th>
-                    <th className="px-4 py-3 cursor-pointer hover:text-orange-600 select-none text-center text-orange-500" onClick={() => handleSort('group_b')}>
-                      B · Accuracy <SortIcon k="group_b" />
-                    </th>
-                    <th className="px-4 py-3 text-center text-teal-500">C · Pedagogy</th>
-                    <th className="px-4 py-3 text-center text-sky-500">D · Hall+Spd</th>
-                    <th className="px-4 py-3 cursor-pointer hover:text-slate-700 select-none text-center" onClick={() => handleSort('latency')}>Latency <SortIcon k="latency" /></th>
-                    <th className="px-4 py-3 text-center text-slate-400">Turns</th>
-                    <th className="px-4 py-3 w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {paginated.map((r) => {
-                    const ov   = r.group_scores?.overall  ?? 0;
-                    const ga   = r.group_scores?.group_a  ?? 0;
-                    const gb   = r.group_scores?.group_b  ?? 0;
-                    const gc   = r.group_scores?.group_c  ?? 0;
-                    const gd   = r.group_scores?.group_d  ?? 0;
-                    const constraint = r.group_scores?.a1_hard_constraint_triggered;
-                    const isExpanded = expandedRow === r.conv_index;
-
-                    const scoreColor = (v: number) =>
-                      v >= 4 ? 'text-emerald-700 font-bold' : v >= 2.5 ? 'text-amber-700 font-semibold' : 'text-red-600 font-semibold';
-
-                    return (
-                      <React.Fragment key={r.conv_index}>
-                        <tr
-                          className={`border-b border-slate-100 cursor-pointer transition-colors ${isExpanded ? 'bg-slate-50' : 'hover:bg-slate-50/60'}`}
-                          onClick={() => setExpandedRow(isExpanded ? null : r.conv_index)}
-                        >
-                          <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{r.conv_index + 1}</td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="flex items-center justify-center gap-1">
-                              <span className={`text-sm tabular-nums ${scoreColor(ov)}`}>{ov.toFixed(3)}</span>
-                              {constraint && (
-                                <HoverTooltip text="A1=0: model đã đưa đáp án trực tiếp — nhóm A bị giới hạn ở 1.0">
-                                  <span className="text-[9px] bg-red-100 text-red-600 font-bold px-1 py-0.5 rounded cursor-help">A1=0</span>
-                                </HoverTooltip>
-                              )}
-                            </div>
-                          </td>
-                          <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(ga)}`}>{ga.toFixed(2)}</td>
-                          <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gb)}`}>{gb.toFixed(2)}</td>
-                          <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gc)}`}>{gc.toFixed(2)}</td>
-                          <td className={`px-4 py-3 text-center text-xs tabular-nums ${scoreColor(gd)}`}>{gd.toFixed(2)}</td>
-                          <td className="px-4 py-3 text-center text-xs tabular-nums text-slate-500">{r.avg_latency_ms?.toFixed(0)}ms</td>
-                          <td className="px-4 py-3 text-center text-xs text-slate-400">{r.num_turns}</td>
-                          <td className="px-4 py-3 text-center">
-                            <svg className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                            </svg>
-                          </td>
-                        </tr>
-
-                        {/* Expanded: chi tiết 9 tiêu chí + reasons */}
-                        {isExpanded && (
-                          <tr className="bg-slate-50/80">
-                            <td colSpan={9} className="px-6 py-4">
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8">
-                                {(['A', 'B', 'C', 'D'] as const).map(gKey => {
-                                  const gm = GROUP_META[gKey];
-                                  const codes = Object.keys(CRITERIA_META).filter(k => k.startsWith(gKey));
-                                  return (
-                                    <div key={gKey} className="mb-3">
-                                      <div className={`text-[10px] font-bold uppercase tracking-wider ${gm.text} mb-1.5`}>{gm.label}</div>
-                                      {codes.map(code => {
-                                        const score = r.criteria_scores?.[code] ?? 0;
-                                        // reason key dạng "A1_answer_withholding"
-                                        const reasonKey = Object.keys(r.criteria_reasons ?? {}).find(k => k.startsWith(code));
-                                        const reason = reasonKey ? r.criteria_reasons[reasonKey] : '';
-                                        return <CriteriaRow key={code} code={code} score={score} reason={reason} />;
-                                      })}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {totalPages > 1 && (
-              <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between">
-                <p className="text-xs text-slate-400">Trang {safePage}/{totalPages} · {sorted.length} conversations</p>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setTablePage(p => Math.max(1, p - 1))} disabled={safePage === 1} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                  </button>
-                  {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-                    const pg = Math.max(1, Math.min(safePage - 2, totalPages - 4)) + i;
-                    return (
-                      <button key={pg} onClick={() => setTablePage(pg)} className={`w-8 h-8 text-xs rounded-lg border transition ${pg === safePage ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{pg}</button>
-                    );
-                  })}
-                  <button onClick={() => setTablePage(p => Math.min(totalPages, p + 1))} disabled={safePage === totalPages} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-
-      </div>
+        </div>
+      ) : (
+        <RubricTab />
+      )}
     </div>
   );
 };

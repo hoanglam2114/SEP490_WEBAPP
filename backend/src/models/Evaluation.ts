@@ -5,6 +5,11 @@ export interface IEvalResult {
   conv_index: number;
   num_turns: number;
   avg_latency_ms: number;
+  replay_turns?: {               // ← thêm
+    user: string;
+    model: string;
+    latency_ms: number;
+  }[];
   criteria_scores: {
     A1: number; A2: number; A3: number;
     B1: number; B2: number;
@@ -25,6 +30,11 @@ export interface IEvalResult {
     rouge_l: number;
     question_detection_rate: number;
   };
+  confidence?: {
+    overall: number;
+    by_group: Record<string, number>;
+    is_low: boolean;
+  };
 }
 
 export interface IEvaluation extends Document {
@@ -41,6 +51,7 @@ export interface IEvaluation extends Document {
   completedAt: Date;
   createdAt: Date;
   updatedAt: Date;
+  flags?: string[];
 }
 
 const EvaluationResultSchema = new Schema<IEvalResult>(
@@ -48,6 +59,7 @@ const EvaluationResultSchema = new Schema<IEvalResult>(
     conv_index: { type: Number },
     num_turns: { type: Number },
     avg_latency_ms: { type: Number },
+    replay_turns: { type: Schema.Types.Mixed, default: [] },
     criteria_scores: { type: Schema.Types.Mixed, default: {} },
     criteria_reasons: { type: Schema.Types.Mixed, default: {} },
     group_scores: { type: Schema.Types.Mixed, default: {} },
@@ -69,6 +81,7 @@ const EvaluationSchema = new Schema<IEvaluation>(
     startedAt: { type: Date, required: true },
     completedAt: { type: Date, required: true },
     judgeModel: { type: String, default: 'claude-sonnet-4-5-20251001' },
+    flags: { type: [String], default: [] },
   },
   { timestamps: true }
 );
