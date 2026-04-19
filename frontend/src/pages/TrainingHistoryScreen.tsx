@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { apiService } from '../services/api';
 import {
   LineChart,
   Line,
@@ -42,6 +43,7 @@ interface TrainingHistoryItem {
   status: string;
   finalMetrics: {
     loss: number;
+    eval_loss?: number;
     accuracy: number;
     vram: number;
     gpu_util: number;
@@ -90,6 +92,16 @@ export const TrainingHistoryScreen: React.FC = () => {
   const [baseModels, setBaseModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
+  // Registry state
+  const [registries, setRegistries] = useState<any[]>([]);
+  const [showRegisterModal, setShowRegisterModal] = useState<string | null>(null); // jobId
+  const [selectedRegistryId, setSelectedRegistryId] = useState<string>('');
+  const [versionName, setVersionName] = useState<string>('v1.0.0');
+  const [promptVersion, setPromptVersion] = useState<string>('Default');
+  const [jobEvaluations, setJobEvaluations] = useState<any[]>([]);
+  const [selectedEvalId, setSelectedEvalId] = useState<string>('');
+  const [registering, setRegistering] = useState(false);
+
   // Fetch distinct base models for filter dropdown
   const fetchBaseModels = useCallback(async () => {
     try {
@@ -100,6 +112,16 @@ export const TrainingHistoryScreen: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to fetch base models:', err);
+    }
+  }, []);
+
+  const fetchRegistries = useCallback(async () => {
+    try {
+      const data = await apiService.listModelRegistries();
+      setRegistries(data);
+      if (data.length > 0) setSelectedRegistryId(data[0]._id);
+    } catch (err) {
+      console.error('Failed to fetch registries:', err);
     }
   }, []);
 
@@ -124,7 +146,52 @@ export const TrainingHistoryScreen: React.FC = () => {
   useEffect(() => {
     fetchBaseModels();
     fetchHistories();
-  }, [fetchBaseModels, fetchHistories]);
+    fetchRegistries();
+  }, [fetchBaseModels, fetchHistories, fetchRegistries]);
+
+  const handleRegister = async (item: TrainingHistoryItem) => {
+    if (!selectedRegistryId) {
+      alert('Please select or create a model registry first.');
+      return;
+    }
+
+    setRegistering(true);
+    try {
+      await apiService.registerModelVersion({
+        modelRegistryId: selectedRegistryId,
+        version: versionName,
+        trainingHistoryId: item._id,
+        evaluationId: selectedEvalId || undefined,
+        hfRepoId: item.hfRepoId,
+        promptVersion: promptVersion,
+        notes: `Registered from training job ${item.jobId}`,
+      });
+      alert('Model registered successfully!');
+      setShowRegisterModal(null);
+    } catch (err: any) {
+      alert('Error registering model: ' + (err.response?.data?.message || err.message));
+    } finally {
+      setRegistering(false);
+    }
+  };
+
+  const openRegisterModal = async (item: TrainingHistoryItem) => {
+    setShowRegisterModal(item.jobId);
+    setVersionName('v1.0.0');
+    setPromptVersion('Default');
+    setSelectedEvalId('');
+    setJobEvaluations([]);
+    
+    try {
+      const evals = await apiService.getEvaluationsByJob(item.jobId);
+      setJobEvaluations(evals);
+      if (evals.length > 0) {
+        setSelectedEvalId(evals[0]._id);
+      }
+    } catch (error) {
+      console.error('Error fetching job evaluations:', error);
+    }
+  };
 
   // When selected model changes, fetch filtered data
   const handleModelFilterChange = (model: string) => {
@@ -167,6 +234,35 @@ export const TrainingHistoryScreen: React.FC = () => {
     } finally {
       setResumeLoading(null);
     }
+  };
+
+  const getChartData = (item: TrainingHistoryItem) => {
+    if (!item.lossHistory) return [];
+    
+    // Combine lossHistory and evalLossHistory
+    const combinedData = [...item.lossHistory.map(h => ({
+      progress: Math.round(h.progress),
+      loss: h.loss,
+      evalLoss: undefined as number | undefined
+    }))];
+
+    if (item.evalLossHistory) {
+      item.evalLossHistory.forEach(eh => {
+        const roundedProg = Math.round(eh.progress);
+        const existing = combinedData.find(d => d.progress === roundedProg);
+        if (existing) {
+          existing.evalLoss = eh.loss;
+        } else {
+          combinedData.push({
+            progress: roundedProg,
+            loss: undefined as any,
+            evalLoss: eh.loss
+          });
+        }
+      });
+    }
+
+    return combinedData.sort((a, b) => a.progress - b.progress);
   };
 
   const statusStyle = (status: string) => {
@@ -412,7 +508,7 @@ export const TrainingHistoryScreen: React.FC = () => {
                             <div className="bg-white border border-slate-200 rounded-xl p-4 h-64 shadow-inner">
                               <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Loss Curve</h4>
                               <ResponsiveContainer width="100%" height="85%">
-                                <LineChart data={item.lossHistory}>
+                                <LineChart data={getChartData(item)}>
                                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                                   <XAxis 
                                     dataKey="progress" 
@@ -430,7 +526,16 @@ export const TrainingHistoryScreen: React.FC = () => {
                                   <Line 
                                     type="monotone" 
                                     dataKey="loss" 
-                                    stroke="#3b82f6" 
+                                    name="Training Loss"
+                                    stroke="#2563eb" 
+                                    strokeWidth={2} 
+                                    dot={false}
+                                  />
+                                  <Line 
+                                    type="monotone" 
+                                    dataKey="evalLoss" 
+                                    name="Eval Loss (Overfit)"
+                                    stroke="#ef4444" 
                                     strokeWidth={2} 
                                     dot={false}
                                   />
@@ -506,6 +611,17 @@ export const TrainingHistoryScreen: React.FC = () => {
 
                       {/* Action Buttons */}
                       <div className="flex justify-end pt-2 gap-3">
+                        {item.status === 'COMPLETED' && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openRegisterModal(item); }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-all"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                            </svg>
+                            Register Model
+                          </button>
+                        )}
                         {(item.status === 'STOPPED' || item.status === 'FAILED' || item.status === 'RUNNING') && (
                           <button
                             onClick={(e) => handleResume(e, item.jobId)}
@@ -566,6 +682,99 @@ export const TrainingHistoryScreen: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Register Model Modal */}
+      {showRegisterModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-200">
+            <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+              <span className="text-2xl">📦</span> Register Model Version
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Select Model Registry</label>
+                {registries.length > 0 ? (
+                  <select
+                    value={selectedRegistryId}
+                    onChange={(e) => setSelectedRegistryId(e.target.value)}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none bg-slate-50 text-sm"
+                  >
+                    {registries.map((r) => (
+                      <option key={r._id} value={r._id}>{r.name} ({r.baseModel})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="text-sm text-amber-600 bg-amber-50 p-3 rounded-xl border border-amber-100">
+                    No registries found. Please <a href="/model-registry" className="underline font-bold">create one</a> first.
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Version Name</label>
+                <input
+                  type="text"
+                  value={versionName}
+                  onChange={(e) => setVersionName(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none bg-slate-50 text-sm font-mono"
+                  placeholder="e.g., v1.0.0"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Prompt Version</label>
+                <input
+                  type="text"
+                  value={promptVersion}
+                  onChange={(e) => setPromptVersion(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none bg-slate-50 text-sm font-mono"
+                  placeholder="e.g., Default / V1.1"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Link Evaluation Result</label>
+                {jobEvaluations.length > 0 ? (
+                  <select
+                    value={selectedEvalId}
+                    onChange={(e) => setSelectedEvalId(e.target.value)}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none bg-slate-50 text-sm"
+                  >
+                    {jobEvaluations.map((ev) => (
+                      <option key={ev._id} value={ev._id}>
+                        {ev.modelEvalId} ({ev.judgeModel}) - {new Date(ev.createdAt).toLocaleDateString()}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="text-xs text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    No evaluations found for this job.
+                  </div>
+                )}
+              </div>
+              
+              <div className="pt-4 flex gap-3">
+                <button
+                  onClick={() => setShowRegisterModal(null)}
+                  className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 font-medium transition-all text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    const item = histories.find(h => h.jobId === showRegisterModal);
+                    if (item) handleRegister(item);
+                  }}
+                  disabled={registering || registries.length === 0}
+                  className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium transition-all shadow-lg shadow-blue-500/25 disabled:opacity-50 text-sm flex items-center justify-center gap-2"
+                >
+                  {registering && <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
+                  Register Version
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

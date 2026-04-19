@@ -51,6 +51,18 @@ const tools = [
     ),
   },
   {
+    title: 'Model Registry',
+    description: 'Central repository to manage model versions, metrics, and deployment status',
+    path: '/model-registry',
+    tag: 'Registry',
+    icon: (
+      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012v2M7 7h10" />
+      </svg>
+    ),
+  },
+  {
     title: 'Dataset Evaluation History',
     description: 'View past evaluations, manually re-evaluate records, and manage dataset quality.',
     path: '/evaluation-history',
@@ -81,6 +93,7 @@ const TAG_COLORS: Record<string, string> = {
   Training: 'bg-violet-50 text-violet-600 border-violet-200',
   History: 'bg-slate-100 text-slate-500 border-slate-200',
   Evaluation: 'bg-emerald-50 text-emerald-600 border-emerald-200',
+  Registry: 'bg-blue-50 text-blue-600 border-blue-200',
   Inference: 'bg-amber-50 text-amber-600 border-amber-200',
 };
 

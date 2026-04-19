@@ -227,6 +227,7 @@ export const startTraining = async (req: Request, res: Response) => {
     // ── Generate job ID ─────────────────────────────────────────────────────
     const job_id = `job_${uuidv4()}`;
     console.log(`[Backend] Starting job ${job_id} → model=${model_name} epochs=${epochsNum}`);
+
     if (hf_token) {
       console.log(`[Backend] HF Token detected: ${hf_token.substring(0, 4)}****`);
     } else {
@@ -370,6 +371,7 @@ export const startTraining = async (req: Request, res: Response) => {
           dataset_text_field: finalColumnMapping,
         },
         datasetPath: savedDatasetPath,
+        datasetFileId: datasetFile?.filename, // Lưu lại ID file từ Multer
         workerUrl: workerUrl,
       });
       console.log(`[Backend] Initial TrainingHistory created for job ${job_id}`);
@@ -489,12 +491,33 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
       // Do not close the stream on UNKNOWN, as it might be a transient state
       // (e.g., job not yet registered by the GPU service). Only close on definitive end-states.
       if (['COMPLETED', 'STOPPED', 'FAILED', 'ERROR'].includes(data.status)) {
+        const workerMetrics = data.metrics || {};
+        
+        // Lấy loss từ data hoặc metrics, nhưng phải khác 0
+        // Nếu bằng 0, ta sẽ cố gắng tìm trong history hoặc giữ nguyên giá trị cũ
+        let finalLoss = typeof data.loss === 'number' && data.loss > 0 ? data.loss : (typeof workerMetrics.loss === 'number' ? workerMetrics.loss : 0);
+        
+        // Nếu vẫn bằng 0 (do Colab reset ở step cuối), thử lấy từ history đã lưu
+        if (finalLoss === 0 && history && history.lossHistory && history.lossHistory.length > 0) {
+          const lastValid = history.lossHistory.filter(h => h.loss > 0).pop();
+          if (lastValid) finalLoss = lastValid.loss;
+        }
+
+        const finalMetrics = {
+          loss: finalLoss,
+          eval_loss: typeof workerMetrics.eval_loss === 'number' ? workerMetrics.eval_loss : 0,
+          accuracy: typeof workerMetrics.accuracy === 'number' ? workerMetrics.accuracy : 0,
+          vram: typeof workerMetrics.vram === 'number' ? workerMetrics.vram : 0,
+          gpu_util: typeof workerMetrics.gpu_util === 'number' ? workerMetrics.gpu_util : 0,
+        };
+
         // Auto-update MongoDB so History screen shows correct status
         TrainingHistory.updateOne(
           { jobId },
           {
             status: data.status,
             completedAt: new Date(),
+            finalMetrics: finalMetrics,
             ...(data.latest_checkpoint ? { latest_checkpoint_file_id: data.latest_checkpoint } : {})
           }
         ).catch(err => console.error('[Backend] Failed to update final status in DB:', err));
