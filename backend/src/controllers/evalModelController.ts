@@ -101,13 +101,22 @@ function normalizeEvalResult(result: any) {
     ? result.summary
     : {};
 
+  const baseSummary = result.baseSummary && typeof result.baseSummary === 'object'
+    ? result.baseSummary : null;
+
   return {
-    totalConversations:  Number(result.totalConversations ?? result.totalSamples ?? normalizedResults.length),
-    validConversations:  Number(result.validConversations ?? normalizedResults.length),
-    results:  normalizedResults,
+    totalConversations: Number(result.totalConversations ?? result.totalSamples ?? normalizedResults.length),
+    validConversations: Number(result.validConversations ?? normalizedResults.length),
+    evalMode:           (result.evalMode === 'paired') ? 'paired' : 'single',
+    ftModelRepo:        result.ftModelRepo ?? undefined,
+    baseModelRepo:      result.baseModelRepo ?? undefined,
+    results:            normalizedResults,
+    baseResults:        normalizePerConvResults(result.basePerConvResults ?? []),
     summary,
-    flags: Array.isArray(result.flags) ? result.flags : [],
-    gpuResult: result,
+    baseSummary,
+    delta:              result.delta ?? null,
+    flags:              Array.isArray(result.flags) ? result.flags : [],
+    gpuResult:          result,
   };
 }
 
@@ -145,6 +154,8 @@ export const runEvaluation = async (req: Request, res: Response) => {
     // 3. Tạo eval_job_id
     const eval_job_id = `eval_${uuidv4()}`;
     console.log(`[Backend] Starting eval ${eval_job_id} for job ${jobId} → model=${history.hfRepoId}`);
+    console.log(`[Backend] base_model_hf_repo from req.body: '${req.body.base_model_hf_repo}'`);
+    console.log(`[Backend] req.body keys:`, Object.keys(req.body));
 
     const config = {
       eval_job_id,
@@ -152,7 +163,8 @@ export const runEvaluation = async (req: Request, res: Response) => {
       hf_repo_id: history.hfRepoId,
       hf_token: history.hfToken || '',
       model_max_length: history.parameters?.modelMaxLength || 2048,
-      judge_model: req.body.judge_model || req.body['judge_model'] || 'claude-sonnet-4-5-20251001',
+      judge_model:          req.body.judge_model || req.body['judge_model'] || 'claude-sonnet-4-5-20251001',
+      base_model_hf_repo:   req.body.base_model_hf_repo || '',
     };
 
     // 4. Tạo Evaluation record trong MongoDB với status PENDING
@@ -163,7 +175,10 @@ export const runEvaluation = async (req: Request, res: Response) => {
       totalConversations: 0,
       validConversations: 0,
       results: [],
-      judgeModel: config.judge_model,
+      evalMode:     config.base_model_hf_repo ? 'paired' : 'single',
+      ftModelRepo:  history.hfRepoId,
+      baseModelRepo:config.base_model_hf_repo || undefined,
+      judgeModel:   config.judge_model,
       summary: {
         overall: 0,
         group_a: 0, group_b: 0, group_c: 0, group_d: 0,
@@ -348,16 +363,22 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
     await ModelEvaluation.findOneAndUpdate(
       { modelEvalId: evalJobId },
       {
-        status: 'COMPLETED',
+        status:             'COMPLETED',
+        evalMode:           normalized.evalMode,
+        ftModelRepo:        normalized.ftModelRepo,
+        baseModelRepo:      normalized.baseModelRepo,
         totalConversations: normalized.totalConversations,
         validConversations: normalized.validConversations,
-        results: normalized.results,
-        summary: normalized.summary,
-        gpuResult: normalized.gpuResult,
-        judgeModel: result.judgeModel ?? undefined,
-        startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
-        completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
-        flags: normalized.flags,
+        results:            normalized.results,
+        baseResults:        normalized.baseResults,
+        summary:            normalized.summary,
+        baseSummary:        normalized.baseSummary,
+        delta:              normalized.delta,
+        gpuResult:          normalized.gpuResult,
+        judgeModel:         result.judgeModel ?? undefined,
+        startedAt:          result.startedAt ? new Date(result.startedAt) : new Date(),
+        completedAt:        result.completedAt ? new Date(result.completedAt) : new Date(),
+        flags:              normalized.flags,
       },
       { upsert: true }
     );
@@ -409,11 +430,17 @@ export const saveEvalResult = async (req: Request, res: Response) => {
         modelEvalId: result.modelEvalId,
         jobId: result.jobId,
         status: result.status || 'COMPLETED',
+        evalMode:           normalized.evalMode,
+        ftModelRepo:        normalized.ftModelRepo,
+        baseModelRepo:      normalized.baseModelRepo,
         totalConversations: normalized.totalConversations,
         validConversations: normalized.validConversations,
-        results: normalized.results,
-        summary: normalized.summary,
-        gpuResult: normalized.gpuResult,
+        results:            normalized.results,
+        baseResults:        normalized.baseResults,
+        summary:            normalized.summary,
+        baseSummary:        normalized.baseSummary,
+        delta:              normalized.delta,
+        gpuResult:          normalized.gpuResult,
         startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
         completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
       },

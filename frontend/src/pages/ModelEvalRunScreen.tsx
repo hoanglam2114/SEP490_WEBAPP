@@ -486,6 +486,7 @@ export const ModelEvalRunScreen: React.FC = () => {
   const [gpuLoading, setGpuLoading] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [judgeModel, setJudgeModel] = useState<string>(JUDGE_MODELS[0].id);
+  const [baseModelRepo, setBaseModelRepo] = useState<string>('');
   const [jobSearch, setJobSearch] = useState<string>("");
   const [evalFile, setEvalFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -873,6 +874,9 @@ export const ModelEvalRunScreen: React.FC = () => {
       const formData = new FormData();
       formData.append("eval_file", evalFile);
       formData.append("judge_model", judgeModel);
+      if (baseModelRepo.trim()) {
+        formData.append("base_model_hf_repo", baseModelRepo.trim());
+      }
 
       const res = await fetch(`/api/model-eval/run/${selectedJobId}`, {
         method: "POST",
@@ -1277,7 +1281,7 @@ export const ModelEvalRunScreen: React.FC = () => {
                       filteredJobs.map((job) => (
                         <button
                           key={job.jobId}
-                          onClick={() => setSelectedJobId(job.jobId)}
+                          onClick={() => { setSelectedJobId(job.jobId); setBaseModelRepo(''); }}
                           className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1 transition ${selectedJobId === job.jobId ? "bg-slate-800" : "hover:bg-slate-50"}`}
                         >
                           <div
@@ -1379,6 +1383,42 @@ export const ModelEvalRunScreen: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Step 2.5 — Base model (paired eval) */}
+              {selectedJobId && selectedJob && (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-slate-600 text-white text-[10px] font-bold flex items-center justify-center shrink-0">±</span>
+                      <div>
+                        <span className="text-sm font-bold text-slate-800">So sánh với Base model</span>
+                        <span className="text-[11px] text-slate-400 ml-2">— tốn ~2× thời gian</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        console.log('[Debug] full selectedJob:', JSON.stringify(selectedJob));
+                        const newVal = baseModelRepo ? '' : (selectedJob?.baseModel ?? '');
+                        setBaseModelRepo(newVal);
+                      }}
+                      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${
+                        baseModelRepo ? 'bg-indigo-600 border-indigo-600' : 'bg-slate-200 border-slate-200'
+                      }`}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        baseModelRepo ? 'translate-x-4' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+                  {baseModelRepo && (
+                    <div className="mt-3 flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+                      <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-wide shrink-0">Base</span>
+                      <span className="text-xs font-mono text-indigo-700 truncate">{selectedJob.baseModel}</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Step 3 — Upload file */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">

@@ -47,10 +47,16 @@ export interface IEvaluation extends Document {
   modelEvalId: string;
   jobId: string;
   status: string;
+  evalMode: 'single' | 'paired';
+  ftModelRepo?: string;
+  baseModelRepo?: string;
   totalConversations: number;
   validConversations: number;
-  results: IEvalResult[];
-  summary: Record<string, any>;
+  results: IEvalResult[];           // FT results
+  baseResults?: IEvalResult[];      // Base results (paired only)
+  summary: Record<string, any>;     // FT summary
+  baseSummary?: Record<string, any>;// Base summary (paired only)
+  delta?: Record<string, any>;      // FT - Base delta (paired only)
   gpuResult?: Record<string, any>;
   judgeModel?: string;
   startedAt: Date;
@@ -77,18 +83,24 @@ const EvaluationResultSchema = new Schema<IEvalResult>(
 
 const EvaluationSchema = new Schema<IEvaluation>(
   {
-    modelEvalId: { type: String, required: true, unique: true, index: true },
-    jobId: { type: String, required: true, index: true },
-    status: { type: String, required: true },
-    totalConversations: { type: Number, default: 0 },
-    validConversations: { type: Number, default: 0 },
-    results: { type: [EvaluationResultSchema], default: [] },
-    summary: { type: Schema.Types.Mixed, default: {} },
-    gpuResult: { type: Schema.Types.Mixed, default: {} },
-    startedAt: { type: Date, required: true },
-    completedAt: { type: Date, required: true },
-    judgeModel: { type: String, default: 'claude-sonnet-4-5-20251001' },
-    flags: { type: [String], default: [] },
+    modelEvalId:       { type: String, required: true, unique: true, index: true },
+    jobId:             { type: String, required: true, index: true },
+    status:            { type: String, required: true },
+    evalMode:          { type: String, enum: ['single', 'paired'], default: 'single' },
+    ftModelRepo:       { type: String },
+    baseModelRepo:     { type: String },
+    totalConversations:{ type: Number, default: 0 },
+    validConversations:{ type: Number, default: 0 },
+    results:           { type: [EvaluationResultSchema], default: [] },
+    baseResults:       { type: [EvaluationResultSchema], default: [] },
+    summary:           { type: Schema.Types.Mixed, default: {} },
+    baseSummary:       { type: Schema.Types.Mixed, default: null },
+    delta:             { type: Schema.Types.Mixed, default: null },
+    gpuResult:         { type: Schema.Types.Mixed, default: {} },
+    startedAt:         { type: Date, required: true },
+    completedAt:       { type: Date, required: true },
+    judgeModel:        { type: String, default: 'claude-sonnet-4-5-20251001' },
+    flags:             { type: [String], default: [] },
   },
   { timestamps: true }
 );

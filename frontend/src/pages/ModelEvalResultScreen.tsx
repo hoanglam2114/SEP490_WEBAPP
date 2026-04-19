@@ -64,10 +64,33 @@ interface EvaluationData {
   projectName?: string;
   isPinned?: boolean;
   status: string;
+  evalMode?: "single" | "paired";
+  ftModelRepo?: string;
+  baseModelRepo?: string;
   totalConversations: number;
   validConversations: number;
   judgeModel?: string;
   results: ConvResult[];
+  baseResults?: ConvResult[];
+  baseSummary?: {
+    overall: number;
+    group_a: number; group_b: number; group_c: number; group_d: number;
+    criteria: Record<string, number>;
+    avg_latency_ms: number;
+    avg_confidence?: number;
+    low_confidence_count?: number;
+    non_scoring: { bleu: number; rouge_l: number; question_detection_rate: number };
+    max_possible: number;
+  };
+  delta?: {
+    overall: number;
+    group_a: number;
+    group_b: number;
+    group_c: number;
+    group_d: number;
+    criteria: Record<string, number>;
+    avg_latency_ms: number;
+  };
   summary: {
     overall: number;
     group_a: number;
@@ -693,7 +716,7 @@ function RubricTab() {
   ];
 
   return (
-    <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+    <div className="px-6 py-6 space-y-6">
       {/* Header */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <h2 className="text-base font-bold text-slate-800 mb-2">
@@ -846,6 +869,272 @@ function RubricTab() {
   );
 }
 
+function CompareTab({ data }: { data: EvaluationData }) {
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+  const PAGE = 10;
+
+  if (!data.delta || !data.baseSummary) {
+    return (
+      <div className="max-w-[1400px] mx-auto px-6 py-16 text-center text-slate-400">
+        <p className="font-medium">Không có dữ liệu so sánh</p>
+        <p className="text-sm mt-1">Eval này chưa chạy paired mode.</p>
+      </div>
+    );
+  }
+
+  const max = data.summary.max_possible;
+  const totalPages = Math.ceil(data.results.length / PAGE);
+  const paginated = data.results.slice((page - 1) * PAGE, page * PAGE);
+
+  const scoreColor = (v: number) =>
+    v >= 4 ? 'text-emerald-700 font-bold' : v >= 2.5 ? 'text-amber-700 font-semibold' : 'text-red-600 font-semibold';
+
+  return (
+    <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+
+      {/* Model labels */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Base Model</div>
+          <div className="text-xs font-mono text-slate-600 truncate">{data.baseModelRepo ?? '—'}</div>
+        </div>
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 mb-1">Fine-tuned Model</div>
+          <div className="text-xs font-mono text-indigo-700 truncate">{data.ftModelRepo ?? '—'}</div>
+        </div>
+      </div>
+
+      {/* Delta summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {[
+          { label: 'Overall',      base: data.baseSummary.overall,  ft: data.summary.overall,  delta: data.delta.overall },
+          { label: 'A · Socratic', base: data.baseSummary.group_a,  ft: data.summary.group_a,  delta: data.delta.group_a },
+          { label: 'B · Accuracy', base: data.baseSummary.group_b,  ft: data.summary.group_b,  delta: data.delta.group_b },
+          { label: 'C · Pedagogy', base: data.baseSummary.group_c,  ft: data.summary.group_c,  delta: data.delta.group_c },
+          { label: 'D · Hall+Spd', base: data.baseSummary.group_d,  ft: data.summary.group_d,  delta: data.delta.group_d },
+        ].map(({ label, base, ft, delta }) => {
+          const pct = base > 0 ? (delta / base) * 100 : 0;
+          const pos = delta >= 0;
+          return (
+            <div key={label} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">{label}</div>
+              <div className="flex items-baseline gap-1 mb-1">
+                <span className={`text-xl font-black ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
+                  {pos ? '+' : ''}{delta.toFixed(3)}
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-400">
+                {base.toFixed(2)} → <span className="font-semibold text-slate-600">{ft.toFixed(2)}</span>
+              </div>
+              <div className={`text-[10px] font-semibold mt-0.5 ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
+                {pos ? '↑' : '↓'} {Math.abs(pct).toFixed(1)}%
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Criteria delta table */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+          <span className="text-sm font-bold text-slate-700">Delta từng tiêu chí (A1–D2)</span>
+          <span className="text-[10px] text-slate-400">FT − Base · thang 0–{max}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs font-semibold text-slate-500 border-b border-slate-200">
+              <tr>
+                <th className="px-4 py-2.5 text-left">Tiêu chí</th>
+                <th className="px-4 py-2.5 text-center">Base</th>
+                <th className="px-4 py-2.5 text-center">FT</th>
+                <th className="px-4 py-2.5 text-center">Δ</th>
+                <th className="px-4 py-2.5 text-left w-48">Thay đổi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {Object.keys(data.summary.criteria ?? {}).map(code => {
+                const ftScore   = data.summary.criteria[code]            ?? 0;
+                const baseScore = data.baseSummary!.criteria[code]       ?? 0;
+                const d         = data.delta!.criteria[code]             ?? (ftScore - baseScore);
+                const pos       = d >= 0;
+                const barPct    = Math.abs(d) / max * 100;
+                const gKey      = code[0] as keyof typeof GROUP_META;
+                const gm        = GROUP_META[gKey] ?? GROUP_META.A;
+                return (
+                  <tr key={code} className="hover:bg-slate-50/60">
+                    <td className="px-4 py-2.5">
+                      <HoverTooltip text={`${CRITERIA_META[code]?.name} — ${CRITERIA_META[code]?.desc}`}>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border cursor-help ${gm.bg} ${gm.text} ${gm.border}`}>{code}</span>
+                      </HoverTooltip>
+                      <span className="ml-2 text-xs text-slate-500">{CRITERIA_META[code]?.name}</span>
+                    </td>
+                    <td className="px-4 py-2.5 text-center text-xs tabular-nums text-slate-500">{baseScore.toFixed(2)}</td>
+                    <td className="px-4 py-2.5 text-center text-xs tabular-nums font-semibold text-slate-700">{ftScore.toFixed(2)}</td>
+                    <td className={`px-4 py-2.5 text-center text-xs tabular-nums font-bold ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {pos ? '+' : ''}{d.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${pos ? 'bg-emerald-400' : 'bg-red-400'}`}
+                            style={{ width: `${Math.min(barPct * 3, 100)}%` }} />
+                        </div>
+                        <span className={`text-[10px] font-semibold w-10 text-right ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
+                          {pos ? '+' : ''}{((d / max) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Per-conversation side-by-side */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-sm font-bold text-slate-700">So sánh từng conversation</h2>
+          <span className="text-xs text-slate-400">— click để xem hội thoại song song</span>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {paginated.map((r) => {
+            const baseR = data.baseResults?.find(b => b.conv_index === r.conv_index);
+            const isExp = expandedRow === r.conv_index;
+            const ftOv  = r.group_scores?.overall ?? 0;
+            const bsOv  = baseR?.group_scores?.overall ?? 0;
+            const d     = ftOv - bsOv;
+            const pos   = d >= 0;
+
+            return (
+              <div key={r.conv_index} className="border-b border-slate-100 last:border-0">
+                {/* Row header */}
+                <button
+                  type="button"
+                  onClick={() => setExpandedRow(isExp ? null : r.conv_index)}
+                  className="w-full flex items-center gap-4 px-5 py-3 hover:bg-slate-50/60 text-left transition"
+                >
+                  <span className="text-xs text-slate-400 tabular-nums w-8">#{r.conv_index + 1}</span>
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-xs text-slate-500">
+                      Base: <span className="font-semibold tabular-nums text-slate-700">{bsOv.toFixed(2)}</span>
+                    </span>
+                    <span className="text-slate-300">→</span>
+                    <span className="text-xs text-slate-500">
+                      FT: <span className="font-semibold tabular-nums text-indigo-700">{ftOv.toFixed(2)}</span>
+                    </span>
+                    <span className={`text-xs font-bold tabular-nums ${pos ? 'text-emerald-600' : 'text-red-500'}`}>
+                      ({pos ? '+' : ''}{d.toFixed(2)})
+                    </span>
+                  </div>
+                  {/* Mini criteria comparison */}
+                  <div className="hidden sm:flex items-center gap-2">
+                    {['A1','A2','B1','C1','C2'].map(code => {
+                      const fv = r.criteria_scores?.[code] ?? 0;
+                      const bv = baseR?.criteria_scores?.[code] ?? 0;
+                      const dv = fv - bv;
+                      return (
+                        <div key={code} className="text-center">
+                          <div className="text-[9px] text-slate-400">{code}</div>
+                          <div className={`text-[10px] font-bold tabular-nums ${dv > 0 ? 'text-emerald-600' : dv < 0 ? 'text-red-500' : 'text-slate-400'}`}>
+                            {dv > 0 ? '+' : ''}{dv.toFixed(1)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <svg className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform ${isExp ? 'rotate-180' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {/* Expanded: side-by-side */}
+                {isExp && (
+                  <div className="px-5 pb-5 grid grid-cols-2 gap-4">
+                    {/* Base */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Base model</span>
+                        <span className={`text-xs font-bold tabular-nums ${scoreColor(bsOv)}`}>{bsOv.toFixed(2)}</span>
+                      </div>
+                      <div className="space-y-2 max-h-72 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50">
+                        {(baseR?.replay_turns ?? []).length > 0 ? (baseR?.replay_turns ?? []).map((t, ti) => (
+                          <div key={ti} className="space-y-1.5">
+                            <div className="flex gap-2">
+                              <span className="shrink-0 text-[9px] font-bold text-blue-400 mt-1.5 w-5 text-right">HS</span>
+                              <div className="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-2.5 py-1.5 max-w-[90%]">
+                                <p className="text-[11px] text-slate-700 leading-relaxed">{t.user}</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-2 flex-row-reverse">
+                              <span className="shrink-0 text-[9px] font-bold text-slate-400 mt-1.5 w-5 text-left">GT</span>
+                              <div className="bg-white border border-slate-200 rounded-xl rounded-tr-sm px-2.5 py-1.5 max-w-[90%]">
+                                <p className="text-[11px] text-slate-700 leading-relaxed">{t.model}</p>
+                                <p className="text-[9px] text-slate-400 mt-0.5 tabular-nums">{t.latency_ms?.toFixed(0)}ms</p>
+                              </div>
+                            </div>
+                          </div>
+                        )) : (
+                          <p className="text-[10px] text-slate-400 text-center py-4">Chưa có dữ liệu hội thoại</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* FT */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">Fine-tuned model</span>
+                        <span className={`text-xs font-bold tabular-nums ${scoreColor(ftOv)}`}>{ftOv.toFixed(2)}</span>
+                      </div>
+                      <div className="space-y-2 max-h-72 overflow-y-auto border border-indigo-200 rounded-xl p-3 bg-indigo-50/30">
+                        {(r.replay_turns ?? []).length > 0 ? (r.replay_turns ?? []).map((t, ti) => (
+                          <div key={ti} className="space-y-1.5">
+                            <div className="flex gap-2">
+                              <span className="shrink-0 text-[9px] font-bold text-blue-400 mt-1.5 w-5 text-right">HS</span>
+                              <div className="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-2.5 py-1.5 max-w-[90%]">
+                                <p className="text-[11px] text-slate-700 leading-relaxed">{t.user}</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-2 flex-row-reverse">
+                              <span className="shrink-0 text-[9px] font-bold text-indigo-400 mt-1.5 w-5 text-left">GT</span>
+                              <div className="bg-white border border-indigo-200 rounded-xl rounded-tr-sm px-2.5 py-1.5 max-w-[90%]">
+                                <p className="text-[11px] text-slate-700 leading-relaxed">{t.model}</p>
+                                <p className="text-[9px] text-slate-400 mt-0.5 tabular-nums">{t.latency_ms?.toFixed(0)}ms</p>
+                              </div>
+                            </div>
+                          </div>
+                        )) : (
+                          <p className="text-[10px] text-slate-400 text-center py-4">Chưa có dữ liệu hội thoại</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {totalPages > 1 && (
+            <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-xs text-slate-400">Trang {page}/{totalPages} · {data.results.length} conversations</span>
+              <div className="flex gap-1">
+                <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1}
+                  className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg disabled:opacity-30 hover:border-slate-400 transition">Prev</button>
+                <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={page === totalPages}
+                  className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg disabled:opacity-30 hover:border-slate-400 transition">Next</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
 export const ModelEvalResultScreen: React.FC = () => {
   const { evalId } = useParams();
   const navigate = useNavigate();
@@ -857,7 +1146,8 @@ export const ModelEvalResultScreen: React.FC = () => {
   const [tablePage, setTablePage] = useState(1);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [sampleTab, setSampleTab] = useState<"fail" | "pass">("fail");
-  const [activeTab, setActiveTab] = useState<"result" | "rubric">("result");
+  const [activeTab, setActiveTab] = useState<"ft" | "base" | "compare">("ft");
+  const [rubricOpen, setRubricOpen] = useState(false);
   const [reviewState, setReviewState] = useState<
     Record<
       number,
@@ -920,7 +1210,14 @@ export const ModelEvalResultScreen: React.FC = () => {
       </div>
     );
 
-  const max = data.summary.max_possible;
+  // activeTab "base" swaps summary/results to base model data
+  const activeResults = activeTab === "base"
+    ? (data.baseResults ?? data.results)
+    : data.results;
+  const activeSummary = activeTab === "base"
+    ? (data.baseSummary ?? data.summary)
+    : data.summary;
+  const max = activeSummary.max_possible ?? 5;
   const judgeLabel = data.judgeModel
     ? data.judgeModel.includes("sonnet")
       ? "Sonnet"
@@ -933,24 +1230,27 @@ export const ModelEvalResultScreen: React.FC = () => {
 
   // Radar data
   const radarData = [
-    { axis: "Socratic", value: data.summary.group_a, fullMark: max },
-    { axis: "Accuracy", value: data.summary.group_b, fullMark: max },
-    { axis: "Pedagogy", value: data.summary.group_c, fullMark: max },
-    { axis: "Hall+Speed", value: data.summary.group_d, fullMark: max },
+    { axis: "Socratic", value: activeSummary.group_a, fullMark: max },
+    { axis: "Accuracy", value: activeSummary.group_b, fullMark: max },
+    { axis: "Pedagogy", value: activeSummary.group_c, fullMark: max },
+    { axis: "Hall+Speed", value: activeSummary.group_d, fullMark: max },
   ];
 
   // Criteria bar chart — map code → friendly label
-  const criteriaChartData = Object.entries(data.summary.criteria ?? {}).map(
-    ([k, v]) => ({
-      name: k,
-      fullName: CRITERIA_META[k]?.name ?? k,
-      score: parseFloat(v.toFixed(2)),
-      pct: parseFloat(((v / max) * 100).toFixed(1)),
-    }),
+  const criteriaChartData = Object.entries(activeSummary.criteria ?? {}).map(
+    ([k, v]) => {
+      const val = Number(v);
+      return {
+        name: k,
+        fullName: CRITERIA_META[k]?.name ?? k,
+        score: parseFloat(val.toFixed(2)),
+        pct: parseFloat(((val / max) * 100).toFixed(1)),
+      };
+    },
   );
 
   // Sorted table
-  const indexed = data.results.map((r, i) => ({ ...r, _origIdx: i }));
+  const indexed = activeResults.map((r, i) => ({ ...r, _origIdx: i }));
   const sorted = [...indexed].sort((a, b) => {
     let v = 0;
     if (sortKey === "overall")
@@ -987,25 +1287,25 @@ export const ModelEvalResultScreen: React.FC = () => {
   );
 
   // A1 hard constraint triggered count
-  const constraintCount = data.results.filter(
+  const constraintCount = activeResults.filter(
     (r) => r.group_scores?.a1_hard_constraint_triggered,
   ).length;
   // Notable samples — top 3 fail và top 3 pass có replay_turns
-  const failSamples = [...data.results]
+  const failSamples = [...activeResults]
     .filter((r) => r.replay_turns && r.replay_turns.length > 0)
     .sort(
       (a, b) => (a.group_scores?.overall ?? 0) - (b.group_scores?.overall ?? 0),
     )
     .slice(0, 3);
 
-  const passSamples = [...data.results]
+  const passSamples = [...activeResults]
     .filter((r) => r.replay_turns && r.replay_turns.length > 0)
     .sort(
       (a, b) => (b.group_scores?.overall ?? 0) - (a.group_scores?.overall ?? 0),
     )
     .slice(0, 3);
 
-  const hasReplayData = data.results.some(
+  const hasReplayData = activeResults.some(
     (r) => r.replay_turns && r.replay_turns.length > 0,
   );
 
@@ -1029,7 +1329,7 @@ export const ModelEvalResultScreen: React.FC = () => {
         }),
       });
       if (!res.ok) throw new Error("Failed");
-      const json = await res.json();
+        await res.json();
       // Cập nhật local data
       setData((prev) => {
         if (!prev) return prev;
@@ -1145,32 +1445,65 @@ export const ModelEvalResultScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Tab bar */}
+      {/* Tab bar + Rubric button */}
       <div className="bg-white border-b border-slate-200">
-        <div className="max-w-6xl mx-auto px-6 flex gap-0">
-          {(
-            [
-              ["result", "Kết quả đánh giá"],
-              ["rubric", "Rubric chấm điểm"],
-            ] as const
-          ).map(([tab, label]) => (
+        <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between">
+          <div className="flex gap-0">
             <button
-              key={tab}
               type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`px-5 py-3 text-sm font-semibold border-b-2 transition -mb-px ${
-                activeTab === tab
-                  ? "border-slate-800 text-slate-800"
-                  : "border-transparent text-slate-400 hover:text-slate-600"
-              }`}
+              onClick={() => setActiveTab("ft")}
+              className={`px-5 py-3 text-sm font-semibold border-b-2 transition -mb-px ${activeTab === "ft" ? "border-slate-800 text-slate-800" : "border-transparent text-slate-400 hover:text-slate-600"}`}
             >
-              {label}
+              Fine-tuned
             </button>
-          ))}
+            {data.evalMode === "paired" && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("base")}
+                  className={`px-5 py-3 text-sm font-semibold border-b-2 transition -mb-px ${activeTab === "base" ? "border-slate-800 text-slate-800" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+                >
+                  Base model
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("compare")}
+                  className={`px-5 py-3 text-sm font-semibold border-b-2 transition -mb-px ${activeTab === "compare" ? "border-indigo-600 text-indigo-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+                >
+                  So sánh Base vs FT
+                </button>
+              </>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setRubricOpen(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 border border-slate-200 hover:border-slate-400 px-3 py-1.5 rounded-lg transition"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+            Rubric chấm điểm
+          </button>
         </div>
       </div>
 
-      {activeTab === "result" ? (
+      {/* Rubric Modal */}
+      {rubricOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8">
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl z-10">
+              <h2 className="text-base font-bold text-slate-800">Rubric chấm điểm — Socratic Tutor Evaluation</h2>
+              <button type="button" onClick={() => setRubricOpen(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="overflow-y-auto">
+              <RubricTab />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(activeTab === "ft" || activeTab === "base") ? (
         <div className="max-w-[1400px] mx-auto px-6 py-8 flex gap-8 items-start">
           {/* ── Sticky sidebar ── */}
           <aside className="hidden lg:flex flex-col gap-1 w-52 shrink-0 sticky top-28">
@@ -1178,10 +1511,10 @@ export const ModelEvalResultScreen: React.FC = () => {
               Điều hướng
             </p>
             {[
-              { id: "overview", label: "Tổng quan điểm số", icon: "◎" },
-              { id: "criteria", label: "Chi tiết 9 tiêu chí", icon: "▦" },
-              { id: "samples", label: "Mẫu fail / pass", icon: "◈" },
-              { id: "conversations", label: "Từng conversation", icon: "☰" },
+              { id: 'overview',      label: 'Tổng quan điểm số',     icon: '◎' },
+              { id: 'criteria',      label: 'Chi tiết 9 tiêu chí',   icon: '▦' },
+              { id: 'samples',       label: 'Mẫu fail / pass',        icon: '◈' },
+              { id: 'conversations', label: 'Từng conversation',      icon: '☰' },
             ].map(({ id, label, icon }) => (
               <button
                 key={id}
@@ -1214,12 +1547,15 @@ export const ModelEvalResultScreen: React.FC = () => {
 
           {/* ── Main content ── */}
           <div className="flex-1 min-w-0 space-y-8">
+
             {/* ═══════════════════════════════════════════════════════
-              ZONE 1 — Tổng quan điểm số
-          ═══════════════════════════════════════════════════════ */}
+            ZONE 1 — Tổng quan điểm số
+        ═══════════════════════════════════════════════════════ */}
             <section id="overview">
               <div className="flex items-center gap-2 mb-3">
-                <h2 className="text-base font-bold text-slate-700">Tổng quan điểm số</h2>
+                <h2 className="text-base font-bold text-slate-700">
+                  Tổng quan điểm số
+                </h2>
                 <span className="text-xs text-slate-400">
                   — thang 0–{max}, đánh giá {data.totalConversations}{" "}
                   conversations
@@ -1234,7 +1570,7 @@ export const ModelEvalResultScreen: React.FC = () => {
                       Overall Score
                     </div>
                     <ScoreRing
-                      value={data.summary.overall}
+                      value={activeSummary.overall}
                       max={max}
                       label="Overall"
                       color="purple"
@@ -1260,25 +1596,25 @@ export const ModelEvalResultScreen: React.FC = () => {
                     {[
                       {
                         key: "group_a",
-                        val: data.summary.group_a,
+                        val: activeSummary.group_a,
                         label: "A · Socratic",
                         color: "indigo",
                       },
                       {
                         key: "group_b",
-                        val: data.summary.group_b,
+                        val: activeSummary.group_b,
                         label: "B · Accuracy",
                         color: "orange",
                       },
                       {
                         key: "group_c",
-                        val: data.summary.group_c,
+                        val: activeSummary.group_c,
                         label: "C · Pedagogy",
                         color: "teal",
                       },
                       {
                         key: "group_d",
-                        val: data.summary.group_d,
+                        val: activeSummary.group_d,
                         label: "D · Hall+Spd",
                         color: "sky",
                       },
@@ -1334,33 +1670,33 @@ export const ModelEvalResultScreen: React.FC = () => {
                     </div>
                     <div className="flex items-baseline gap-1">
                       <span className="text-2xl font-bold text-slate-800">
-                        {data.summary.avg_latency_ms?.toFixed(0) ?? "—"}
+                        {activeSummary.avg_latency_ms?.toFixed(0) ?? "—"}
                       </span>
                       <span className="text-sm text-slate-400">ms</span>
                     </div>
                     <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full ${(data.summary.avg_latency_ms ?? 0) <= 2000 ? "bg-emerald-400" : (data.summary.avg_latency_ms ?? 0) <= 7000 ? "bg-amber-400" : "bg-red-400"}`}
+                        className={`h-full rounded-full ${(activeSummary.avg_latency_ms ?? 0) <= 2000 ? "bg-emerald-400" : (activeSummary.avg_latency_ms ?? 0) <= 7000 ? "bg-amber-400" : "bg-red-400"}`}
                         style={{
-                          width: `${Math.min(((data.summary.avg_latency_ms ?? 0) / 15000) * 100, 100)}%`,
+                          width: `${Math.min(((activeSummary.avg_latency_ms ?? 0) / 15000) * 100, 100)}%`,
                         }}
                       />
                     </div>
                     <p className="text-[10px] text-slate-400 mt-1">
-                      {(data.summary.avg_latency_ms ?? 0) <= 2000
+                      {(activeSummary.avg_latency_ms ?? 0) <= 2000
                         ? "≤2s — 5đ (tốt nhất)"
-                        : (data.summary.avg_latency_ms ?? 0) <= 4000
+                        : (activeSummary.avg_latency_ms ?? 0) <= 4000
                           ? "2–4s — 4đ"
-                          : (data.summary.avg_latency_ms ?? 0) <= 7000
+                          : (activeSummary.avg_latency_ms ?? 0) <= 7000
                             ? "4–7s — 3đ"
-                            : (data.summary.avg_latency_ms ?? 0) <= 12000
+                            : (activeSummary.avg_latency_ms ?? 0) <= 12000
                               ? "7–12s — 2đ"
                               : ">12s — 1đ"}
                     </p>
                   </div>
 
                   {/* Confidence */}
-                  {data.summary.avg_confidence != null && (
+                  {activeSummary.avg_confidence != null && (
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
                         Judge Confidence
@@ -1368,34 +1704,34 @@ export const ModelEvalResultScreen: React.FC = () => {
                       <div className="flex items-baseline gap-1">
                         <span
                           className={`text-2xl font-bold ${
-                            data.summary.avg_confidence >= 0.8
+                            activeSummary.avg_confidence >= 0.8
                               ? "text-emerald-700"
-                              : data.summary.avg_confidence >= 0.6
+                              : activeSummary.avg_confidence >= 0.6
                                 ? "text-amber-700"
                                 : "text-red-600"
                           }`}
                         >
-                          {(data.summary.avg_confidence * 100).toFixed(0)}%
+                          {(activeSummary.avg_confidence * 100).toFixed(0)}%
                         </span>
                         <span className="text-sm text-slate-400">avg</span>
                       </div>
                       <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                         <div
                           className={`h-full rounded-full transition-all ${
-                            data.summary.avg_confidence >= 0.8
+                            activeSummary.avg_confidence >= 0.8
                               ? "bg-emerald-400"
-                              : data.summary.avg_confidence >= 0.6
+                              : activeSummary.avg_confidence >= 0.6
                                 ? "bg-amber-400"
                                 : "bg-red-400"
                           }`}
                           style={{
-                            width: `${data.summary.avg_confidence * 100}%`,
+                            width: `${activeSummary.avg_confidence * 100}%`,
                           }}
                         />
                       </div>
                       <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                        {(data.summary.low_confidence_count ?? 0) > 0
-                          ? `${data.summary.low_confidence_count} conversation có điểm phân tán cao — judge có thể không nhất quán`
+                        {(activeSummary.low_confidence_count ?? 0) > 0
+                          ? `${activeSummary.low_confidence_count} conversation có điểm phân tán cao — judge có thể không nhất quán`
                           : "Điểm các tiêu chí đồng đều — judge nhất quán"}
                       </p>
                       <p className="text-[10px] text-slate-300 mt-1 italic">
@@ -1405,7 +1741,7 @@ export const ModelEvalResultScreen: React.FC = () => {
                   )}
 
                   {/* Non-scoring metrics */}
-                  {data.summary.non_scoring && (
+                  {activeSummary.non_scoring && (
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
                         Metric tham chiếu
@@ -1417,17 +1753,17 @@ export const ModelEvalResultScreen: React.FC = () => {
                         {[
                           {
                             label: "BLEU-4",
-                            val: data.summary.non_scoring.bleu,
+                            val: activeSummary.non_scoring.bleu,
                             note: "n-gram overlap (thấp với tiếng Việt là bình thường)",
                           },
                           {
                             label: "ROUGE-L",
-                            val: data.summary.non_scoring.rouge_l,
+                            val: activeSummary.non_scoring.rouge_l,
                             note: "Longest common subsequence",
                           },
                           {
                             label: "Question Rate",
-                            val: data.summary.non_scoring
+                            val: activeSummary.non_scoring
                               .question_detection_rate,
                             note: "% turn kết thúc bằng câu hỏi",
                           },
@@ -1461,19 +1797,19 @@ export const ModelEvalResultScreen: React.FC = () => {
             </section>
             {/* Review progress banner */}
             {(() => {
-              const total = data.results.length;
-              const reviewed = data.results.filter(
+              const total = activeResults.length;
+              const reviewed = activeResults.filter(
                 (r) => r.human_review,
               ).length;
-              const agreed = data.results.filter(
+              const agreed = activeResults.filter(
                 (r) => r.human_review?.verdict === "agree",
               ).length;
-              const disagreed = data.results.filter(
+              const disagreed = activeResults.filter(
                 (r) => r.human_review?.verdict === "disagree",
               ).length;
               const agreementRate =
                 reviewed -
-                data.results.filter((r) => r.human_review?.verdict === "skip")
+                activeResults.filter((r) => r.human_review?.verdict === "skip")
                   .length;
               const agrPct =
                 agreementRate > 0
@@ -1619,7 +1955,7 @@ export const ModelEvalResultScreen: React.FC = () => {
                       {/* Criteria */}
                       <div className="px-5 py-3">
                         {codes.map((code) => {
-                          const score = data.summary.criteria?.[code] ?? 0;
+                          const score = activeSummary.criteria?.[code] ?? 0;
                           // Lấy reason tổng hợp từ conversation đầu tiên (nếu có)
                           // const sampleReason = data.results[0]?.criteria_reasons?.[`${code.toLowerCase()}_${CRITERIA_META[code]?.name.toLowerCase().replace(/ /g, '_')}`] ?? '';
                           const barColor =
@@ -1827,7 +2163,7 @@ export const ModelEvalResultScreen: React.FC = () => {
                               >
                                 {ov.toFixed(3)}
                                 <span className="text-xs font-normal text-slate-400">
-                                  /{data.summary.max_possible}
+                                  /{activeSummary.max_possible}
                                 </span>
                               </span>
                               {constraint && (
@@ -2460,9 +2796,9 @@ export const ModelEvalResultScreen: React.FC = () => {
             </section>
           </div>
         </div>
-      ) : (
-        <RubricTab />
-      )}
+      ) : activeTab === "compare" ? (
+        <CompareTab data={data} />
+      ) : null}
     </div>
   );
 };
