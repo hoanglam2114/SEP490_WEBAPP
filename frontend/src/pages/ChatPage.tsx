@@ -446,16 +446,16 @@ function ChatPanel({
 
         setLoading(true);
         try {
-            const response = await fetch(`/api/model-registry/${registryId}/production`);
+            const response = await fetch(`/api/model-registry/${registryId}/active`);
             if (!response.ok) {
                 const err = await response.json();
-                throw new Error(err.message || 'Không tìm thấy bản Production');
+                throw new Error(err.message || 'Không tìm thấy bản Active');
             }
-            const productionVersion = await response.json();
-            setHfHubId(productionVersion.hfRepoId);
+            const activeVersion = await response.json();
+            setHfHubId(activeVersion.hfRepoId);
             setLoadError(null);
             onLog?.({
-                message: `Đã tự động chọn bản Production: ${productionVersion.version} (${productionVersion.hfRepoId})`,
+                message: `Đã tự động chọn bản Active (Use): ${activeVersion.version} (${activeVersion.hfRepoId})`,
                 type: "success",
                 instanceId
             });

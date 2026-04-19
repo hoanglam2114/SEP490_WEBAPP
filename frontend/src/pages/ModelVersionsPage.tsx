@@ -30,10 +30,8 @@ interface ModelRegistry {
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const colors: Record<string, string> = {
-    'Production': 'bg-green-100 text-green-800 border-green-200',
-    'Staging': 'bg-blue-100 text-blue-800 border-blue-200',
-    'Development': 'bg-yellow-100 text-yellow-800 border-yellow-200',
-    'Archived': 'bg-gray-100 text-gray-800 border-gray-200',
+    'Use': 'bg-green-100 text-green-800 border-green-200',
+    'Not Use': 'bg-gray-100 text-gray-800 border-gray-200',
   };
 
   return (
@@ -180,7 +178,7 @@ export const ModelVersionsPage: React.FC = () => {
                         <div>
                           <div className="flex items-center gap-2">
                             <div className="font-bold text-gray-900">{v.version}</div>
-                            {v.status === 'Production' && <Shield size={14} className="text-green-600" title="Live in Production" />}
+                            {v.status === 'Use' && <Shield size={14} className="text-green-600" title="Active Model" />}
                           </div>
                           <div className="text-[10px] text-gray-400 mt-0.5">{new Date(v.createdAt).toLocaleDateString()}</div>
                         </div>
@@ -204,6 +202,11 @@ export const ModelVersionsPage: React.FC = () => {
                           <div className="text-[10px] text-gray-500">
                             Acc: {v.metrics.accuracy ? (v.metrics.accuracy * 100).toFixed(1) + '%' : '-'}
                           </div>
+                          {v.metrics.loss !== undefined && (
+                            <div className="text-[10px] text-red-500 font-medium">
+                              Loss: {v.metrics.loss.toFixed(4)}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <span className="text-gray-400 text-xs">—</span>
@@ -216,10 +219,8 @@ export const ModelVersionsPage: React.FC = () => {
                           value={v.status}
                           onChange={(e) => handleStatusChange(v._id, e.target.value)}
                         >
-                          <option value="Development">Development</option>
-                          <option value="Staging">Staging</option>
-                          <option value="Production">Production</option>
-                          <option value="Archived">Archived</option>
+                          <option value="Use">Use</option>
+                          <option value="Not Use">Not Use</option>
                         </select>
                         <button
                           onClick={() => handleDelete(v._id, v.version)}
@@ -326,17 +327,17 @@ export const ModelVersionsPage: React.FC = () => {
                         
                         {/* Rollback/Promote Action */}
                         <div className="mt-6 pt-4 border-t border-gray-200 flex justify-end gap-3">
-                           {v.status !== 'Production' && (
+                           {v.status !== 'Use' && (
                              <button
-                               onClick={(e) => { e.stopPropagation(); handleStatusChange(v._id, 'Production'); }}
+                               onClick={(e) => { e.stopPropagation(); handleStatusChange(v._id, 'Use'); }}
                                className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-lg shadow-sm transition-all"
                              >
-                               <Zap size={14} /> Promote to Production (Rollback if older)
+                               <Zap size={14} /> Kích hoạt model này (Active)
                              </button>
                            )}
-                           {v.status === 'Production' && (
+                           {v.status === 'Use' && (
                              <span className="text-xs text-green-600 font-bold flex items-center gap-1 bg-green-50 px-3 py-1.5 rounded-full border border-green-100">
-                               <Shield size={14} /> Currently Live
+                               <Shield size={14} /> Đang được sử dụng
                              </span>
                            )}
                         </div>

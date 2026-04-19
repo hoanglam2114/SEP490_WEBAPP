@@ -135,7 +135,7 @@ export class ModelRegistryController {
         configSnapshot,
         datasetInfo,
         promptVersion,
-        status: status || ModelVersionStatus.DEVELOPMENT,
+        status: status || ModelVersionStatus.NOT_USE,
       });
 
       res.status(201).json(newVersion);
@@ -159,15 +159,15 @@ export class ModelRegistryController {
 
       if (!version) return res.status(404).json({ message: 'Version not found' });
 
-      // If status is PRODUCTION, we might want to demote other versions of the same registry
-      if (status === ModelVersionStatus.PRODUCTION) {
+      // If status is USE, we might want to demote other versions of the same registry
+      if (status === ModelVersionStatus.USE) {
         await ModelVersion.updateMany(
           {
             modelRegistryId: version.modelRegistryId,
             _id: { $ne: version._id },
-            status: ModelVersionStatus.PRODUCTION
+            status: ModelVersionStatus.USE
           },
-          { status: ModelVersionStatus.STAGING }
+          { status: ModelVersionStatus.NOT_USE }
         );
       }
 
@@ -219,16 +219,16 @@ export class ModelRegistryController {
     }
   }
 
-  async getProductionVersion(req: Request, res: Response) {
+  async getActiveVersion(req: Request, res: Response) {
     try {
       const { registryId } = req.params;
       const version = await ModelVersion.findOne({
         modelRegistryId: registryId,
-        status: ModelVersionStatus.PRODUCTION
+        status: ModelVersionStatus.USE
       }).populate('trainingHistoryId');
 
       if (!version) {
-        return res.status(404).json({ message: 'No production version found for this registry' });
+        return res.status(404).json({ message: 'No active version found for this registry' });
       }
 
       res.json(version);

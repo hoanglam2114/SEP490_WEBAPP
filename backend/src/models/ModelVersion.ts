@@ -1,10 +1,8 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export enum ModelVersionStatus {
-  DEVELOPMENT = 'Development',
-  STAGING = 'Staging',
-  PRODUCTION = 'Production',
-  ARCHIVED = 'Archived',
+  USE = 'Use',
+  NOT_USE = 'Not Use',
 }
 
 export interface IModelVersion extends Document {
@@ -43,7 +41,7 @@ const ModelVersionSchema = new Schema<IModelVersion>(
     status: {
       type: String,
       enum: Object.values(ModelVersionStatus),
-      default: ModelVersionStatus.DEVELOPMENT,
+      default: ModelVersionStatus.NOT_USE,
     },
     metrics: { type: Schema.Types.Mixed },
     configSnapshot: { type: Schema.Types.Mixed },
