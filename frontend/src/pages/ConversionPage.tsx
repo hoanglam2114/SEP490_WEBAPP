@@ -2774,18 +2774,13 @@ export function ConversionPage() {
       setClusteredResult(result);
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
-        const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
-        conversations.forEach((conv, idx) => {
-          const groupId = result.assignments[idx] ?? 0;
-          rowsWithClusterGroups.forEach((row) => {
-            if (row.blockId === String(conv.conversation_id)) {
-              nextMap[row.id] = groupId;
-            }
-          });
+        normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
+          nextMap[String(conv.conversation_id)] = result.assignments[idx] ?? 0;
         });
       } else {
-        allRows.forEach((row, idx) => {
-          nextMap[row.id] = result.assignments[idx] ?? 0;
+        result.data.forEach((item, idx) => {
+          const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${idx}`);
+          nextMap[rowId] = (item as any).cluster ?? result.assignments[idx] ?? 0;
         });
       }
       setRowClusterMap(nextMap);
@@ -2830,6 +2825,21 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setSelectedClusterIds([]);
+
+    // Restore rowClusterMap from the saved cluster assignments
+    const nextMap: Record<string, number> = {};
+    if (previewMode === 'openai') {
+      normalizeOpenAIConversations(clusteredResult.data).forEach((conv, idx) => {
+        nextMap[String(conv.conversation_id)] = clusteredResult.assignments[idx] ?? 0;
+      });
+    } else {
+      clusteredResult.data.forEach((item, idx) => {
+        const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${idx}`);
+        nextMap[rowId] = (item as any).cluster ?? clusteredResult.assignments[idx] ?? 0;
+      });
+    }
+    setRowClusterMap(nextMap);
+
     toast.success('Reset to pre-filter clustered state.');
   };
 
