@@ -2986,11 +2986,16 @@ export function ConversionPage() {
     zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
     zip.file('test_dataset.json', JSON.stringify(testData, null, 2));
     zip.file(
-      'metadata.json',
+      '_metadata.json',
       JSON.stringify(
         {
-          promptId: selectedPromptId || null,
+          projectName: projectName.trim() || 'dataset',
+          datasetVersionId: currentDatasetVersionId || null,
+          systemPrompt: effectivePromptContent || null,
           systemPromptVersion: selectedSystemPromptVersion || null,
+          totalTrain: trainData.length,
+          totalTest: testData.length,
+          exportedAt: new Date().toISOString(),
         },
         null,
         2

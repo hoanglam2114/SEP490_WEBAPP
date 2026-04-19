@@ -19,6 +19,8 @@ interface TrainingHistoryItem {
   datasetSource: string;
   datasetName: string;
   columnMapping: string;
+  systemPromptVersion?: string;
+  datasetVersionId?: string;
   parameters: {
     batchSize: number;
     epochs: number;
@@ -176,9 +178,10 @@ export const TrainingHistoryScreen: React.FC = () => {
   };
 
   const openRegisterModal = async (item: TrainingHistoryItem) => {
+    const itemSnapshot = histories.find(h => h.jobId === item.jobId) || item;
     setShowRegisterModal(item.jobId);
     setVersionName('v1.0.0');
-    setPromptVersion('Default');
+    setPromptVersion(itemSnapshot.systemPromptVersion || 'Default');
     setSelectedEvalId('');
     setJobEvaluations([]);
     
@@ -558,6 +561,18 @@ export const TrainingHistoryScreen: React.FC = () => {
                                   <span className="text-slate-500">Dataset</span>
                                   <span className="text-slate-700">{item.datasetName} ({item.datasetSource})</span>
                                 </div>
+                                {item.datasetVersionId && (
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-500 text-xs">Dataset Ver ID</span>
+                                    <span className="text-slate-700 font-mono text-[10px]">{item.datasetVersionId}</span>
+                                  </div>
+                                )}
+                                {item.systemPromptVersion && (
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-500 text-xs">Prompt Version</span>
+                                    <span className="text-slate-700 font-semibold">{item.systemPromptVersion}</span>
+                                  </div>
+                                )}
                                 <div className="flex justify-between">
                                   <span className="text-slate-500">Training Duration</span>
                                   <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>
@@ -579,6 +594,18 @@ export const TrainingHistoryScreen: React.FC = () => {
                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Dataset</span>
                             <span className="text-slate-700">{item.datasetName}</span>
                           </div>
+                          {item.datasetVersionId && (
+                            <div className="flex flex-col">
+                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Dataset ID</span>
+                              <span className="text-slate-700 font-mono text-[10px] truncate">{item.datasetVersionId}</span>
+                            </div>
+                          )}
+                          {item.systemPromptVersion && (
+                            <div className="flex flex-col">
+                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Prompt Version</span>
+                              <span className="text-slate-700 font-semibold">{item.systemPromptVersion}</span>
+                            </div>
+                          )}
                           <div className="flex flex-col">
                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Duration</span>
                             <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>

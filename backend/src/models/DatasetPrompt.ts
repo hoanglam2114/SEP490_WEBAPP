@@ -10,17 +10,17 @@ export interface IDatasetPrompt extends Document {
 
 const DatasetPromptSchema = new Schema<IDatasetPrompt>(
   {
-    projectName: { type: String, required: true, trim: true },
-    version: { type: Number, required: true },
+    projectName: { type: String, required: true, index: true, trim: true },
+    version: { type: Number, required: true, min: 1 },
     content: { type: String, required: true },
-    description: { type: String },
-    createdAt: { type: Date, default: Date.now },
+    description: { type: String, default: '' },
   },
   {
-    versionKey: false,
+    timestamps: true,
   }
 );
 
 DatasetPromptSchema.index({ projectName: 1, version: 1 }, { unique: true });
+DatasetPromptSchema.index({ projectName: 1, createdAt: -1 });
 
 export const DatasetPrompt = mongoose.model<IDatasetPrompt>('DatasetPrompt', DatasetPromptSchema);

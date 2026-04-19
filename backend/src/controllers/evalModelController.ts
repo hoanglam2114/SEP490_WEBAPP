@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { ModelEvaluation, IEvalResult } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';
+import { isZipFile, extractForEvaluation, cleanupTempDir, DatasetMetadata } from '../services/zipService';
 dotenv.config();
 
 const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
@@ -126,6 +127,7 @@ function normalizeEvalResult(result: any) {
 // GPU nhận file + hf_repo_id → load model → chạy run_auto_evaluation()
 // ---------------------------------------------------------------------------
 export const runEvaluation = async (req: Request, res: Response) => {
+  let zipTempDir: string | null = null;
   try {
     const { jobId } = req.params;
 
@@ -149,6 +151,30 @@ export const runEvaluation = async (req: Request, res: Response) => {
     const evalFile = req.file;
     if (!evalFile) {
       return res.status(400).json({ error: 'Thiếu file đánh giá (eval_file)' });
+    }
+
+    // ── ZIP Extraction ─────────────────────────────────────────────────────────
+    let zipMetadata: DatasetMetadata | null = null;
+    if (isZipFile(evalFile.originalname)) {
+      try {
+        const extracted = extractForEvaluation(evalFile.path);
+        zipMetadata = extracted.metadata;
+        zipTempDir = extracted.tempDir;
+
+        // Replace multer file properties with extracted dataset
+        evalFile.path = extracted.dataFilePath;
+        evalFile.originalname = extracted.dataFileName;
+        evalFile.size = fs.statSync(extracted.dataFilePath).size;
+        evalFile.mimetype = 'application/json';
+
+        console.log('[Backend] ZIP extracted for evaluation:', extracted.dataFileName);
+        if (zipMetadata) {
+          console.log('[Backend] ZIP metadata found:', JSON.stringify(zipMetadata));
+        }
+      } catch (zipErr: any) {
+        fs.unlink(evalFile.path, () => {});
+        return res.status(400).json({ error: zipErr.message || 'Failed to extract ZIP file.' });
+      }
     }
 
     // 3. Tạo eval_job_id
@@ -179,6 +205,11 @@ export const runEvaluation = async (req: Request, res: Response) => {
       ftModelRepo:  history.hfRepoId,
       baseModelRepo:config.base_model_hf_repo || undefined,
       judgeModel:   config.judge_model,
+      // Dataset & Prompt traceability from ZIP metadata
+      systemPrompt:       zipMetadata?.systemPrompt || '',
+      systemPromptVersion:zipMetadata?.systemPromptVersion || '',
+      datasetVersionId:   zipMetadata?.datasetVersionId || '',
+      datasetVersionName: zipMetadata?.datasetVersionName || '',
       summary: {
         overall: 0,
         group_a: 0, group_b: 0, group_c: 0, group_d: 0,
@@ -253,6 +284,9 @@ export const runEvaluation = async (req: Request, res: Response) => {
     fs.unlink(evalFile.path, (err) => {
       if (err) console.warn(`[Backend] Could not delete eval temp file: ${evalFile.path}`);
     });
+
+    // Clean up ZIP temp dir if used
+    if (zipTempDir) cleanupTempDir(zipTempDir);
 
     // 9. Update TrainingHistory status → EVALUATING
     await TrainingHistory.updateOne({ jobId }, { status: 'EVALUATING' });
@@ -561,7 +595,7 @@ export const getEvalHistory = async (req: Request, res: Response) => {
 
     const evals = await ModelEvaluation.find({ jobId, status: 'COMPLETED' })
       .sort({ completedAt: -1 })
-      .select('modelEvalId jobId status totalConversations judgeModel summary startedAt completedAt')
+      .select('modelEvalId jobId status totalConversations judgeModel summary startedAt completedAt systemPromptVersion datasetVersionName')
       .lean();
 
     // Gắn isPinned vào từng eval

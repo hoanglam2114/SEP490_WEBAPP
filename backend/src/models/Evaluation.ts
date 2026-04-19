@@ -64,6 +64,11 @@ export interface IEvaluation extends Document {
   createdAt: Date;
   updatedAt: Date;
   flags?: string[];
+  // Dataset & Prompt traceability
+  systemPrompt?: string;
+  systemPromptVersion?: string;
+  datasetVersionId?: string;
+  datasetVersionName?: string;
 }
 
 const EvaluationResultSchema = new Schema<IEvalResult>(
@@ -101,6 +106,11 @@ const EvaluationSchema = new Schema<IEvaluation>(
     completedAt:       { type: Date, required: true },
     judgeModel:        { type: String, default: 'claude-sonnet-4-5-20251001' },
     flags:             { type: [String], default: [] },
+    // Dataset & Prompt traceability
+    systemPrompt:       { type: String, default: '' },
+    systemPromptVersion:{ type: String, default: '' },
+    datasetVersionId:   { type: String, default: '' },
+    datasetVersionName: { type: String, default: '' },
   },
   { timestamps: true }
 );

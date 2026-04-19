@@ -63,8 +63,8 @@ const upload = multer({
   },
   fileFilter: (_req, file, cb) => {
     // Thêm các định dạng phổ biến cho Machine Learning: .json, .jsonl, .csv, .txt
-    const allowedMimeTypes = ['application/json', 'text/csv', 'text/plain', 'application/octet-stream'];
-    const allowedExtensions = ['.json', '.jsonl', '.csv', '.txt'];
+    const allowedMimeTypes = ['application/json', 'text/csv', 'text/plain', 'application/octet-stream', 'application/zip', 'application/x-zip-compressed'];
+    const allowedExtensions = ['.json', '.jsonl', '.csv', '.txt', '.zip'];
 
     const isMimeTypeValid = allowedMimeTypes.includes(file.mimetype);
     const isExtensionValid = allowedExtensions.some(ext => file.originalname.endsWith(ext));
@@ -72,7 +72,7 @@ const upload = multer({
     if (isMimeTypeValid || isExtensionValid) {
       cb(null, true);
     } else {
-      cb(new Error('Only JSON, JSONL, CSV, and TXT files are allowed for training data.'));
+      cb(new Error('Only JSON, JSONL, CSV, TXT, and ZIP files are allowed.'));
     }
   },
 });
@@ -168,8 +168,9 @@ router.get('/model-versions/download-dataset/:id', (req, res) => registryControl
 router.get('/model-registry/:registryId/active', (req, res) => registryController.getActiveVersion(req, res));
 
 // Dataset Prompt Routes
-router.get('/prompts/project/:projectName', (req, res) => promptController.getProjectPrompts(req, res));
-router.post('/prompts', (req, res) => promptController.createPrompt(req, res));
-router.delete('/prompts/:id', (req, res) => promptController.deletePrompt(req, res));
+router.get('/dataset-prompts/project/:projectName', (req, res) => promptController.listByProject(req, res));
+router.get('/dataset-prompts/:id', (req, res) => promptController.getById(req, res));
+router.post('/dataset-prompts', (req, res) => promptController.create(req, res));
+router.delete('/dataset-prompts/:id', (req, res) => promptController.delete(req, res));
 
 export default router;

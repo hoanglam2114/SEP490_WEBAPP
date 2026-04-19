@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { TrainingHistory } from '../models/TrainingHistory';
 import path from 'path';
+import { isZipFile, extractForTraining, cleanupTempDir, DatasetMetadata } from '../services/zipService';
 dotenv.config();
 
 /**
@@ -131,6 +132,7 @@ async function hfRepoCheckpointProbe(
 // to the GPU service as multipart/form-data, then returns the response to FE.
 // ---------------------------------------------------------------------------
 export const startTraining = async (req: Request, res: Response) => {
+  let zipTempDir: string | null = null;
   try {
     const {
       model_name,
@@ -170,6 +172,33 @@ export const startTraining = async (req: Request, res: Response) => {
     console.log('[Backend] Using finalColumnMapping:', finalColumnMapping);
 
     const datasetFile = req.file; // populated by multer when a file is uploaded
+
+    // ── ZIP Extraction ─────────────────────────────────────────────────────────
+    // If the uploaded file is a ZIP, extract the train dataset + metadata.
+    // The extracted JSON file replaces the original multer file for downstream processing.
+    let zipMetadata: DatasetMetadata | null = null;
+    if (datasetFile && isZipFile(datasetFile.originalname)) {
+      try {
+        const extracted = extractForTraining(datasetFile.path);
+        zipMetadata = extracted.metadata;
+        zipTempDir = extracted.tempDir;
+
+        // Replace multer file properties with the extracted JSON file
+        datasetFile.path = extracted.dataFilePath;
+        datasetFile.originalname = extracted.dataFileName;
+        datasetFile.size = fs.statSync(extracted.dataFilePath).size;
+        datasetFile.mimetype = 'application/json';
+
+        console.log('[Backend] ZIP extracted for training:', extracted.dataFileName);
+        if (zipMetadata) {
+          console.log('[Backend] ZIP metadata found:', JSON.stringify(zipMetadata));
+        }
+      } catch (zipErr: any) {
+        // Clean up original multer file
+        fs.unlink(datasetFile.path, () => {});
+        return res.status(400).json({ error: zipErr.message || 'Failed to extract ZIP file.' });
+      }
+    }
 
     // ── Local File Column Validation ──────────────────────────────────────────
     if (datasetFile) {
@@ -338,6 +367,10 @@ export const startTraining = async (req: Request, res: Response) => {
         jobId: job_id,
         projectName: typeof projectName === 'string' ? projectName : 'AutoTrain Job',
         baseModel: model_name,
+        // Dataset & Prompt traceability from ZIP metadata
+        systemPrompt: zipMetadata?.systemPrompt || '',
+        systemPromptVersion: zipMetadata?.systemPromptVersion || '',
+        datasetVersionId: zipMetadata?.datasetVersionId || undefined,
         datasetSource: (datasetSource as string) || (datasetFile ? 'local' : 'hub'),
         datasetName: datasetFile ? datasetFile.originalname : dataset,
         columnMapping: (columnMapping as string) || 'text',
@@ -362,7 +395,7 @@ export const startTraining = async (req: Request, res: Response) => {
         },
         pushToHub: String(push_to_hub === 'true' || push_to_hub === true) === 'true',
         hfRepoId: hf_repo_id || '',
-        status: 'QUEUED', // <--- CHANGE: Set initial status to QUEUED
+        status: 'QUEUED',
         trainingDuration: 0,
         startedAt: new Date(),
         config_snapshot: {
@@ -371,7 +404,7 @@ export const startTraining = async (req: Request, res: Response) => {
           dataset_text_field: finalColumnMapping,
         },
         datasetPath: savedDatasetPath,
-        datasetFileId: datasetFile?.filename, // Lưu lại ID file từ Multer
+        datasetFileId: datasetFile?.filename,
         workerUrl: workerUrl,
       });
       console.log(`[Backend] Initial TrainingHistory created for job ${job_id}`);
@@ -379,9 +412,13 @@ export const startTraining = async (req: Request, res: Response) => {
       console.error('[Backend] Failed to create initial TrainingHistory:', dbErr);
     }
 
+    // Clean up ZIP temp directory if used
+    if (zipTempDir) cleanupTempDir(zipTempDir);
+
     return res.status(gpuResponse.status).json(data);
   } catch (err: any) {
     console.error('[Backend] startTraining error:', err);
+    if (zipTempDir) cleanupTempDir(zipTempDir);
     return res.status(500).json({ error: err.message || 'Failed to start training' });
   }
 };

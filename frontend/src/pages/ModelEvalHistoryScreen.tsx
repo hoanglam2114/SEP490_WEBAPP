@@ -25,6 +25,8 @@ interface EvalRun {
   startedAt: string;
   completedAt: string;
   isPinned: boolean;
+  systemPromptVersion?: string;
+  datasetVersionName?: string;
 }
 
 interface HistoryResponse {
@@ -265,6 +267,7 @@ export function ModelEvalHistoryScreen() {
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">#</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">Ngày</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">Dataset/Prompt</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500">Judge</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Convs</th>
                     <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Overall</th>
@@ -309,6 +312,12 @@ export function ModelEvalHistoryScreen() {
                         <td className="px-4 py-3">
                           <div className="text-xs text-slate-700">{fmtDate(e.completedAt)}</div>
                           <div className="text-[10px] text-slate-400 mt-0.5 font-mono truncate max-w-[140px]">{e.modelEvalId}</div>
+                        </td>
+
+                        {/* Dataset/Prompt */}
+                        <td className="px-4 py-3">
+                          <div className="text-xs font-semibold text-slate-700">{e.datasetVersionName || '—'}</div>
+                          <div className="text-[10px] text-indigo-600 mt-0.5 font-medium">{e.systemPromptVersion || '—'}</div>
                         </td>
 
                         {/* Judge */}

@@ -179,18 +179,18 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
       setError('');
 
       try {
-        const response = await fetch(`/api/prompts/project/${encodeURIComponent(projectName)}`);
+        const response = await fetch(`/api/dataset-prompts/project/${encodeURIComponent(projectName)}`);
         if (!response.ok) {
           throw new Error(`Failed to fetch history: ${response.status}`);
         }
 
-        const data = (await response.json()) as PromptVersionItem[];
+        const result = (await response.json()) as { prompts: PromptVersionItem[] };
         if (!isMounted) {
           return;
         }
 
-        setHistoryList(data);
-        setSelectedHistoryId(data[0]?._id || null);
+        setHistoryList(result.prompts || []);
+        setSelectedHistoryId(result.prompts?.[0]?._id || null);
       } catch (loadError: any) {
         if (!isMounted) {
           return;
@@ -229,7 +229,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
     setError('');
 
     try {
-      const response = await fetch('/api/prompts', {
+      const response = await fetch('/api/dataset-prompts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -247,7 +247,8 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
         throw new Error(message);
       }
 
-      const created = (await response.json()) as PromptVersionItem;
+      const result = await response.json();
+      const created = result.prompt as PromptVersionItem;
       setHistoryList((prev) => [created, ...prev]);
       setSelectedHistoryId(created._id);
       setCurrentPage(1);
@@ -286,7 +287,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
     setError('');
 
     try {
-      const response = await fetch(`/api/prompts/${encodeURIComponent(promptId)}`, {
+      const response = await fetch(`/api/dataset-prompts/${encodeURIComponent(promptId)}`, {
         method: 'DELETE',
       });
 

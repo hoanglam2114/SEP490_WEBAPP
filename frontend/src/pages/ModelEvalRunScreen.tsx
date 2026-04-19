@@ -795,8 +795,8 @@ export const ModelEvalRunScreen: React.FC = () => {
   // ── Validate file ─────────────────────────────────────────────────────
   const validateAndSetFile = (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
-    if (!["json", "jsonl"].includes(ext ?? "")) {
-      setSubmitError("Chỉ chấp nhận file .json hoặc .jsonl");
+    if (!["json", "jsonl", "zip"].includes(ext ?? "")) {
+      setSubmitError("Chỉ chấp nhận file .json, .jsonl hoặc .zip");
       return;
     }
     setEvalFile(file);
@@ -805,6 +805,10 @@ export const ModelEvalRunScreen: React.FC = () => {
     setExpandedSample(null);
 
     // Parse preview client-side — không upload, chỉ đọc
+    if (ext === 'zip') {
+      setDatasetPreview(null);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -857,7 +861,7 @@ export const ModelEvalRunScreen: React.FC = () => {
           hasSystemPrompt: hasSystem,
         });
       } catch {
-        setSubmitError("File không đúng format JSON/JSONL");
+        setSubmitError("File không đúng format JSON/JSONL hoặc ZIP lỗi");
         setEvalFile(null);
       }
     };
@@ -1430,7 +1434,7 @@ export const ModelEvalRunScreen: React.FC = () => {
                     Upload file đánh giá
                   </h2>
                   <span className="text-[11px] text-slate-400">
-                    — .json hoặc .jsonl
+                    — .json, .jsonl hoặc .zip
                   </span>
                 </div>
                 <div
@@ -1451,7 +1455,7 @@ export const ModelEvalRunScreen: React.FC = () => {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".json,.jsonl"
+                    accept=".json,.jsonl,.zip"
                     className="hidden"
                     onChange={(e) =>
                       e.target.files?.[0] &&
@@ -1511,7 +1515,7 @@ export const ModelEvalRunScreen: React.FC = () => {
                       <p className="text-sm font-medium">
                         Kéo thả hoặc click để chọn file
                       </p>
-                      <p className="text-xs">.json / .jsonl · tối đa 50MB</p>
+                      <p className="text-xs">.json / .jsonl / .zip · tối đa 50MB</p>
                     </div>
                   )}
                 </div>
