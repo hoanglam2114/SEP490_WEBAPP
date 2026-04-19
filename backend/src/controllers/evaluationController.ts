@@ -275,10 +275,12 @@ export class EvaluationController {
 
   async createDatasetVersion(req: Request, res: Response): Promise<void> {
     try {
-      const { projectName, similarityThreshold, format, data } = req.body as {
+      const { projectName, similarityThreshold, format, data, promptId, promptContentSnapshot } = req.body as {
         projectName?: string;
         similarityThreshold?: number;
         format?: string;
+        promptId?: string;
+        promptContentSnapshot?: string;
         data: Array<{ sourceKey?: string; data?: Record<string, any> } | Record<string, any>>;
       };
 
@@ -298,11 +300,19 @@ export class EvaluationController {
       const versionCount = await DatasetVersion.countDocuments({ projectName: normalizedProjectName });
       const versionName = `Version ${versionCount + 1}`;
 
+      const normalizedPromptId =
+        typeof promptId === 'string' && mongoose.Types.ObjectId.isValid(promptId)
+          ? new mongoose.Types.ObjectId(promptId)
+          : undefined;
+      const normalizedPromptSnapshot = String(promptContentSnapshot || '').trim();
+
       const datasetVersion = await DatasetVersion.create({
         projectName: normalizedProjectName,
         versionName,
         similarityThreshold: threshold,
         totalSamples: data.length,
+        promptId: normalizedPromptId,
+        promptContentSnapshot: normalizedPromptSnapshot || undefined,
       });
 
       const operations = data

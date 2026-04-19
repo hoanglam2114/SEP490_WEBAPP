@@ -352,6 +352,40 @@ function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptT
   };
 }
 
+function injectSystemPromptIntoConversation(record: any, selectedPromptContent?: string): any {
+  const normalizedMessages = Array.isArray(record?.messages)
+    ? record.messages.map((msg: any) => ({
+        role: String(msg?.role || ''),
+        content: String(msg?.content || ''),
+      }))
+    : [];
+
+  const trimmedPrompt = String(selectedPromptContent || '').trim();
+  if (!trimmedPrompt) {
+    return {
+      ...record,
+      messages: normalizedMessages,
+    };
+  }
+
+  const firstSystemIndex = normalizedMessages.findIndex((msg: { role: string; content: string }) => msg.role === 'system');
+  const nextMessages = [...normalizedMessages];
+
+  if (firstSystemIndex >= 0) {
+    nextMessages[firstSystemIndex] = {
+      ...nextMessages[firstSystemIndex],
+      content: trimmedPrompt,
+    };
+  } else {
+    nextMessages.unshift({ role: 'system', content: trimmedPrompt });
+  }
+
+  return {
+    ...record,
+    messages: nextMessages,
+  };
+}
+
 const METRIC_TOOLTIPS: Record<string, string> = {
   socratic:
     'TÍNH SƯ PHẠM: - Điểm tối đa (9-10) ̣nếu AI không đưa ra đáp án trực tiếp xuyên suốt cả cuộc hội thoại, chỉ đưa ra công thức và dùng câu hỏi gợi mở hoặc ví dụ tương tự.\n- Điểm 5-8 :Có lời chào hỏi, có dẫn dắt nhưng gợi ý quá lộ liễu (gần như cho đáp án).\n- ĐIỂM 0-4 nếu AI đưa ra đáp án đúng nhưng quá sớm (Premature Disclosure) hoặc giải hộ bài ở bất kỳ lượt nào.\n',
@@ -2176,6 +2210,10 @@ export function ConversionPage() {
   const [refineScoreThresholdInput, setRefineScoreThresholdInput] = useState<string>('8');
   const [refineScoreThresholdError, setRefineScoreThresholdError] = useState<string>('');
   const [systemPromptText, setSystemPromptText] = useState<string>('');
+  const [selectedPromptContent, setSelectedPromptContent] = useState<string>('');
+  const [selectedPromptId, setSelectedPromptId] = useState<string>('');
+  const [selectedSystemPromptVersion, setSelectedSystemPromptVersion] = useState<string>('');
+  const [datasetVersionPromptId, setDatasetVersionPromptId] = useState<string>('');
   const loadHandledRef = useRef<boolean>(false);
 
   const { data: stats } = useQuery({
@@ -2479,6 +2517,7 @@ export function ConversionPage() {
     onSuccess: (response) => {
       setCurrentDatasetVersionId(response.datasetVersion._id);
       setSampleIdMap(response.sampleIdMap || {});
+      setDatasetVersionPromptId('');
       setCurrentStep(5);
       toast.success(`Created ${response.datasetVersion.versionName} for ${response.datasetVersion.projectName}.`);
     },
@@ -2880,6 +2919,29 @@ export function ConversionPage() {
       return;
     }
 
+    if (selectedPromptId && (!currentDatasetVersionId || datasetVersionPromptId !== selectedPromptId)) {
+      try {
+        const payload = buildDatasetVersionPayload();
+        if (payload && payload.data.length) {
+          const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
+          const created = await apiService.createDatasetVersion({
+            projectName: payload.projectName,
+            similarityThreshold: payload.similarityThreshold,
+            format: payload.format,
+            data: payload.data,
+            promptId: selectedPromptId,
+            promptContentSnapshot: effectivePromptContent || undefined,
+          });
+          setCurrentDatasetVersionId(created.datasetVersion._id);
+          setSampleIdMap(created.sampleIdMap || {});
+          setDatasetVersionPromptId(selectedPromptId);
+        }
+      } catch (error: any) {
+        toast.error(error?.response?.data?.error || error?.message || 'Failed to sync prompt linkage before download.');
+        return;
+      }
+    }
+
     const totalCount = conversionResult.data.length;
     const allIndices = Array.from({ length: totalCount }, (_, idx) => idx);
     const shuffled = shuffle(allIndices);
@@ -2897,8 +2959,12 @@ export function ConversionPage() {
 
     const trainData: any[] = [];
     const testData: any[] = [];
+    const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
     conversionResult.data.forEach((record, idx) => {
-      const payload = sanitizeRecordForDownload(record, previewMode, systemPromptText);
+      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
+      if (previewMode === 'openai') {
+        payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
+      }
       if (testIndexSet.has(idx)) {
         testData.push(payload);
       } else {
@@ -2909,6 +2975,17 @@ export function ConversionPage() {
     const zip = new JSZip();
     zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
     zip.file('test_dataset.json', JSON.stringify(testData, null, 2));
+    zip.file(
+      'metadata.json',
+      JSON.stringify(
+        {
+          promptId: selectedPromptId || null,
+          systemPromptVersion: selectedSystemPromptVersion || null,
+        },
+        null,
+        2
+      )
+    );
     const blob = await zip.generateAsync({ type: 'blob' });
     saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
     toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records (test ${safePercentage.toFixed(0)}%).`);
@@ -3118,6 +3195,10 @@ export function ConversionPage() {
     setRefinedRowIds(new Set());
     setRefineHistoryMap({});
     setSystemPromptText('');
+    setSelectedPromptContent('');
+    setSelectedPromptId('');
+    setSelectedSystemPromptVersion('');
+    setDatasetVersionPromptId('');
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setClusterGroups([]);
@@ -3177,6 +3258,38 @@ export function ConversionPage() {
       return;
     }
     createDatasetVersionMutation.mutate();
+  };
+
+  const handleProceedFromSystemPromptStep = async () => {
+    if (!canMoveFromStep7) {
+      return;
+    }
+
+    if (selectedPromptId && (!currentDatasetVersionId || datasetVersionPromptId !== selectedPromptId)) {
+      try {
+        const payload = buildDatasetVersionPayload();
+        if (payload && payload.data.length) {
+          const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
+          const created = await apiService.createDatasetVersion({
+            projectName: payload.projectName,
+            similarityThreshold: payload.similarityThreshold,
+            format: payload.format,
+            data: payload.data,
+            promptId: selectedPromptId,
+            promptContentSnapshot: effectivePromptContent || undefined,
+          });
+
+          setCurrentDatasetVersionId(created.datasetVersion._id);
+          setSampleIdMap(created.sampleIdMap || {});
+          setDatasetVersionPromptId(selectedPromptId);
+        }
+      } catch (error: any) {
+        toast.error(error?.response?.data?.error || error?.message || 'Failed to save prompt linkage for dataset version.');
+        return;
+      }
+    }
+
+    setCurrentStep(8);
   };
 
   const validateRefineScoreThreshold = (value: string): string => {
@@ -3758,9 +3871,15 @@ export function ConversionPage() {
             systemPromptText={systemPromptText}
             onSystemPromptTextChange={setSystemPromptText}
             previewJson={systemPromptPreviewJson}
+            projectName={projectName.trim() || formatDefaultProjectName()}
+            onSelectedPromptVersionChange={(payload) => {
+              setSelectedPromptContent(payload.content);
+              setSelectedPromptId(payload.promptId);
+              setSelectedSystemPromptVersion(payload.systemPromptVersion);
+            }}
           />
 
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={() => setCurrentStep(8)} nextDisabled={!canMoveFromStep7} />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(6)} onNext={handleProceedFromSystemPromptStep} nextDisabled={!canMoveFromStep7} />
         </div>
       )}
 

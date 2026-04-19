@@ -47,6 +47,9 @@ export interface IEvaluation extends Document {
   modelEvalId: string;
   jobId: string;
   status: string;
+  systemPrompt?: string;
+  systemPromptVersion?: string;
+  datasetVersionId?: mongoose.Types.ObjectId | string;
   totalConversations: number;
   validConversations: number;
   results: IEvalResult[];
@@ -80,6 +83,9 @@ const EvaluationSchema = new Schema<IEvaluation>(
     modelEvalId: { type: String, required: true, unique: true, index: true },
     jobId: { type: String, required: true, index: true },
     status: { type: String, required: true },
+    systemPrompt: { type: String, default: '' },
+    systemPromptVersion: { type: String, default: '' },
+    datasetVersionId: { type: Schema.Types.ObjectId, ref: 'DatasetVersion' },
     totalConversations: { type: Number, default: 0 },
     validConversations: { type: Number, default: 0 },
     results: { type: [EvaluationResultSchema], default: [] },

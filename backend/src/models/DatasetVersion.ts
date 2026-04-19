@@ -3,6 +3,8 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IDatasetVersion extends Document {
   projectName: string;
   versionName: string;
+  promptId?: mongoose.Types.ObjectId;
+  promptContentSnapshot?: string;
   similarityThreshold: number;
   totalSamples: number;
   createdAt: Date;
@@ -13,6 +15,8 @@ const DatasetVersionSchema = new Schema<IDatasetVersion>(
   {
     projectName: { type: String, required: true, index: true, trim: true },
     versionName: { type: String, required: true, trim: true },
+    promptId: { type: mongoose.Schema.Types.ObjectId, ref: 'DatasetPrompt' },
+    promptContentSnapshot: { type: String },
     similarityThreshold: { type: Number, required: true, min: 0, max: 1 },
     totalSamples: { type: Number, required: true, min: 0 },
   },
