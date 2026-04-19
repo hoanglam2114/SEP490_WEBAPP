@@ -4,6 +4,9 @@ export interface ITrainingHistory extends Document {
   jobId: string;
   projectName: string;
   baseModel: string;
+  systemPrompt?: string;
+  systemPromptVersion?: string;
+  datasetVersionId?: mongoose.Types.ObjectId | string;
   datasetSource: string;       // 'local' | 'hub'
   datasetName: string;         // filename hoặc HuggingFace Hub ID
   columnMapping: string;
@@ -62,6 +65,9 @@ const TrainingHistorySchema = new Schema<ITrainingHistory>(
     jobId: { type: String, required: true, unique: true, index: true },
     projectName: { type: String, required: true },
     baseModel: { type: String, required: true, index: true },
+    systemPrompt: { type: String, default: '' },
+    systemPromptVersion: { type: String, default: '' },
+    datasetVersionId: { type: Schema.Types.ObjectId, ref: 'DatasetVersion' },
     datasetSource: { type: String, required: true },
     datasetName: { type: String, required: true },
     columnMapping: { type: String, default: 'text' },

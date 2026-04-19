@@ -29,6 +29,7 @@ import {
 } from '../controllers/chatSessionController';
 import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
+import { PromptController } from '../controllers/promptController';
 
 
 import {
@@ -51,6 +52,7 @@ const controller = new ConversionController();
 const hfController = new HuggingFaceController();
 const evalController = new EvaluationController();
 const registryController = new ModelRegistryController();
+const promptController = new PromptController();
 
 // Cấu hình multer cho upload
 // Cấu hình multer cho upload
@@ -164,5 +166,10 @@ router.delete('/model-versions/:id', (req, res) => registryController.deleteVers
 router.get('/model-versions/evaluations/:jobId', (req, res) => registryController.getEvaluationsByJob(req, res));
 router.get('/model-versions/download-dataset/:id', (req, res) => registryController.downloadDataset(req, res));
 router.get('/model-registry/:registryId/production', (req, res) => registryController.getProductionVersion(req, res));
+
+// Dataset Prompt Routes
+router.get('/prompts/project/:projectName', (req, res) => promptController.getProjectPrompts(req, res));
+router.post('/prompts', (req, res) => promptController.createPrompt(req, res));
+router.delete('/prompts/:id', (req, res) => promptController.deletePrompt(req, res));
 
 export default router;
