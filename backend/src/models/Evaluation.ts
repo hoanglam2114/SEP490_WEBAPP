@@ -35,6 +35,12 @@ export interface IEvalResult {
     by_group: Record<string, number>;
     is_low: boolean;
   };
+  human_review?: {
+    verdict: 'agree' | 'disagree' | 'skip';
+    note?: string;
+    reviewer?: string;
+    reviewed_at: Date;
+  };
 }
 
 export interface IEvaluation extends Document {
@@ -64,6 +70,7 @@ const EvaluationResultSchema = new Schema<IEvalResult>(
     criteria_reasons: { type: Schema.Types.Mixed, default: {} },
     group_scores: { type: Schema.Types.Mixed, default: {} },
     non_scoring: { type: Schema.Types.Mixed, default: {} },
+    human_review: { type: Schema.Types.Mixed, default: null },
   },
   { _id: false }
 );

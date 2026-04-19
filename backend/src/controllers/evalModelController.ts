@@ -778,3 +778,59 @@ export const compareEvaluations = async (req: Request, res: Response) => {
     return res.status(500).json({ error: err.message || 'Failed to compare evaluations' });
   }
 };
+
+// ---------------------------------------------------------------------------
+// PATCH /api/model-eval/:evalId/review/:convIndex
+// Body: { verdict: 'agree'|'disagree'|'skip', note?: string, reviewer?: string }
+// ---------------------------------------------------------------------------
+export const reviewConversation = async (req: Request, res: Response) => {
+  try {
+    const { evalId, convIndex } = req.params;
+    const { verdict, note, reviewer } = req.body;
+
+    if (!['agree', 'disagree', 'skip'].includes(verdict)) {
+      return res.status(400).json({ error: 'verdict phải là agree | disagree | skip' });
+    }
+
+    const idx = parseInt(convIndex);
+    if (isNaN(idx)) {
+      return res.status(400).json({ error: 'convIndex không hợp lệ' });
+    }
+
+    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId });
+    if (!evalDoc) return res.status(404).json({ error: 'Evaluation not found' });
+
+    // Tìm conversation theo conv_index
+    const convResult = evalDoc.results.find((r: any) => r.conv_index === idx);
+    if (!convResult) return res.status(404).json({ error: `Conversation ${idx} not found` });
+
+    // Update human_review
+    convResult.human_review = {
+      verdict,
+      note: note?.trim() || undefined,
+      reviewer: reviewer?.trim() || 'anonymous',
+      reviewed_at: new Date(),
+    };
+
+    await evalDoc.save();
+
+    // Tính lại review stats
+    const reviewed = evalDoc.results.filter((r: any) => r.human_review?.verdict !== 'skip' && r.human_review);
+    const agreed   = reviewed.filter((r: any) => r.human_review?.verdict === 'agree').length;
+    const total    = evalDoc.results.filter((r: any) => r.human_review).length;
+
+    return res.json({
+      message: 'Review saved',
+      conv_index: idx,
+      verdict,
+      stats: {
+        total_reviewed: total,
+        agreed,
+        disagreed: reviewed.length - agreed,
+        agreement_rate: reviewed.length > 0 ? Math.round((agreed / reviewed.length) * 100) : null,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+};

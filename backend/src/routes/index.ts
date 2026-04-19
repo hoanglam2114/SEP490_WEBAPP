@@ -41,6 +41,7 @@ import {
   deleteEvaluation,
   compareEvaluations,
   getGpuStatusEndpoint,
+  reviewConversation
 } from '../controllers/evalModelController';
 
 
@@ -134,6 +135,7 @@ router.get('/train/history/:jobId', getTrainingHistoryDetail);
 router.delete('/train/history/:jobId', deleteTrainingHistory);
 
 // Model Eval Routes
+router.patch('/model-eval/:evalId/review/:convIndex', reviewConversation);
 router.get('/model-eval/gpu-status', getGpuStatusEndpoint);  // ⚠️ trước wildcard
 router.get('/model-eval/leaderboard', getEvaluatedModels);
 router.post('/model-eval/run/:jobId', upload.single('eval_file'), runEvaluation);
