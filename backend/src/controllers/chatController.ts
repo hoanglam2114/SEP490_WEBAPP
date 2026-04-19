@@ -63,17 +63,17 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
     const actualMessage = text_input || message;
     let actualModelId = hf_hub_id || model;
 
-    // If modelRegistryId is provided, fetch the Production version's HF ID
+    // If modelRegistryId is provided, fetch the Use version's HF ID
     if (modelRegistryId && !actualModelId) {
-      const productionVersion = await ModelVersion.findOne({
+      const activeVersion = await ModelVersion.findOne({
         modelRegistryId,
-        status: ModelVersionStatus.PRODUCTION
+        status: ModelVersionStatus.USE
       });
-      if (productionVersion && productionVersion.hfRepoId) {
-        actualModelId = productionVersion.hfRepoId;
-        console.log(`[chatWithAI] Using Production model from Registry ${modelRegistryId}: ${actualModelId}`);
+      if (activeVersion && activeVersion.hfRepoId) {
+        actualModelId = activeVersion.hfRepoId;
+        console.log(`[chatWithAI] Using Active model from Registry ${modelRegistryId}: ${actualModelId}`);
       } else {
-        res.status(404).json({ error: 'Không tìm thấy phiên bản Production nào cho Model Registry này.' });
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Active (Use) nào cho Model Registry này.' });
         return;
       }
     }
@@ -161,16 +161,16 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
     let actualModelId = hf_model_id;
 
-    // If modelRegistryId is provided, fetch the Production version's HF ID
+    // If modelRegistryId is provided, fetch the Active version's HF ID
     if (modelRegistryId && !actualModelId) {
-      const productionVersion = await ModelVersion.findOne({
+      const activeVersion = await ModelVersion.findOne({
         modelRegistryId,
-        status: ModelVersionStatus.PRODUCTION
+        status: ModelVersionStatus.USE
       });
-      if (productionVersion && productionVersion.hfRepoId) {
-        actualModelId = productionVersion.hfRepoId;
+      if (activeVersion && activeVersion.hfRepoId) {
+        actualModelId = activeVersion.hfRepoId;
       } else {
-        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Active cho Model Registry này.' });
         return;
       }
     }
@@ -246,16 +246,16 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
     const actualMessage = text_input || message;
     let actualModelId = hf_hub_id || model;
 
-    // If modelRegistryId is provided, fetch the Production version's HF ID
+    // If modelRegistryId is provided, fetch the Active (Use) version's HF ID
     if (modelRegistryId && !actualModelId) {
-      const productionVersion = await ModelVersion.findOne({
+      const activeVersion = await ModelVersion.findOne({
         modelRegistryId,
-        status: ModelVersionStatus.PRODUCTION
+        status: ModelVersionStatus.USE
       });
-      if (productionVersion && productionVersion.hfRepoId) {
-        actualModelId = productionVersion.hfRepoId;
+      if (activeVersion && activeVersion.hfRepoId) {
+        actualModelId = activeVersion.hfRepoId;
       } else {
-        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Active (Use) cho Model Registry này.' });
         return;
       }
     }
@@ -391,16 +391,16 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     let actualModelId = hf_model_id;
 
-    // If modelRegistryId is provided, fetch the Production version's HF ID
+    // If modelRegistryId is provided, fetch the Active (Use) version's HF ID
     if (modelRegistryId && !actualModelId) {
-      const productionVersion = await ModelVersion.findOne({
+      const activeVersion = await ModelVersion.findOne({
         modelRegistryId,
-        status: ModelVersionStatus.PRODUCTION
+        status: ModelVersionStatus.USE
       });
-      if (productionVersion && productionVersion.hfRepoId) {
-        actualModelId = productionVersion.hfRepoId;
+      if (activeVersion && activeVersion.hfRepoId) {
+        actualModelId = activeVersion.hfRepoId;
       } else {
-        res.status(404).json({ error: 'Không tìm thấy phiên bản Production cho Model Registry này.' });
+        res.status(404).json({ error: 'Không tìm thấy phiên bản Active (Use) cho Model Registry này.' });
         return;
       }
     }

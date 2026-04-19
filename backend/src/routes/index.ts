@@ -165,7 +165,7 @@ router.put('/model-versions/:id/status', (req, res) => registryController.update
 router.delete('/model-versions/:id', (req, res) => registryController.deleteVersion(req, res));
 router.get('/model-versions/evaluations/:jobId', (req, res) => registryController.getEvaluationsByJob(req, res));
 router.get('/model-versions/download-dataset/:id', (req, res) => registryController.downloadDataset(req, res));
-router.get('/model-registry/:registryId/production', (req, res) => registryController.getProductionVersion(req, res));
+router.get('/model-registry/:registryId/active', (req, res) => registryController.getActiveVersion(req, res));
 
 // Dataset Prompt Routes
 router.get('/prompts/project/:projectName', (req, res) => promptController.getProjectPrompts(req, res));
