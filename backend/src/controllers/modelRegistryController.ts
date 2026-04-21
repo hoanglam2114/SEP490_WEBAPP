@@ -114,11 +114,12 @@ export class ModelRegistryController {
       if (evaluationId) {
         const evaluation = await ModelEvaluation.findById(evaluationId);
         if (evaluation && evaluation.summary) {
-          // Extract overall score if available
-          const overall = evaluation.summary.overall?.ft_avg;
+          const overall = typeof evaluation.summary.overall === 'number'
+            ? evaluation.summary.overall
+            : null;
           const max = evaluation.summary.max_possible || 5;
-          if (overall !== undefined) {
-            metrics.overallScore = (overall / max) * 100; // Convert to percentage
+          if (overall !== null) {
+            metrics.overallScore = (overall / max) * 100;
           }
           metrics.evalSummary = evaluation.summary;
         }
