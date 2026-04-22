@@ -481,6 +481,26 @@ export const apiService = {
       .post('/cluster/filter', { data, threshold })
       .then((res) => res.data),
 
+  clusterRemoveNoise: (): Promise<{
+    data: any[];
+    groups: any[];
+    assignments: number[];
+  }> =>
+    api
+      .post('/cluster/remove-noise')
+      .then((res) => res.data),
+
+  clusterDeduplicate: (
+    threshold?: number
+  ): Promise<{
+    data: any[];
+    groups: any[];
+    assignments: number[];
+  }> =>
+    api
+      .post('/cluster/deduplicate', { threshold })
+      .then((res) => res.data),
+
   deleteClusterCache: (): Promise<any> =>
     api
       .delete('/cluster/cache')

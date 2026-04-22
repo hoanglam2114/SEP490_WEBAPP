@@ -135,6 +135,68 @@ export const clusterFilter = async (req: Request, res: Response) => {
 };
 
 /**
+ * POST /api/cluster/remove-noise
+ */
+export const removeNoise = async (_req: Request, res: Response) => {
+  try {
+    console.log(`[Backend] Removing noise via GPU service cache → ${GPU_SERVICE_URL}/api/cluster/remove-noise`);
+
+    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/remove-noise`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+      },
+    });
+
+    const responseText = await gpuResponse.text();
+    let result: any;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      return res.status(502).json({ error: 'Remove noise service returned non-JSON response', raw: responseText.slice(0, 500) });
+    }
+
+    return res.status(gpuResponse.status).json(result);
+  } catch (err: any) {
+    console.error('[Backend] removeNoise error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to remove noise' });
+  }
+};
+
+/**
+ * POST /api/cluster/deduplicate
+ */
+export const deduplicate = async (req: Request, res: Response) => {
+  try {
+    const { threshold } = req.body;
+    console.log(`[Backend] Deduplicating via GPU service cache with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/deduplicate`);
+
+    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/deduplicate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+      },
+      body: JSON.stringify({ threshold }),
+    });
+
+    const responseText = await gpuResponse.text();
+    let result: any;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      return res.status(502).json({ error: 'Deduplicate service returned non-JSON response', raw: responseText.slice(0, 500) });
+    }
+
+    return res.status(gpuResponse.status).json(result);
+  } catch (err: any) {
+    console.error('[Backend] deduplicate error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to deduplicate' });
+  }
+};
+
+/**
  * DELETE /api/cluster/cache
  *
  * Forward request to GPU_SERVICE_URL/api/cluster/cache to clear embedding cache

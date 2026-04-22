@@ -27,7 +27,7 @@ import {
   appendMessageToSession,
   deleteSession
 } from '../controllers/chatSessionController';
-import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize } from '../controllers/clusterController';
+import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
 import { PromptController } from '../controllers/promptController';
 
@@ -120,6 +120,8 @@ router.delete('/dataset-versions/items/:sampleId', (req, res) => evalController.
 router.post('/cluster/visualize', clusterVisualize);
 router.post('/cluster', clusterData);
 router.post('/cluster/filter', clusterFilter);
+router.post('/cluster/remove-noise', removeNoise);
+router.post('/cluster/deduplicate', deduplicate);
 router.delete('/cluster/cache', deleteClusterCache);
 
 // Training Routes

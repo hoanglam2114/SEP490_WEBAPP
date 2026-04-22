@@ -355,9 +355,9 @@ function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptT
 function injectSystemPromptIntoConversation(record: any, selectedPromptContent?: string): any {
   const normalizedMessages = Array.isArray(record?.messages)
     ? record.messages.map((msg: any) => ({
-        role: String(msg?.role || ''),
-        content: String(msg?.content || ''),
-      }))
+      role: String(msg?.role || ''),
+      content: String(msg?.content || ''),
+    }))
     : [];
 
   const trimmedPrompt = String(selectedPromptContent || '').trim();
@@ -1945,10 +1945,10 @@ function PostConversionSummary({ result }: { result: ConversionResult | null }) 
                   -{result.stats.cleaning.removedTooShort + result.stats.cleaning.removedTooLong}
                 </div>
               </div>
-              <div className="bg-gray-50 p-2 rounded-lg">
+              {/* <div className="bg-gray-50 p-2 rounded-lg">
                 <div className="text-xs text-gray-500">Duplicates</div>
                 <div className="text-sm font-semibold text-yellow-600">-{result.stats.cleaning.removedDuplicates}</div>
-              </div>
+              </div> */}
               <div className="bg-primary-50 p-2 rounded-lg">
                 <div className="text-xs text-primary-700">Final Count</div>
                 <div className="text-sm font-bold text-primary-700">{result.stats.cleaning.finalCount}</div>
@@ -2167,8 +2167,8 @@ export function ConversionPage() {
   const [originalConvertedResult, setOriginalConvertedResult] = useState<ConversionResult | null>(null);
   const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null);
   const [maxK, setMaxK] = useState<number>(20);
-  const [dbscanEps, setDbscanEps] = useState<number>(0.15);
-  const [dbscanMinSamples, setDbscanMinSamples] = useState<number>(6);
+  const [dbscanEps, setDbscanEps] = useState<number>(0.1);
+  const [dbscanMinSamples, setDbscanMinSamples] = useState<number>(3);
   const [clusterK, setClusterK] = useState<number>(8);
   const [isVisualizing, setIsVisualizing] = useState<boolean>(false);
   const [evaluationMap, setEvaluationMap] = useState<Record<string, RowEvaluationEntry>>({});
@@ -2778,7 +2778,7 @@ export function ConversionPage() {
           nextMap[String(conv.conversation_id)] = result.assignments[idx] ?? 0;
         });
       } else {
-        result.data.forEach((item, idx) => {
+        result.data.forEach((item: any, idx: number) => {
           const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${idx}`);
           nextMap[rowId] = (item as any).cluster ?? result.assignments[idx] ?? 0;
         });
@@ -2791,28 +2791,76 @@ export function ConversionPage() {
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Clustering failed'),
   });
 
+  const handlePostFilterUpdate = (result: any) => {
+    setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
+
+    // Handle missing groups by recalculating from data or preserving existing ones
+    if (result.groups) {
+      setClusterGroups(result.groups);
+    } else if (result.data) {
+      // Simple recalculation of counts if groups are missing
+      const counts: Record<number, number> = {};
+      result.data.forEach((item: any) => {
+        const c = item.cluster ?? -1;
+        if (c !== -1) counts[c] = (counts[c] || 0) + 1;
+      });
+      const newGroups = clusterGroups.map(g => ({
+        ...g,
+        count: counts[g.groupId] ?? 0
+      })).filter(g => g.count > 0);
+      setClusterGroups(newGroups);
+    }
+
+    setCurrentDatasetVersionId(null);
+    setSampleIdMap({});
+    const nextMap: Record<string, number> = {};
+    if (previewMode === 'openai') {
+      const convs = normalizeOpenAIConversations(result.data);
+      convs.forEach((conv: any, idx: number) => {
+        const convId = String(conv.conversation_id || `conv-${idx + 1}`);
+        nextMap[convId] = result.assignments ? (result.assignments[idx] ?? 0) : ((conv as any).cluster ?? 0);
+      });
+    } else {
+      result.data.forEach((item: any, idx: number) => {
+        const rowId = String(item?.id || item?.sampleId || `alpaca-${idx}`);
+        nextMap[rowId] = (item as any).cluster ?? (result.assignments ? (result.assignments[idx] ?? 0) : 0);
+      });
+    }
+    setRowClusterMap(nextMap);
+    setSelectedClusterIds([]);
+  };
+
+  const removeNoiseMutation = useMutation({
+    mutationFn: async () => {
+      // Note: Backend/GPU service now relies on internal cache from previous /cluster call
+      return apiService.clusterRemoveNoise();
+    },
+    onSuccess: (result) => {
+      handlePostFilterUpdate(result);
+      toast.success(`Noise removal complete. Remaining: ${result.data.length} records.`);
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Noise removal failed'),
+  });
+
+  const deduplicateMutation = useMutation({
+    mutationFn: async () => {
+      // Note: Backend/GPU service now relies on internal cache from previous /cluster call
+      return apiService.clusterDeduplicate(filterThreshold);
+    },
+    onSuccess: (result) => {
+      handlePostFilterUpdate(result);
+      toast.success(`Deduplication complete. Remaining: ${result.data.length} records.`);
+    },
+    onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Deduplication failed'),
+  });
+
   const filterMutation = useMutation({
     mutationFn: async () => {
       if (!conversionResult?.data?.length) throw new Error('No clustered data to filter.');
       return apiService.clusterFilter(conversionResult.data, filterThreshold);
     },
     onSuccess: (result) => {
-      setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
-      setClusterGroups(result.groups);
-      setCurrentDatasetVersionId(null);
-      setSampleIdMap({});
-      const nextMap: Record<string, number> = {};
-      if (previewMode === 'openai') {
-        normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
-          nextMap[String(conv.conversation_id)] = result.assignments[idx] ?? 0;
-        });
-      } else {
-        result.data.forEach((item, idx) => {
-          nextMap[`alpaca-${idx}`] = (item as any).cluster ?? result.assignments[idx] ?? 0;
-        });
-      }
-      setRowClusterMap(nextMap);
-      setSelectedClusterIds([]);
+      handlePostFilterUpdate(result);
       toast.success(`Filtered dataset down to ${result.data.length} records.`);
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Filtering failed'),
@@ -3612,7 +3660,7 @@ export function ConversionPage() {
                     min="0.01"
                     max="1.0"
                     value={dbscanEps}
-                    onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.15)}
+                    onChange={(e) => setDbscanEps(parseFloat(e.target.value) || 0.1)}
                     className="w-20 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
                   />
                 </div>
@@ -3621,9 +3669,9 @@ export function ConversionPage() {
                   <input
                     type="number"
                     min="1"
-                    max="20"
+                    max="30"
                     value={dbscanMinSamples}
-                    onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 6)}
+                    onChange={(e) => setDbscanMinSamples(parseInt(e.target.value, 10) || 3)}
                     className="w-16 px-2 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
                   />
                 </div>
@@ -3752,13 +3800,34 @@ export function ConversionPage() {
               {clusterGroups.length > 0 && (
                 <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
                   <div className="flex items-center justify-between">
-                    <label className="text-sm font-semibold text-gray-700">Similarity Threshold</label>
+                    <label className="text-sm font-semibold text-gray-700">Similarity Threshold (for Deduplicate)</label>
                     <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(2)}</span>
                   </div>
                   <input type="range" min="0" max="1" step="0.01" value={filterThreshold} onChange={(e) => setFilterThreshold(parseFloat(e.target.value))} className="w-full" />
-                  <div className="flex gap-2">
-                    <button onClick={() => filterMutation.mutate()} disabled={filterMutation.isPending} className="flex-1 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold">Filter Noise</button>
-                    <button onClick={handleResetFiltering} disabled={filterMutation.isPending} className="px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold">Reset Filter</button>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => removeNoiseMutation.mutate()}
+                        disabled={removeNoiseMutation.isPending || deduplicateMutation.isPending}
+                        className="flex-1 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-semibold text-sm"
+                      >
+                        {removeNoiseMutation.isPending ? 'Removing...' : 'Remove Noise'}
+                      </button>
+                      <button
+                        onClick={() => deduplicateMutation.mutate()}
+                        disabled={removeNoiseMutation.isPending || deduplicateMutation.isPending}
+                        className="flex-1 px-4 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-semibold text-sm"
+                      >
+                        {deduplicateMutation.isPending ? 'Deduplicating...' : 'Deduplicate'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={handleResetFiltering}
+                      disabled={removeNoiseMutation.isPending || deduplicateMutation.isPending}
+                      className="w-full px-4 py-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-semibold text-sm"
+                    >
+                      Reset Filter
+                    </button>
                   </div>
                 </div>
               )}

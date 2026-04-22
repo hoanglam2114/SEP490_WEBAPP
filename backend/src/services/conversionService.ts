@@ -98,7 +98,7 @@ export class ConversionService {
     // Xóa mọi dòng chứa ENCOURAGE_EXERCISE 
     cleaned = cleaned.split('\n').filter(line => !line.match(/ENCOURAGE_EXERCISE|Status 'ENCOURAGE_EXERCISE'|Lỗi: Status 'ENCOURAGE_EXERCISE'/i)).join('\n');
     // Xóa tất cả emoji unicode
-    cleaned = cleaned.replace(/[\p{Emoji}\p{Extended_Pictographic}]/gu, '');
+    // cleaned = cleaned.replace(/\p{Extended_Pictographic}/gu, '');
     return cleaned.trim();
   }
 
