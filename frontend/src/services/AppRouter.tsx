@@ -7,6 +7,9 @@ import { ConversionPage } from '../pages/ConversionPage';
 import { HomePage } from '../pages/HomePage';
 import { MainLayout } from '../layout/MainLayout';
 import { TrainingHistoryScreen } from '../pages/TrainingHistoryScreen';
+import { LoginPage } from '../pages/LoginPage';
+import { RegisterPage } from '../pages/RegisterPage';
+// import ProtectedRoute from '../pages/ProtectedRoute';
 
 import { ModelEvalLeaderboardScreen } from '../pages/ModelEvalLeaderboardScreen';
 import { ModelEvalResultScreen } from '../pages/ModelEvalResultScreen';
@@ -34,6 +37,9 @@ export default function AppRouter() {
       <Router>
         <Routes>
           <Route path="/" element={<HomePage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+
           <Route
             path="/chatbotconverter"
             element={

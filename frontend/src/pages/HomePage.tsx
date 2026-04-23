@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../store/authStore';
 
 const tools = [
   {
@@ -100,6 +101,7 @@ const TAG_COLORS: Record<string, string> = {
 export const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [hovered, setHovered] = useState<string | null>(null);
+  const { user, logout } = useAuthStore();
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -116,7 +118,30 @@ export const HomePage: React.FC = () => {
             </div>
             <span className="text-sm font-bold text-slate-800 tracking-tight">Chatbot Training Toolkit</span>
           </div>
-          <span className="text-xs text-slate-400 font-mono">v1.0</span>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-medium text-slate-700">Hello, {user.name}</span>
+                <button
+                  onClick={() => {
+                    logout();
+                    navigate('/login');
+                  }}
+                  className="text-sm font-medium text-red-600 hover:text-red-800"
+                >
+                  Logout
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => navigate('/login')}
+                className="text-sm font-medium text-slate-700 hover:text-slate-900 bg-slate-100 px-3 py-1.5 rounded-md"
+              >
+                Sign In
+              </button>
+            )}
+            <span className="text-xs text-slate-400 font-mono hidden sm:inline-block">v1.0</span>
+          </div>
         </div>
       </header>
 

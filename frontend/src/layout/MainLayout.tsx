@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import { Bot, ChevronLeft } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useAuthStore } from '../store/authStore';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -12,6 +13,8 @@ export function MainLayout({ children }: MainLayoutProps) {
   const { uploadedFile, resetOptions } = useAppStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout } = useAuthStore();
+
   const [dataPrepStep, setDataPrepStep] = useState<number | null>(null);
 
   const isHomePage = location.pathname === '/';
@@ -76,6 +79,31 @@ export function MainLayout({ children }: MainLayoutProps) {
                   AutoTrain
                 </button>
               )}
+
+              {/* Auth Status */}
+              <div className="ml-4 pl-4 border-l border-gray-200 flex items-center gap-4">
+                {user ? (
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-gray-700">Hello, {user.name}</span>
+                    <button
+                      onClick={() => {
+                        logout();
+                        navigate('/login');
+                      }}
+                      className="text-sm font-medium text-red-600 hover:text-red-800"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => navigate('/login')}
+                    className="text-sm font-medium text-slate-700 hover:text-slate-900 bg-slate-100 px-3 py-1.5 rounded-md"
+                  >
+                    Sign In
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -30,8 +30,7 @@ import {
 import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
 import { PromptController } from '../controllers/promptController';
-
-
+import authRoutes from './authRoutes';
 import {
   runEvaluation,
   streamEvalStatus,
@@ -77,6 +76,7 @@ const upload = multer({
   },
 });
 
+router.use('/auth', authRoutes);
 // Conversion Routes
 router.post('/upload', upload.single('file'), (req, res) => controller.uploadFile(req, res));
 router.post('/convert', (req, res) => controller.convertData(req, res));
