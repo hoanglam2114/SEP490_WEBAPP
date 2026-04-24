@@ -1,5 +1,8 @@
 import { ILlmProvider } from './ILlmProvider';
-import fetch from 'node-fetch';
+const fetch = async (url: any, init?: any) => {
+  const module = await import('node-fetch');
+  return module.default(url, init);
+};
 import dotenv from 'dotenv';
 dotenv.config();
 

@@ -23,7 +23,7 @@ export interface ConversionOptions {
   maxCharsAssistant?: number;
   removeBoilerplate?: boolean;
   deduplicate?: boolean;
-  removeEmptyOutput?: boolean;
+  removeUnclosedThink?: boolean;
   minTurns?: number;
 }
 
@@ -54,6 +54,7 @@ export interface ConversionResult {
       removedTooShort: number;
       removedTooLong: number;
       removedDuplicates: number;
+      removedUnclosedThink?: number;
       finalCount: number;
     };
   };

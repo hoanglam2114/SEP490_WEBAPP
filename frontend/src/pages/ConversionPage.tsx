@@ -408,7 +408,7 @@ const METRIC_TOOLTIPS: Record<string, string> = {
 
 const CLEANING_TOOLTIPS = {
   removeBoilerplate:
-    'Xóa các câu trả lời mẫu/canned response ít giá trị huấn luyện như: "Xin lỗi, tôi không thể...", "As an AI model...", "Tôi không có quyền truy cập...", "Okay/Được rồi" đơn lẻ.',
+    'Xóa các câu trả lời mẫu/canned response chứa keyword Error: \n"Unknown error",\n"LLM call failed",\n"Error code:",\n"Không tìm thấy agent",\n"Status",\n"not supported by",\n"__CHUNK__"',
 };
 
 function parseThinkContent(content: string): { thinkText: string; assistantText: string } {
@@ -553,10 +553,10 @@ function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; locke
               className={`h-full min-h-[92px] rounded-xl border px-2 py-2 text-center ${isLocked
                 ? 'border-gray-200 bg-gray-50 opacity-70'
                 : isCompleted
-                ? 'border-green-200 bg-green-50'
-                : isActive
-                  ? 'border-primary-200 bg-primary-50'
-                  : 'border-gray-200 bg-white'
+                  ? 'border-green-200 bg-green-50'
+                  : isActive
+                    ? 'border-primary-200 bg-primary-50'
+                    : 'border-gray-200 bg-white'
                 }`}
             >
               <div
@@ -775,7 +775,7 @@ function RefineModal({
   return (
     <ActionModalFrame
       isOpen={isOpen}
-      
+
       title="Refine Data"
       description="Choose a model and score threshold to refine all targeted visible rows."
       confirmText="Confirm Refinement"
@@ -1945,7 +1945,7 @@ function PostConversionSummary({ result }: { result: ConversionResult | null }) 
             <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider mb-3">Cleaning Report</h4>
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-gray-50 p-2 rounded-lg">
-                <div className="text-xs text-gray-500">Boilerplate</div>
+                <div className="text-xs text-gray-500">Error keywords</div>
                 <div className="text-sm font-semibold text-red-600">-{result.stats.cleaning.removedBoilerplate}</div>
               </div>
               <div className="bg-gray-50 p-2 rounded-lg">
@@ -1953,6 +1953,10 @@ function PostConversionSummary({ result }: { result: ConversionResult | null }) 
                 <div className="text-sm font-semibold text-orange-600">
                   -{result.stats.cleaning.removedTooShort + result.stats.cleaning.removedTooLong}
                 </div>
+              </div>
+              <div className="bg-gray-50 p-2 rounded-lg">
+                <div className="text-xs text-gray-500">Unclosed &lt;think&gt;</div>
+                <div className="text-sm font-semibold text-purple-600">-{result.stats.cleaning.removedUnclosedThink || 0}</div>
               </div>
               {/* <div className="bg-gray-50 p-2 rounded-lg">
                 <div className="text-xs text-gray-500">Duplicates</div>
@@ -1999,7 +2003,7 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
                 className="rounded"
               />
               <span className="relative inline-flex items-center group cursor-help text-sm font-medium text-gray-700">
-                Remove AI boilerplate
+                Remove Error Keywords
                 <span className="absolute left-0 top-full z-20 mt-2 hidden w-80 rounded-md border border-gray-200 bg-white p-2 text-xs font-normal text-gray-700 shadow-lg group-hover:block">
                   {CLEANING_TOOLTIPS.removeBoilerplate}
                 </span>
@@ -2009,11 +2013,11 @@ function CleaningPipelineOptions({ onAccept, isLoading }: { onAccept: () => void
             <label className="flex items-center space-x-2">
               <input
                 type="checkbox"
-                checked={conversionOptions.removeEmptyOutput ?? true}
-                onChange={(e) => updateConversionOptions({ removeEmptyOutput: e.target.checked })}
+                checked={conversionOptions.removeUnclosedThink ?? true}
+                onChange={(e) => updateConversionOptions({ removeUnclosedThink: e.target.checked })}
                 className="rounded"
               />
-              <span className="text-sm font-medium text-gray-700">Loại bỏ những mẫu không có nội dung của Assistant</span>
+              <span className="text-sm font-medium text-gray-700">Loại bỏ những mẫu có &lt;think&gt; mà không có thẻ đóng &lt;/think&gt;</span>
             </label>
           </div>
 
@@ -3489,7 +3493,7 @@ export function ConversionPage() {
   }, [location.state, setProjectName, uploadedFile?.fileId]);
 
   const canMoveFromStep2 = !!conversionResult;
-  const canMoveFromStep3 = !!visualizationResult;
+  const canMoveFromStep3 = true;
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep6 = !!conversionResult;
   const canMoveFromStep7 = !!conversionResult;
@@ -4015,7 +4019,13 @@ export function ConversionPage() {
                   </div>
                 </div>
                 <button
-                  onClick={() => clusterMutation.mutate()}
+                  onClick={() => {
+                    if (!visualizationResult) {
+                      toast.error('Vui lòng quay lại Step 3 để thực hiện Visualization trước khi phân cụm.');
+                      return;
+                    }
+                    clusterMutation.mutate();
+                  }}
                   disabled={!conversionResult || clusterMutation.isPending}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold transition-colors"
                 >
@@ -4116,11 +4126,10 @@ export function ConversionPage() {
               <button
                 type="button"
                 onClick={() => setCommunityShowRejectedSamples((prev) => !prev)}
-                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  communityShowRejectedSamples
-                    ? 'border-rose-300 bg-rose-100 text-rose-700'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${communityShowRejectedSamples
+                  ? 'border-rose-300 bg-rose-100 text-rose-700'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
               >
                 {communityShowRejectedSamples ? 'Showing REJECTED (3+)' : 'Show REJECTED samples (3+ votes)'}
               </button>
@@ -4139,11 +4148,10 @@ export function ConversionPage() {
                 type="button"
                 onClick={handleToggleVersionVisibility}
                 disabled={isTogglingVersionPublic}
-                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60 ${
-                  isCurrentVersionPublic
-                    ? 'border-emerald-300 bg-emerald-100 text-emerald-700'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60 ${isCurrentVersionPublic
+                  ? 'border-emerald-300 bg-emerald-100 text-emerald-700'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
               >
                 {isTogglingVersionPublic ? 'Saving...' : isCurrentVersionPublic ? 'Public: ON' : 'Public: OFF'}
               </button>
@@ -4157,13 +4165,13 @@ export function ConversionPage() {
               sampleId: sampleIdMap[row.id] || sampleIdMap[row.blockId] || (row.id.match(/^[a-f\d]{24}$/i) ? row.id : null),
               messages: row.conversationPairs
                 ? row.conversationPairs.flatMap((pair) => [
-                    { role: 'user' as const, content: pair.user },
-                    { role: 'assistant' as const, content: pair.assistant },
-                  ])
+                  { role: 'user' as const, content: pair.user },
+                  { role: 'assistant' as const, content: pair.assistant },
+                ])
                 : [
-                    { role: 'user' as const, content: row.userText || row.instruction },
-                    { role: 'assistant' as const, content: row.assistantText || row.output },
-                  ],
+                  { role: 'user' as const, content: row.userText || row.instruction },
+                  { role: 'assistant' as const, content: row.assistantText || row.output },
+                ],
             }))}
             onBack={() => setCurrentStep(4)}
             onNext={() => setCurrentStep(6)}

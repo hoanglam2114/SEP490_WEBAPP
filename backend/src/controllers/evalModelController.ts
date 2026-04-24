@@ -2,7 +2,10 @@ import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import FormData from 'form-data';
-import fetch from 'node-fetch';
+const fetch = async (url: any, init?: any) => {
+  const module = await import('node-fetch');
+  return module.default(url, init);
+};
 import dotenv from 'dotenv';
 import { ModelEvaluation, IEvalResult } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';

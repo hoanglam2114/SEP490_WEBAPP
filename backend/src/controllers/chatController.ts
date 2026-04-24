@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
-import fetch from 'node-fetch'; // assuming node-fetch is available based on package.json
+const fetch = async (url: any, init?: any) => {
+  const module = await import('node-fetch');
+  return module.default(url, init);
+};
 import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
