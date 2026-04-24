@@ -63,6 +63,7 @@ export const apiService = {
     text_input: string,
     hf_model_id: string = "",
     options: {
+      history?: Array<{ role: "user" | "assistant"; content: string }>;
       system_prompt?: string;
       max_new_tokens?: number;
       temperature?: number;

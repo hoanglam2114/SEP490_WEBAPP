@@ -24,6 +24,11 @@ interface Message {
     parameters?: any;
 }
 
+type HistoryMessage = {
+    role: "user" | "assistant";
+    content: string;
+};
+
 interface LogEntry {
     ts: number;
     instanceId?: number;
@@ -412,6 +417,31 @@ function ChatPanel({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
 
+    const buildRecentHistory = useCallback((sourceMessages: Message[]): HistoryMessage[] => {
+        const normalizedMessages: HistoryMessage[] = sourceMessages
+            .filter((message) => (message.role === "user" || message.role === "ai") && message.content.trim())
+            .map((message) => ({
+                role: message.role === "ai" ? "assistant" : "user",
+                content: message.content,
+            }));
+
+        const recentPairs: HistoryMessage[][] = [];
+
+        for (let index = 0; index < normalizedMessages.length - 1; index += 1) {
+            const currentMessage = normalizedMessages[index];
+            const nextMessage = normalizedMessages[index + 1];
+
+            if (currentMessage.role === "user" && nextMessage.role === "assistant") {
+                recentPairs.push([currentMessage, nextMessage]);
+                index += 1;
+            }
+        }
+
+        return recentPairs
+            .slice(-5)
+            .flat();
+    }, []);
+
     // Notify parent when modelLoaded changes
     useEffect(() => {
         onModelLoadedChange?.(modelLoaded);
@@ -508,13 +538,17 @@ function ChatPanel({
         abortControllerRef.current = abortController;
 
         const userMessage: Message = { role: "user", content: text };
+        const history = buildRecentHistory(messages);
         setMessages((prev) => [...prev, userMessage]);
         setLoading(true);
         onLog?.({
             message: `Bắt đầu inference...`,
             type: "info",
             instanceId,
-            data: params.systemPrompt ? { systemPrompt: params.systemPrompt } : undefined
+            data: {
+                ...(params.systemPrompt ? { systemPrompt: params.systemPrompt } : {}),
+                historyCount: history.length,
+            }
         });
 
         const startTime = Date.now();
@@ -526,6 +560,7 @@ function ChatPanel({
             const options = {
                 instanceId,
                 modelRegistryId: provider === "registry" ? selectedRegistryId : undefined,
+                history,
                 system_prompt: params.systemPrompt || undefined,
                 max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
                 temperature: params.temperature === "" ? undefined : params.temperature,
@@ -607,7 +642,7 @@ function ChatPanel({
             setLoading(false);
             abortControllerRef.current = null;
         }
-    }, [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId, provider]);
+    }, [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId, provider, messages, buildRecentHistory, selectedRegistryId]);
 
     // Expose sendMessage for compare mode via ref
     const sendMessageRef = useRef(sendMessage);

@@ -16,6 +16,31 @@ const getGpuUrl = (instanceId?: number) => {
   return gpuServiceUrls[0];
 };
 
+type GpuHistoryMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+const normalizeHistory = (history: unknown): GpuHistoryMessage[] => {
+  if (!Array.isArray(history)) {
+    return [];
+  }
+
+  return history
+    .map((item: any) => {
+      const role = item?.role === 'user' || item?.role === 'assistant' ? item.role : null;
+      const content = typeof item?.content === 'string' ? item.content.trim() : '';
+
+      if (!role || !content) {
+        return null;
+      }
+
+      return { role, content };
+    })
+    .filter((item): item is GpuHistoryMessage => item !== null)
+    .slice(-5);
+};
+
 
 export const validateModel = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -64,7 +89,8 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       top_k,
       top_p,
       repetition_penalty,
-      provider // New: external provider like 'openrouter', 'gemini', etc.
+      provider, // New: external provider like 'openrouter', 'gemini', etc.
+      history
     } = req.body;
 
     const actualMessage = text_input || message;
@@ -118,6 +144,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    const normalizedHistory = normalizeHistory(history);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
@@ -128,6 +155,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: actualMessage,
+        history: normalizedHistory,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
@@ -165,7 +193,8 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       top_k,
       top_p,
       repetition_penalty,
-      provider // New: support external providers
+      provider, // New: support external providers
+      history
     } = req.body;
 
     if (!text_input) {
@@ -212,6 +241,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    const normalizedHistory = normalizeHistory(history);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer`, {
       method: 'POST',
@@ -222,6 +252,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: text_input,
+        history: normalizedHistory,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
@@ -261,7 +292,8 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       top_k,
       top_p,
       repetition_penalty,
-      provider
+      provider,
+      history
     } = req.body;
 
     const actualMessage = text_input || message;
@@ -317,6 +349,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    const normalizedHistory = normalizeHistory(history);
     console.log(`[chatWithAIStream] req.body.instanceId=${JSON.stringify(req.body.instanceId)}, slot=${instanceId ?? 1}`);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
@@ -328,6 +361,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: actualMessage,
+        history: normalizedHistory,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
@@ -409,7 +443,8 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       top_k,
       top_p,
       repetition_penalty,
-      provider
+      provider,
+      history
     } = req.body;
 
     if (!text_input) {
@@ -462,6 +497,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
     const { instanceId } = req.body;
     const targetUrl = getGpuUrl(instanceId);
+    const normalizedHistory = normalizeHistory(history);
     console.log(`[inferWithAIStream] req.body.instanceId=${JSON.stringify(req.body.instanceId)}, slot=${instanceId ?? 1}`);
 
     const inferResponse = await fetch(`${targetUrl}/api/infer/stream`, {
@@ -473,6 +509,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
       body: JSON.stringify({
         hf_model_id: actualModelId,
         text_input: text_input,
+        history: normalizedHistory,
         instanceId: instanceId ?? 1,
         system_prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty
       })
