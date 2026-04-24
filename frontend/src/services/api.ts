@@ -19,6 +19,24 @@ const api = axios.create({
   }
 });
 
+const getAuthToken = (): string | null => {
+  return localStorage.getItem('token');
+};
+
+const buildAuthHeaders = (): Record<string, string> => {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+api.interceptors.request.use((config) => {
+  const token = getAuthToken();
+  if (token) {
+    config.headers = config.headers || {};
+    (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   if (chunkSize <= 0) {
     return [items];
@@ -63,6 +81,7 @@ export const apiService = {
       headers: {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
+        ...buildAuthHeaders(),
       },
       body: JSON.stringify({ text_input, hf_model_id, provider, ...restOptions }),
       signal,
@@ -331,6 +350,7 @@ export const apiService = {
       _id: string;
       projectName: string;
       versionName: string;
+      isPublic?: boolean;
       similarityThreshold: number;
       totalSamples: number;
       createdAt: string;
@@ -341,11 +361,12 @@ export const apiService = {
     return response.data;
   },
 
-  getDatasetVersionDetail: async (id: string): Promise<{
+  getDatasetVersionDetail: async (id: string, showRejected = false, community = false): Promise<{
     datasetVersion: {
       _id: string;
       projectName: string;
       versionName: string;
+      isPublic?: boolean;
       similarityThreshold: number;
       totalSamples: number;
       createdAt: string;
@@ -385,7 +406,12 @@ export const apiService = {
       updatedAt?: string;
     }>;
   }> => {
-    const response = await api.get(`/dataset-versions/${id}`);
+    const response = await api.get(`/dataset-versions/${id}`, {
+      params: {
+        ...(showRejected ? { showRejected: 'true' } : {}),
+        ...(community ? { community: 'true' } : {}),
+      },
+    });
     return response.data;
   },
 
@@ -394,10 +420,75 @@ export const apiService = {
     return response.data;
   },
 
+  getPublicProjectsHub: async (): Promise<{
+    projects: Array<{
+      id: string;
+      projectName: string;
+      versionName: string;
+      ownerId: string;
+      ownerName: string;
+      updatedAt: string;
+      topLabel: {
+        _id: string;
+        name: string;
+        type: 'hard' | 'soft';
+        upvoteCount: number;
+      } | null;
+    }>;
+  }> => {
+    const response = await api.get('/community/public-projects');
+    return response.data;
+  },
+
+  updateDatasetVersionVisibility: async (id: string, isPublic: boolean): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      isPublic: boolean;
+      projectName: string;
+      versionName: string;
+    };
+  }> => {
+    const response = await api.patch(`/dataset-versions/${id}/visibility`, { isPublic });
+    return response.data;
+  },
+
+  getPublicProjectLabeling: async (id: string, showRejected = false): Promise<{
+    project: {
+      id: string;
+      projectName: string;
+      ownerId: string;
+      ownerName: string;
+      updatedAt: string;
+    };
+    loadProject: {
+      projectName: string;
+      format: 'openai' | 'alpaca';
+      data: any[];
+      evaluationMap: Record<string, any>;
+      datasetVersionId: string;
+      sampleIdMap: Record<string, string>;
+      ownerId: string;
+      startStep: number;
+      totalSamples: number;
+      visibleSamples: number;
+      rejectedSamples: number;
+      showRejected: boolean;
+    };
+  }> => {
+    const response = await api.get(`/community/public-projects/${id}/labeling`, {
+      params: {
+        ...(showRejected ? { showRejected: 'true' } : {}),
+      },
+    });
+    return response.data;
+  },
+
   getEvaluationHistory: async (params: {
     page: number;
     limit: number;
     projectSearch?: string;
+    showRejected?: boolean;
   }): Promise<{
     projects: Array<{
       projectName: string;
@@ -424,6 +515,7 @@ export const apiService = {
         page: params.page,
         limit: params.limit,
         ...(params.projectSearch ? { projectSearch: params.projectSearch } : {}),
+        ...(params.showRejected ? { showRejected: 'true' } : {}),
 
       },
     });

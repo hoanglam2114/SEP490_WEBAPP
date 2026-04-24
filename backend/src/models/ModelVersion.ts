@@ -6,6 +6,7 @@ export enum ModelVersionStatus {
 }
 
 export interface IModelVersion extends Document {
+  ownerId: mongoose.Types.ObjectId;
   modelRegistryId: mongoose.Types.ObjectId;
   version: string; // e.g., "v1.0.0"
   trainingHistoryId?: mongoose.Types.ObjectId;
@@ -33,6 +34,7 @@ export interface IModelVersion extends Document {
 
 const ModelVersionSchema = new Schema<IModelVersion>(
   {
+    ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     modelRegistryId: { type: Schema.Types.ObjectId, ref: 'ModelRegistry', required: true },
     version: { type: String, required: true },
     trainingHistoryId: { type: Schema.Types.ObjectId, ref: 'TrainingHistory' },
@@ -59,6 +61,6 @@ const ModelVersionSchema = new Schema<IModelVersion>(
 );
 
 // Ensure unique version per model registry
-ModelVersionSchema.index({ modelRegistryId: 1, version: 1 }, { unique: true });
+ModelVersionSchema.index({ ownerId: 1, modelRegistryId: 1, version: 1 }, { unique: true });
 
 export const ModelVersion = mongoose.model<IModelVersion>('ModelVersion', ModelVersionSchema);

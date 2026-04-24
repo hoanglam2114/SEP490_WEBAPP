@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { DatasetPrompt } from '../models/DatasetPrompt';
 import { DatasetVersion } from '../models/DatasetVersion';
 import mongoose from 'mongoose';
+import { getAuthUserId } from '../utils/auth';
 
 export class PromptController {
   /**
@@ -10,13 +11,19 @@ export class PromptController {
    */
   async listByProject(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { projectName } = req.params;
       if (!projectName || !String(projectName).trim()) {
         res.status(400).json({ error: 'projectName is required.' });
         return;
       }
 
-      const prompts = await DatasetPrompt.find({ projectName: String(projectName).trim() })
+      const prompts = await DatasetPrompt.find({ ownerId, projectName: String(projectName).trim() })
         .sort({ version: -1 })
         .lean();
 
@@ -33,13 +40,19 @@ export class PromptController {
    */
   async getById(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { id } = req.params;
       if (!mongoose.Types.ObjectId.isValid(id)) {
         res.status(400).json({ error: 'Invalid prompt id.' });
         return;
       }
 
-      const prompt = await DatasetPrompt.findById(id).lean();
+      const prompt = await DatasetPrompt.findOne({ _id: id, ownerId }).lean();
       if (!prompt) {
         res.status(404).json({ error: 'Prompt not found.' });
         return;
@@ -60,6 +73,12 @@ export class PromptController {
    */
   async create(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { projectName, content, description } = req.body as {
         projectName?: string;
         content?: string;
@@ -79,13 +98,14 @@ export class PromptController {
       }
 
       // Auto-increment version number
-      const latestPrompt = await DatasetPrompt.findOne({ projectName: trimmedProject })
+      const latestPrompt = await DatasetPrompt.findOne({ ownerId, projectName: trimmedProject })
         .sort({ version: -1 })
         .select('version')
         .lean();
       const nextVersion = (latestPrompt?.version || 0) + 1;
 
       const prompt = await DatasetPrompt.create({
+        ownerId,
         projectName: trimmedProject,
         version: nextVersion,
         content: trimmedContent,
@@ -113,6 +133,12 @@ export class PromptController {
    */
   async delete(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { id } = req.params;
       if (!mongoose.Types.ObjectId.isValid(id)) {
         res.status(400).json({ error: 'Invalid prompt id.' });
@@ -120,7 +146,7 @@ export class PromptController {
       }
 
       // Check if any DatasetVersion references this prompt
-      const linkedCount = await DatasetVersion.countDocuments({ promptId: new mongoose.Types.ObjectId(id) });
+      const linkedCount = await DatasetVersion.countDocuments({ ownerId, promptId: new mongoose.Types.ObjectId(id) });
       if (linkedCount > 0) {
         res.status(409).json({
           error: `Cannot delete: ${linkedCount} dataset version(s) reference this prompt.`,
@@ -128,7 +154,7 @@ export class PromptController {
         return;
       }
 
-      const deleted = await DatasetPrompt.findByIdAndDelete(id);
+      const deleted = await DatasetPrompt.findOneAndDelete({ _id: id, ownerId });
       if (!deleted) {
         res.status(404).json({ error: 'Prompt not found.' });
         return;

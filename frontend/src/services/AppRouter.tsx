@@ -20,6 +20,7 @@ import { ModelEvalCompareScreen } from '../pages/ModelEvalCompareScreen';
 import { EvaluationHistory } from '../pages/EvaluationHistory';
 import { ModelRegistryPage } from '../pages/ModelRegistryPage';
 import { ModelVersionsPage } from '../pages/ModelVersionsPage';
+import { PublicProjectsHub } from '../pages/PublicProjectsHub';
 
 
 const queryClient = new QueryClient({
@@ -55,6 +56,15 @@ export default function AppRouter() {
           <Route path="/training-history" element={<TrainingHistoryScreen />} />
           <Route path="/evaluation-history" element={<EvaluationHistory />} />
           <Route path="/chat" element={<ChatPage />} />
+          <Route path="/community-hub" element={<PublicProjectsHub />} />
+          <Route
+            path="/project/:id/labeling"
+            element={
+              <MainLayout>
+                <ConversionPage />
+              </MainLayout>
+            }
+          />
 
           {/* Model Registry flow */}
           <Route path="/model-registry" element={<ModelRegistryPage />} />

@@ -3,6 +3,7 @@ import fetch from 'node-fetch'; // assuming node-fetch is available based on pac
 import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
+import { getAuthUserId } from '../utils/auth';
 
 const rawGpuUrl = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
 // Split by comma and take the first one, or handle based on instanceId
@@ -45,6 +46,12 @@ export const validateModel = async (req: Request, res: Response): Promise<void> 
 
 export const chatWithAI = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const {
       text_input,
       hf_hub_id,
@@ -66,6 +73,7 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
     // If modelRegistryId is provided, fetch the Use version's HF ID
     if (modelRegistryId && !actualModelId) {
       const activeVersion = await ModelVersion.findOne({
+        ownerId,
         modelRegistryId,
         status: ModelVersionStatus.USE
       });
@@ -141,6 +149,12 @@ export const chatWithAI = async (req: Request, res: Response): Promise<void> => 
 
 export const inferWithAI = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const {
       text_input,
       hf_model_id,
@@ -164,6 +178,7 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
     // If modelRegistryId is provided, fetch the Active version's HF ID
     if (modelRegistryId && !actualModelId) {
       const activeVersion = await ModelVersion.findOne({
+        ownerId,
         modelRegistryId,
         status: ModelVersionStatus.USE
       });
@@ -228,6 +243,12 @@ export const inferWithAI = async (req: Request, res: Response): Promise<void> =>
 
 export const chatWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const {
       text_input,
       hf_hub_id,
@@ -249,6 +270,7 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
     // If modelRegistryId is provided, fetch the Active (Use) version's HF ID
     if (modelRegistryId && !actualModelId) {
       const activeVersion = await ModelVersion.findOne({
+        ownerId,
         modelRegistryId,
         status: ModelVersionStatus.USE
       });
@@ -371,6 +393,12 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
 
 export const inferWithAIStream = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const {
       text_input,
       hf_model_id,
@@ -394,6 +422,7 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
     // If modelRegistryId is provided, fetch the Active (Use) version's HF ID
     if (modelRegistryId && !actualModelId) {
       const activeVersion = await ModelVersion.findOne({
+        ownerId,
         modelRegistryId,
         status: ModelVersionStatus.USE
       });
@@ -510,6 +539,12 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
 
 export const saveChatHistory = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const { userMessage, aiMessage, model, responseTime } = req.body;
 
     if (!userMessage || !aiMessage || !model || responseTime === undefined) {
@@ -518,6 +553,7 @@ export const saveChatHistory = async (req: Request, res: Response): Promise<void
     }
 
     const newHistory = new ChatHistory({
+      ownerId,
       userMessage,
       aiMessage,
       model,
@@ -534,8 +570,14 @@ export const saveChatHistory = async (req: Request, res: Response): Promise<void
 
 export const getChatHistory = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const limit = parseInt(req.query.limit as string) || 20;
-    const history = await ChatHistory.find()
+    const history = await ChatHistory.find({ ownerId })
       .sort({ createdAt: -1 })
       .limit(limit);
 

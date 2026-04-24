@@ -12,6 +12,7 @@ export interface IEvaluationScore {
 }
 
 export interface IEvaluationHistory extends Document {
+  ownerId: Types.ObjectId;
   sampleId: Types.ObjectId;
   evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
   results: IEvaluationScore;
@@ -35,6 +36,12 @@ const EvaluationScoreSchema = new Schema<IEvaluationScore>(
 
 const EvaluationHistorySchema = new Schema<IEvaluationHistory>(
   {
+    ownerId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
     sampleId: {
       type: Schema.Types.ObjectId,
       ref: 'ProcessedDatasetItem',

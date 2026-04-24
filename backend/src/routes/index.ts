@@ -44,6 +44,8 @@ import {
   getGpuStatusEndpoint,
   reviewConversation
 } from '../controllers/evalModelController';
+import { authMiddleware } from '../middleware/authMiddleware';
+import labelRoutes from './labelRoutes';
 
 
 const router = express.Router();
@@ -77,6 +79,7 @@ const upload = multer({
 });
 
 router.use('/auth', authRoutes);
+router.use(authMiddleware);
 // Conversion Routes
 router.post('/upload', upload.single('file'), (req, res) => controller.uploadFile(req, res));
 router.post('/convert', (req, res) => controller.convertData(req, res));
@@ -114,7 +117,10 @@ router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistor
 router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
 router.post('/dataset-versions/create', (req, res) => evalController.createDatasetVersion(req, res));
 router.get('/dataset-versions/:id', (req, res) => evalController.getDatasetVersionDetail(req, res));
+router.patch('/dataset-versions/:id/visibility', (req, res) => evalController.updateDatasetVersionVisibility(req, res));
 router.delete('/dataset-versions/items/:sampleId', (req, res) => evalController.deleteDatasetVersionSample(req, res));
+router.get('/community/public-projects', (req, res) => evalController.getPublicProjectsHub(req, res));
+router.get('/community/public-projects/:id/labeling', (req, res) => evalController.getPublicProjectLabeling(req, res));
 
 // Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
 router.post('/cluster/visualize', clusterVisualize);
@@ -174,5 +180,8 @@ router.get('/dataset-prompts/project/:projectName', (req, res) => promptControll
 router.get('/dataset-prompts/:id', (req, res) => promptController.getById(req, res));
 router.post('/dataset-prompts', (req, res) => promptController.create(req, res));
 router.delete('/dataset-prompts/:id', (req, res) => promptController.delete(req, res));
+
+// Data Labeling Routes
+router.use('/labels', labelRoutes);
 
 export default router;

@@ -1,19 +1,21 @@
 import { Request, Response } from 'express';
 import { TrainingHistory } from '../models/TrainingHistory';
 import { ModelEvaluation } from '../models/Evaluation';
+import { getAuthUserId } from '../utils/auth';
 
 type EvalStats = { evalCount: number; pinnedOverallPct: number | null };
 
 /** Gắn thêm evalCount + pinnedOverallPct (%) cho danh sách job — dùng chung GET /api/train/history */
 async function enrichHistoriesWithEvalStats<T extends { jobId: string; pinnedEvalId?: string | null }>(
-  histories: T[]
+  histories: T[],
+  ownerId: string
 ): Promise<Array<T & EvalStats>> {
   if (!histories.length) return histories as Array<T & EvalStats>;
 
   const jobIds = histories.map((h) => h.jobId);
 
   const countAgg = await ModelEvaluation.aggregate<{ _id: string; evalCount: number }>([
-    { $match: { jobId: { $in: jobIds }, status: 'COMPLETED' } },
+    { $match: { ownerId, jobId: { $in: jobIds }, status: 'COMPLETED' } },
     { $group: { _id: '$jobId', evalCount: { $sum: 1 } } },
   ]);
   const evalCountByJob = Object.fromEntries(countAgg.map((x) => [x._id, x.evalCount]));
@@ -29,6 +31,7 @@ async function enrichHistoriesWithEvalStats<T extends { jobId: string; pinnedEva
   const pinnedPctByEvalId = new Map<string, number>();
   if (pinnedIds.length) {
     const pinnedEvals = await ModelEvaluation.find({
+      ownerId,
       modelEvalId: { $in: pinnedIds },
       status: 'COMPLETED',
     })
@@ -59,6 +62,11 @@ async function enrichHistoriesWithEvalStats<T extends { jobId: string; pinnedEva
 // ---------------------------------------------------------------------------
 export const saveTrainingHistory = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const {
       jobId,
       projectName,
@@ -83,7 +91,7 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
     }
 
     // Kiểm tra nếu jobId đã tồn tại thì update, nếu chưa thì tạo mới
-    const existing = await TrainingHistory.findOne({ jobId });
+    const existing = await TrainingHistory.findOne({ jobId, ownerId });
     if (existing) {
       // Update
       existing.projectName = projectName;
@@ -120,6 +128,7 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
 
     // Tạo mới
     const history = new TrainingHistory({
+      ownerId,
       jobId,
       projectName,
       baseModel,
@@ -153,8 +162,13 @@ export const saveTrainingHistory = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getTrainingHistoryList = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { baseModel } = req.query;
-    const filter: Record<string, any> = {};
+    const filter: Record<string, any> = { ownerId };
 
     if (baseModel && typeof baseModel === 'string' && baseModel.trim()) {
       filter.baseModel = baseModel.trim();
@@ -164,7 +178,7 @@ export const getTrainingHistoryList = async (req: Request, res: Response) => {
       .sort({ completedAt: -1 })
       .lean();
 
-    const enriched = await enrichHistoriesWithEvalStats(histories);
+    const enriched = await enrichHistoriesWithEvalStats(histories, ownerId);
     return res.status(200).json(enriched);
   } catch (err: any) {
     console.error('[Backend] getTrainingHistoryList error:', err);
@@ -176,9 +190,14 @@ export const getTrainingHistoryList = async (req: Request, res: Response) => {
 // GET /api/train/history/models
 // Lấy danh sách các base model đã từng train (distinct)
 // ---------------------------------------------------------------------------
-export const getDistinctBaseModels = async (_req: Request, res: Response) => {
+export const getDistinctBaseModels = async (req: Request, res: Response) => {
   try {
-    const models = await TrainingHistory.distinct('baseModel');
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const models = await TrainingHistory.distinct('baseModel', { ownerId });
     return res.status(200).json(models);
   } catch (err: any) {
     console.error('[Backend] getDistinctBaseModels error:', err);
@@ -192,8 +211,13 @@ export const getDistinctBaseModels = async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getTrainingHistoryDetail = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
-    const history = await TrainingHistory.findOne({ jobId }).lean();
+    const history = await TrainingHistory.findOne({ jobId, ownerId }).lean();
 
     if (!history) {
       return res.status(404).json({ error: 'Training history not found' });
@@ -212,8 +236,13 @@ export const getTrainingHistoryDetail = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const deleteTrainingHistory = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
-    const result = await TrainingHistory.findOneAndDelete({ jobId });
+    const result = await TrainingHistory.findOneAndDelete({ jobId, ownerId });
 
     if (!result) {
       return res.status(404).json({ error: 'Training history not found' });

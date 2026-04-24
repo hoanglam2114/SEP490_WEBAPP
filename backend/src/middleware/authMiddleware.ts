@@ -12,10 +12,25 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Attach the decoded token payload to the request object
-    (req as any).user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload & {
+      userId?: string;
+      _id?: string;
+      id?: string;
+    };
+
+    const userId = decoded.userId || decoded._id || decoded.id;
+    if (!userId) {
+      res.status(401).json({ error: 'Invalid token payload.' });
+      return;
+    }
+
+    // Attach normalized user payload so controllers can safely use req.user._id.
+    (req as any).user = {
+      ...decoded,
+      id: String(userId),
+      _id: String(userId),
+      userId: String(userId),
+    };
     
     next();
   } catch (error) {

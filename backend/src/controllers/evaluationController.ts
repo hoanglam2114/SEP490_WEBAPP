@@ -4,9 +4,13 @@ import { EvaluationSample, EvaluationService, RefinementSample } from '../servic
 import { EvaluationHistory } from '../models/EvaluationHistory';
 import { DatasetVersion } from '../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
+import { User } from '../models/User';
+import { Label } from '../models/Label';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
+import { getAuthUserId } from '../utils/auth';
+import { getHardRejectedSampleIds } from '../utils/labelFilters';
 
 type EvalFormat = 'openai' | 'alpaca';
 
@@ -275,6 +279,12 @@ export class EvaluationController {
 
   async createDatasetVersion(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { projectName, similarityThreshold, format, data, promptId, promptContentSnapshot } = req.body as {
         projectName?: string;
         similarityThreshold?: number;
@@ -297,7 +307,7 @@ export class EvaluationController {
         ? Math.min(1, Math.max(0, Number(similarityThreshold)))
         : 0.9;
 
-      const versionCount = await DatasetVersion.countDocuments({ projectName: normalizedProjectName });
+      const versionCount = await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
       const versionName = `Version ${versionCount + 1}`;
 
       const normalizedPromptId =
@@ -307,6 +317,7 @@ export class EvaluationController {
       const normalizedPromptSnapshot = String(promptContentSnapshot || '').trim();
 
       const datasetVersion = await DatasetVersion.create({
+        ownerId,
         projectName: normalizedProjectName,
         versionName,
         similarityThreshold: threshold,
@@ -378,6 +389,12 @@ export class EvaluationController {
 
   async saveEvaluation(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       await ensureEvaluationHistoryIndexes();
 
       const { items } = req.body as {
@@ -393,7 +410,7 @@ export class EvaluationController {
         return;
       }
 
-      const documents = items
+      const candidateItems = items
         .filter((item) => {
           return (
             item &&
@@ -401,10 +418,34 @@ export class EvaluationController {
             ['manual', 'gemini', 'openai', 'deepseek', 'none'].includes(item.evaluatedBy) &&
             item.results
           );
-        })
+        });
+
+      const sampleIds = candidateItems.map((item) => new mongoose.Types.ObjectId(item.sampleId));
+      const ownedSamples = sampleIds.length
+        ? await ProcessedDatasetItem.aggregate([
+          { $match: { _id: { $in: sampleIds } } },
+          {
+            $lookup: {
+              from: 'datasetversions',
+              localField: 'datasetVersionId',
+              foreignField: '_id',
+              as: 'datasetVersion',
+            },
+          },
+          { $unwind: '$datasetVersion' },
+          { $match: { 'datasetVersion.ownerId': new mongoose.Types.ObjectId(ownerId) } },
+          { $project: { _id: 1 } },
+        ])
+        : [];
+
+      const ownedSampleSet = new Set(ownedSamples.map((sample: any) => String(sample._id)));
+
+      const documents = candidateItems
+        .filter((item) => ownedSampleSet.has(String(item.sampleId)))
         .map((item) => {
           const objectId = new mongoose.Types.ObjectId(item.sampleId);
           return {
+            ownerId,
             sampleId: objectId,
             evaluatedBy: item.evaluatedBy,
             results: {
@@ -436,11 +477,17 @@ export class EvaluationController {
 
   async getEvaluationHistory(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const page = Math.max(1, Number(req.query.page) || 1);
       const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 20));
       const projectSearch = String(req.query.projectSearch || '').trim().toLowerCase();
 
-      const projectMatch: Record<string, any> = {};
+      const projectMatch: Record<string, any> = { ownerId: new mongoose.Types.ObjectId(ownerId) };
       if (projectSearch) {
         projectMatch.projectName = { $regex: projectSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
       }
@@ -470,7 +517,7 @@ export class EvaluationController {
 
       const projectNames = projectGroups.map((group) => String(group.projectName || 'Untitled Project'));
       const versions = projectNames.length
-        ? await DatasetVersion.find({ projectName: { $in: projectNames } })
+        ? await DatasetVersion.find({ ownerId, projectName: { $in: projectNames } })
           .sort({ createdAt: -1 })
           .lean()
         : [];
@@ -490,8 +537,29 @@ export class EvaluationController {
         ])
         : [];
 
+      // ── Hard-REJECT community filter ─────────────────────────────────────
+      // showRejected=true  → show ONLY samples with hard REJECT >= 3 upvotes
+      // showRejected=false → exclude those samples (default)
+      const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
+      let filteredVersionItems: typeof versionItems = versionItems;
+
+      if (versionItems.length > 0) {
+        const scopedIds = (versionItems as any[]).map((item) => new mongoose.Types.ObjectId(String(item._id)));
+        const rejectedIds = await getHardRejectedSampleIds(scopedIds);
+
+        if (rejectedIds.size > 0) {
+          filteredVersionItems = (versionItems as any[]).filter((item) => {
+            const isRejected = rejectedIds.has(String(item._id));
+            return showRejected ? isRejected : !isRejected;
+          });
+        } else if (showRejected) {
+          // showRejected=true but no rejected samples exist → return empty
+          filteredVersionItems = [];
+        }
+      }
+
       const itemsByVersion = new Map<string, any[]>();
-      for (const item of versionItems as any[]) {
+      for (const item of filteredVersionItems as any[]) {
         const key = String(item.datasetVersionId);
         if (!itemsByVersion.has(key)) {
           itemsByVersion.set(key, []);
@@ -504,12 +572,20 @@ export class EvaluationController {
         const versionItemRows = itemsByVersion.get(String(version._id)) || [];
         const perSampleAvgOveralls = versionItemRows
           .map((item) => {
-            const avg = buildAverageResults(Array.isArray(item.evaluations) ? item.evaluations : []);
+            const scopedEvaluations = Array.isArray(item.evaluations)
+              ? item.evaluations.filter((entry: any) => String(entry.ownerId) === ownerId)
+              : [];
+            const avg = buildAverageResults(scopedEvaluations);
             return buildEvaluationSummary(avg);
           })
           .filter((value) => Number.isFinite(value)) as number[];
 
-        const evaluatedCount = versionItemRows.filter((item) => Array.isArray(item.evaluations) && item.evaluations.length > 0).length;
+        const evaluatedCount = versionItemRows.filter((item) => {
+          const scopedEvaluations = Array.isArray(item.evaluations)
+            ? item.evaluations.filter((entry: any) => String(entry.ownerId) === ownerId)
+            : [];
+          return scopedEvaluations.length > 0;
+        }).length;
         const avgOverall = perSampleAvgOveralls.length
           ? perSampleAvgOveralls.reduce((sum, value) => sum + value, 0) / perSampleAvgOveralls.length
           : null;
@@ -557,8 +633,198 @@ export class EvaluationController {
     }
   }
 
+  async getPublicProjectsHub(_req: Request, res: Response): Promise<void> {
+    try {
+      const versionRows = await DatasetVersion.find({ isPublic: true })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const ownerIds = Array.from(
+        new Set(versionRows.map((row: any) => String(row.ownerId)).filter(Boolean))
+      );
+
+      const owners = ownerIds.length
+        ? await User.find({ _id: { $in: ownerIds } }).select('_id name').lean()
+        : [];
+      const ownerNameMap = new Map<string, string>(
+        owners.map((owner: any) => [String(owner._id), String(owner.name || 'Unknown')])
+      );
+
+      const projects = await Promise.all(
+        versionRows.map(async (row: any) => {
+          const ownerId = String(row.ownerId);
+          const projectName = String(row.projectName || 'Untitled Project');
+          const datasetVersionId = String(row._id);
+
+          const topLabelRows = await Label.aggregate([
+            {
+              $lookup: {
+                from: 'processeddatasetitems',
+                localField: 'sampleId',
+                foreignField: '_id',
+                as: 'sample',
+              },
+            },
+            { $unwind: '$sample' },
+            {
+              $lookup: {
+                from: 'datasetversions',
+                localField: 'sample.datasetVersionId',
+                foreignField: '_id',
+                as: 'version',
+              },
+            },
+            { $unwind: '$version' },
+            {
+              $match: {
+                'version._id': new mongoose.Types.ObjectId(datasetVersionId),
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                name: 1,
+                type: 1,
+                upvoteCount: { $size: '$upvotes' },
+                createdAt: 1,
+              },
+            },
+            { $sort: { upvoteCount: -1, createdAt: -1 } },
+            { $limit: 1 },
+          ]);
+
+          const topLabel = topLabelRows[0]
+            ? {
+                _id: String(topLabelRows[0]._id),
+                name: String(topLabelRows[0].name || ''),
+                type: topLabelRows[0].type === 'hard' ? 'hard' : 'soft',
+                upvoteCount: Number(topLabelRows[0].upvoteCount || 0),
+              }
+            : null;
+
+          return {
+            id: datasetVersionId,
+            projectName,
+            versionName: String(row.versionName || 'Version'),
+            ownerId,
+            ownerName: ownerNameMap.get(ownerId) || 'Unknown',
+            updatedAt: row.createdAt,
+            topLabel,
+          };
+        })
+      );
+
+      res.json({ projects });
+    } catch (error: any) {
+      console.error('Get public projects hub error:', error);
+      res.status(500).json({
+        error: 'Lấy danh sách public projects thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async getPublicProjectLabeling(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'project id không hợp lệ.' });
+        return;
+      }
+
+      const datasetVersion = await DatasetVersion.findById(id).lean();
+      if (!datasetVersion) {
+        res.status(404).json({ error: 'Không tìm thấy project.' });
+        return;
+      }
+
+      if (!datasetVersion.isPublic) {
+        res.status(403).json({ error: 'Project này chưa được public.' });
+        return;
+      }
+
+      const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
+
+      const items = await ProcessedDatasetItem.find({ datasetVersionId: datasetVersion._id })
+        .sort({ createdAt: 1 })
+        .lean();
+
+      let filteredItems: typeof items = items;
+      let rejectedSamples = 0;
+
+      if (items.length > 0) {
+        const scopedIds = (items as any[]).map((item) => new mongoose.Types.ObjectId(String(item._id)));
+        const rejectedIds = await getHardRejectedSampleIds(scopedIds);
+        rejectedSamples = rejectedIds.size;
+
+        if (rejectedIds.size > 0) {
+          filteredItems = (items as any[]).filter((item) => {
+            const isRejected = rejectedIds.has(String(item._id));
+            return showRejected ? isRejected : !isRejected;
+          });
+        } else if (showRejected) {
+          filteredItems = [];
+        }
+      }
+
+      const owner = await User.findById(datasetVersion.ownerId).select('_id name').lean();
+
+      const inferredFormat: EvalFormat = Array.isArray(filteredItems[0]?.data?.messages) ? 'openai' : 'alpaca';
+      const serializedData = inferredFormat === 'openai'
+        ? filteredItems.map((item: any) => ({
+            conversation_id: item.sampleId,
+            messages: Array.isArray(item.data?.messages) ? item.data.messages : [],
+          }))
+        : filteredItems.map((item: any) => ({
+            id: item.sampleId,
+            ...(item.data || {}),
+          }));
+
+      const sampleIdMap = filteredItems.reduce<Record<string, string>>((acc, item: any) => {
+        acc[String(item.sampleId)] = String(item._id);
+        return acc;
+      }, {});
+
+      res.json({
+        project: {
+          id: String(datasetVersion._id),
+          projectName: datasetVersion.projectName,
+          ownerId: String(datasetVersion.ownerId),
+          ownerName: String(owner?.name || 'Unknown'),
+          updatedAt: datasetVersion.createdAt,
+        },
+        loadProject: {
+          projectName: datasetVersion.projectName,
+          format: inferredFormat,
+          data: serializedData,
+          evaluationMap: {},
+          datasetVersionId: String(datasetVersion._id),
+          sampleIdMap,
+          ownerId: String(datasetVersion.ownerId),
+          startStep: 5,
+          totalSamples: items.length,
+          visibleSamples: filteredItems.length,
+          rejectedSamples,
+          showRejected,
+        },
+      });
+    } catch (error: any) {
+      console.error('Get public project labeling error:', error);
+      res.status(500).json({
+        error: 'Lấy dữ liệu labeling thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async getDatasetVersionDetail(req: Request, res: Response): Promise<void> {
     try {
+      const viewerId = getAuthUserId(req);
+      if (!viewerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { id } = req.params;
       if (!mongoose.Types.ObjectId.isValid(id)) {
         res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
@@ -568,6 +834,15 @@ export class EvaluationController {
       const version = await DatasetVersion.findById(id).lean();
       if (!version) {
         res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const isOwner = String((version as any).ownerId) === String(viewerId);
+      const isPublicVersion = Boolean((version as any).isPublic);
+      const isCommunityAccess = String(req.query.community || req.query.fromCommunityHub || '').toLowerCase() === 'true';
+
+      if (!isOwner && !isPublicVersion && !isCommunityAccess) {
+        res.status(403).json({ error: 'Forbidden: you do not have access to this dataset version.' });
         return;
       }
 
@@ -584,9 +859,33 @@ export class EvaluationController {
         },
       ]);
 
-      const detailItems = (itemsWithEvaluations as any[]).map((item) => {
-        const history = Array.isArray(item.evaluations) ? [...item.evaluations] : [];
-        history.sort((a, b) => getEvaluationTimestamp(a) - getEvaluationTimestamp(b));
+      // ── Hard-REJECT community filter ─────────────────────────────────────
+      // showRejected=true  → show ONLY samples with hard REJECT >= 3 upvotes
+      // showRejected=false → exclude those samples (default)
+      const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
+      let filteredItems: typeof itemsWithEvaluations = itemsWithEvaluations;
+
+      if (itemsWithEvaluations.length > 0) {
+        const scopedIds = (itemsWithEvaluations as any[]).map(
+          (item) => new mongoose.Types.ObjectId(String(item._id))
+        );
+        const rejectedIds = await getHardRejectedSampleIds(scopedIds);
+
+        if (rejectedIds.size > 0) {
+          filteredItems = (itemsWithEvaluations as any[]).filter((item) => {
+            const isRejected = rejectedIds.has(String(item._id));
+            return showRejected ? isRejected : !isRejected;
+          });
+        } else if (showRejected) {
+          filteredItems = [];
+        }
+      }
+
+      const detailItems = (filteredItems as any[]).map((item) => {
+        const history = Array.isArray(item.evaluations)
+          ? item.evaluations.filter((entry: any) => String(entry.ownerId) === viewerId)
+          : [];
+        history.sort((a: any, b: any) => getEvaluationTimestamp(a) - getEvaluationTimestamp(b));
         const latest = getLatestEvaluationEntry(history);
         const average = buildAverageResults(history);
         return {
@@ -612,6 +911,7 @@ export class EvaluationController {
           _id: String(version._id),
           projectName: version.projectName,
           versionName: version.versionName,
+          isPublic: Boolean((version as any).isPublic),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,
@@ -627,8 +927,64 @@ export class EvaluationController {
     }
   }
 
+  async updateDatasetVersionVisibility(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const { isPublic } = req.body as { isPublic?: boolean };
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      if (typeof isPublic !== 'boolean') {
+        res.status(400).json({ error: 'isPublic phải là boolean.' });
+        return;
+      }
+
+      const updated = await DatasetVersion.findOneAndUpdate(
+        { _id: id, ownerId },
+        { $set: { isPublic } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      res.json({
+        message: isPublic ? 'Dataset version đã được public.' : 'Dataset version đã được chuyển về private.',
+        datasetVersion: {
+          _id: String(updated._id),
+          isPublic: Boolean((updated as any).isPublic),
+          projectName: updated.projectName,
+          versionName: updated.versionName,
+        },
+      });
+    } catch (error: any) {
+      console.error('Update dataset version visibility error:', error);
+      res.status(500).json({
+        error: 'Cập nhật visibility thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async deleteDatasetVersionSample(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { sampleId } = req.params;
       if (!sampleId || !mongoose.Types.ObjectId.isValid(sampleId)) {
         res.status(400).json({ error: 'sampleId không hợp lệ.' });
@@ -641,13 +997,19 @@ export class EvaluationController {
         return;
       }
 
+      const version = await DatasetVersion.findOne({ _id: item.datasetVersionId, ownerId }).select('_id').lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy mẫu cần xóa.' });
+        return;
+      }
+
       await Promise.all([
         ProcessedDatasetItem.deleteOne({ _id: item._id }),
-        EvaluationHistory.deleteMany({ sampleId: item._id }),
+        EvaluationHistory.deleteMany({ sampleId: item._id, ownerId }),
       ]);
 
       await DatasetVersion.updateOne(
-        { _id: item.datasetVersionId, totalSamples: { $gt: 0 } },
+        { _id: item.datasetVersionId, ownerId, totalSamples: { $gt: 0 } },
         { $inc: { totalSamples: -1 } }
       );
 
@@ -666,6 +1028,12 @@ export class EvaluationController {
 
   async updateEvaluationHistory(req: Request, res: Response): Promise<void> {
     try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const { id } = req.params;
       const { results, evaluatedBy } = req.body as {
         results: EvaluationScorePayload;
@@ -687,8 +1055,8 @@ export class EvaluationController {
         return;
       }
 
-      const updated = await EvaluationHistory.findByIdAndUpdate(
-        id,
+      const updated = await EvaluationHistory.findOneAndUpdate(
+        { _id: id, ownerId },
         {
           $set: {
             evaluatedBy,

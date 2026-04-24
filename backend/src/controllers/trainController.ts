@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { TrainingHistory } from '../models/TrainingHistory';
 import path from 'path';
 import { isZipFile, extractForTraining, cleanupTempDir, DatasetMetadata } from '../services/zipService';
+import { getAuthUserId } from '../utils/auth';
 dotenv.config();
 
 /**
@@ -134,6 +135,11 @@ async function hfRepoCheckpointProbe(
 export const startTraining = async (req: Request, res: Response) => {
   let zipTempDir: string | null = null;
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const {
       model_name,
       epochs,
@@ -364,6 +370,7 @@ export const startTraining = async (req: Request, res: Response) => {
     // --- CREATE INITIAL TRAINING HISTORY RECORD ---
     try {
       await TrainingHistory.create({
+        ownerId,
         jobId: job_id,
         projectName: typeof projectName === 'string' ? projectName : 'AutoTrain Job',
         baseModel: model_name,
@@ -427,9 +434,15 @@ export const startTraining = async (req: Request, res: Response) => {
 // GET /api/train/active
 // Returns all active training jobs from MongoDB
 // ---------------------------------------------------------------------------
-export const getActiveTrainingJobs = async (_req: Request, res: Response) => {
+export const getActiveTrainingJobs = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const activeJobs = await TrainingHistory.find({
+      ownerId,
       status: { $in: ['QUEUED', 'PENDING', 'LOADING_MODEL', 'TRAINING', 'RUNNING'] }
     }).sort({ startedAt: -1 });
     
@@ -446,6 +459,11 @@ export const getActiveTrainingJobs = async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getTrainingStatus = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
 
     // Guard: never forward obviously invalid IDs
@@ -454,7 +472,10 @@ export const getTrainingStatus = async (req: Request, res: Response) => {
     }
 
     // Get worker URL from DB
-    const history = await TrainingHistory.findOne({ jobId });
+    const history = await TrainingHistory.findOne({ jobId, ownerId });
+    if (!history) {
+      return res.status(404).json({ error: 'Training job not found' });
+    }
     const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
 
     const response = await fetch(`${workerUrl}/api/train/status/${jobId}`, {
@@ -472,6 +493,12 @@ export const getTrainingStatus = async (req: Request, res: Response) => {
 // SSE — polls GPU Service every 1 s and pushes data to the frontend
 // ---------------------------------------------------------------------------
 export const streamTrainingStatus = async (req: Request, res: Response) => {
+  const ownerId = getAuthUserId(req);
+  if (!ownerId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
   const { jobId } = req.params;
 
   // Guard: stop immediately if jobId is invalid — prevents /status/null spam
@@ -489,7 +516,11 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
   res.flushHeaders();
 
   // Get worker URL from DB
-  const history = await TrainingHistory.findOne({ jobId });
+  const history = await TrainingHistory.findOne({ jobId, ownerId });
+  if (!history) {
+    res.status(404).json({ error: 'Training job not found' });
+    return;
+  }
   const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
 
   const intervalId = setInterval(async () => {
@@ -515,7 +546,7 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
         }
 
         TrainingHistory.updateOne(
-          { jobId },
+          { jobId, ownerId },
           { 
             ...updateFields,
             ...(Object.keys(pushFields).length > 0 ? { $push: pushFields } : {})
@@ -550,7 +581,7 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
 
         // Auto-update MongoDB so History screen shows correct status
         TrainingHistory.updateOne(
-          { jobId },
+          { jobId, ownerId },
           {
             status: data.status,
             completedAt: new Date(),
@@ -582,10 +613,18 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const stopTraining = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
 
     // Get worker URL from DB
-    const history = await TrainingHistory.findOne({ jobId });
+    const history = await TrainingHistory.findOne({ jobId, ownerId });
+    if (!history) {
+      return res.status(404).json({ error: 'Training job not found' });
+    }
     const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
 
     const response = await fetch(`${workerUrl}/api/train/stop/${jobId}`, { 
@@ -595,7 +634,7 @@ export const stopTraining = async (req: Request, res: Response) => {
     const data = await response.json();
 
     await TrainingHistory.updateOne(
-      { jobId },
+      { jobId, ownerId },
       {
         status: 'STOPPED',
         completedAt: new Date(),
@@ -648,10 +687,15 @@ export const getSystemResources = async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const resumeTraining = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
 
     // 1. Fetch Job from MongoDB
-    const history = await TrainingHistory.findOne({ jobId });
+    const history = await TrainingHistory.findOne({ jobId, ownerId });
     if (!history) {
       return res.status(404).json({ error: 'Job not found in database' });
     }
@@ -755,7 +799,7 @@ export const resumeTraining = async (req: Request, res: Response) => {
     }
 
     if (gpuResponse.ok) {
-      await TrainingHistory.updateOne({ jobId }, { 
+      await TrainingHistory.updateOne({ jobId, ownerId }, { 
         status: 'RUNNING',
         workerUrl: workerUrl
       });

@@ -59,7 +59,7 @@ const tools = [
     icon: (
       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-          d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012v2M7 7h10" />
+          d="M4 7h16M4 12h16M4 17h16" />
       </svg>
     ),
   },
@@ -87,6 +87,18 @@ const tools = [
       </svg>
     ),
   },
+  {
+    title: 'Community Hub',
+    description: 'Browse public projects and jump directly into Data Labeling as a guest collaborator',
+    path: '/community-hub',
+    tag: 'Community',
+    icon: (
+      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M17 20h5V10H2v10h5m10 0v-5a3 3 0 00-6 0v5m6 0H7" />
+      </svg>
+    ),
+  },
 ];
 
 const TAG_COLORS: Record<string, string> = {
@@ -96,6 +108,7 @@ const TAG_COLORS: Record<string, string> = {
   Evaluation: 'bg-emerald-50 text-emerald-600 border-emerald-200',
   Registry: 'bg-blue-50 text-blue-600 border-blue-200',
   Inference: 'bg-amber-50 text-amber-600 border-amber-200',
+  Community: 'bg-cyan-50 text-cyan-700 border-cyan-200',
 };
 
 export const HomePage: React.FC = () => {

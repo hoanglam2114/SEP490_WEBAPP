@@ -251,6 +251,7 @@ export const EvaluationHistory: React.FC = () => {
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [projectMinOverallMap, setProjectMinOverallMap] = useState<Record<string, string>>({});
   const [showUnaudited, setShowUnaudited] = useState(false);
+  const [showRejectedSamples, setShowRejectedSamples] = useState(false);
   const [deletedSampleIds, setDeletedSampleIds] = useState<Set<string>>(new Set());
 
   const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
@@ -272,8 +273,13 @@ export const EvaluationHistory: React.FC = () => {
   }, [openActionMenuSampleId]);
 
   const historyQuery = useQuery<EvaluationHistoryResponse>({
-    queryKey: ['evaluation-history', page, projectSearch],
-    queryFn: () => apiService.getEvaluationHistory({ page, limit: 20, projectSearch }),
+    queryKey: ['evaluation-history', page, projectSearch, showRejectedSamples],
+    queryFn: () => apiService.getEvaluationHistory({
+      page,
+      limit: 20,
+      projectSearch,
+      showRejected: showRejectedSamples,
+    }),
   });
 
   const projects = historyQuery.data?.projects ?? [];
@@ -291,9 +297,9 @@ export const EvaluationHistory: React.FC = () => {
   );
 
   const versionQuery = useQuery<VersionDetailResponse>({
-    queryKey: ['dataset-version-detail', selectedVersionId],
+    queryKey: ['dataset-version-detail', selectedVersionId, showRejectedSamples],
     enabled: Boolean(selectedVersionId),
-    queryFn: () => apiService.getDatasetVersionDetail(selectedVersionId as string),
+    queryFn: () => apiService.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
   });
 
   useEffect(() => {
@@ -621,6 +627,18 @@ export const EvaluationHistory: React.FC = () => {
                 />
                 <span>Displaying unevaluated data</span>
               </label>
+
+              <button
+                type="button"
+                onClick={() => setShowRejectedSamples((prev) => !prev)}
+                className={`px-3 py-1.5 text-sm font-semibold rounded-lg border transition-colors ${
+                  showRejectedSamples
+                    ? 'bg-rose-100 text-rose-700 border-rose-300'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                Show REJECTED samples (3+ votes)
+              </button>
 
               <div className="ml-auto text-xs text-slate-500">
                 Showing {visibleItems.length} / {detailItems.length} records

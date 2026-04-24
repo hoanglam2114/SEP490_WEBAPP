@@ -1,11 +1,18 @@
 import { Request, Response } from 'express';
 import { ChatSession } from '../models/ChatSession';
+import { getAuthUserId } from '../utils/auth';
 
 // Get all sessions (sorted by recent)
 export const getSessions = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const limit = parseInt(req.query.limit as string) || 30;
-    const sessions = await ChatSession.find({}, { messages: 0 }) // Exclude messages for list view to save bandwidth
+    const sessions = await ChatSession.find({ ownerId }, { messages: 0 }) // Exclude messages for list view to save bandwidth
       .sort({ updatedAt: -1 })
       .limit(limit);
       
@@ -19,7 +26,13 @@ export const getSessions = async (req: Request, res: Response): Promise<void> =>
 // Get a specific session by ID
 export const getSessionById = async (req: Request, res: Response): Promise<void> => {
   try {
-    const session = await ChatSession.findById(req.params.id);
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const session = await ChatSession.findOne({ _id: req.params.id, ownerId });
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -34,6 +47,12 @@ export const getSessionById = async (req: Request, res: Response): Promise<void>
 // Create a new session with an initial message pair
 export const createSession = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const { userMessage, aiMessage, model, responseTime } = req.body;
 
     if (!userMessage || !aiMessage) {
@@ -48,6 +67,7 @@ export const createSession = async (req: Request, res: Response): Promise<void> 
     }
 
     const newSession = new ChatSession({
+      ownerId,
       title,
       messages: [
         { role: 'user', content: userMessage, createdAt: new Date() },
@@ -66,6 +86,12 @@ export const createSession = async (req: Request, res: Response): Promise<void> 
 // Append a new message pair to an existing session
 export const appendMessageToSession = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const { id } = req.params;
     const { userMessage, aiMessage, model, responseTime } = req.body;
 
@@ -74,7 +100,7 @@ export const appendMessageToSession = async (req: Request, res: Response): Promi
       return;
     }
 
-    const session = await ChatSession.findById(id);
+    const session = await ChatSession.findOne({ _id: id, ownerId });
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -95,8 +121,14 @@ export const appendMessageToSession = async (req: Request, res: Response): Promi
 // Delete a session
 export const deleteSession = async (req: Request, res: Response): Promise<void> => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const { id } = req.params;
-    const deletedSession = await ChatSession.findByIdAndDelete(id);
+    const deletedSession = await ChatSession.findOneAndDelete({ _id: id, ownerId });
     if (!deletedSession) {
       res.status(404).json({ error: 'Session not found' });
       return;

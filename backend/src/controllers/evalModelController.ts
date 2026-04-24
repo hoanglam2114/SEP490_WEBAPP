@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { ModelEvaluation, IEvalResult } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';
 import { isZipFile, extractForEvaluation, cleanupTempDir, DatasetMetadata } from '../services/zipService';
+import { getAuthUserId } from '../utils/auth';
 dotenv.config();
 
 const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
@@ -129,10 +130,15 @@ function normalizeEvalResult(result: any) {
 export const runEvaluation = async (req: Request, res: Response) => {
   let zipTempDir: string | null = null;
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
 
     // 1. Lấy TrainingHistory để lấy hf_repo_id và model_max_length
-    const history = await TrainingHistory.findOne({ jobId });
+    const history = await TrainingHistory.findOne({ jobId, ownerId });
     if (!history) {
       return res.status(404).json({ error: 'Job không tồn tại trong database' });
     }
@@ -195,6 +201,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
 
     // 4. Tạo Evaluation record trong MongoDB với status PENDING
     await ModelEvaluation.create({
+      ownerId,
       modelEvalId: eval_job_id,
       jobId,
       status: 'PENDING',
@@ -233,12 +240,12 @@ export const runEvaluation = async (req: Request, res: Response) => {
     const gpuStatus = await getGpuStatus();
     if (!gpuStatus) {
       fs.unlink(evalFile.path, () => {});
-      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id, ownerId });
       return res.status(503).json({ error: 'gpu_offline', message: 'GPU service không phản hồi' });
     }
     if (!gpuStatus.can_create_eval) {
       fs.unlink(evalFile.path, () => {});
-      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id, ownerId });
       return res.status(503).json({
         error: 'worker_busy',
         message: `GPU đang bận (${gpuStatus.active_evals}/${gpuStatus.max_evals} slots, VRAM free: ${Math.round(gpuStatus.vram_free_mb / 1024)}GB)`,
@@ -255,7 +262,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
     if (gpuResponse.status === 409) {
       // Race condition: GPU vừa nhận job khác trong khoảng thời gian ngắn
       fs.unlink(evalFile.path, () => {});
-      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id, ownerId });
       return res.status(503).json({ error: 'worker_busy', message: 'GPU vừa nhận job khác, vui lòng thử lại' });
     }
 
@@ -276,7 +283,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
 
     if (!gpuResponse.ok) {
       fs.unlink(evalFile.path, () => { });
-      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id });
+      await ModelEvaluation.deleteOne({ modelEvalId: eval_job_id, ownerId });
       return res.status(gpuResponse.status).json(gpuData);
     }
 
@@ -289,7 +296,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
     if (zipTempDir) cleanupTempDir(zipTempDir);
 
     // 9. Update TrainingHistory status → EVALUATING
-    await TrainingHistory.updateOne({ jobId }, { status: 'EVALUATING' });
+    await TrainingHistory.updateOne({ jobId, ownerId }, { status: 'EVALUATING' });
 
     return res.status(201).json({
       eval_job_id,
@@ -307,6 +314,12 @@ export const runEvaluation = async (req: Request, res: Response) => {
 // Khi COMPLETED → gọi GPU lấy result → lưu MongoDB → update TrainingHistory
 // ---------------------------------------------------------------------------
 export const streamEvalStatus = async (req: Request, res: Response) => {
+  const ownerId = getAuthUserId(req);
+  if (!ownerId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
   const { evalJobId } = req.params;
 
   if (!evalJobId || evalJobId === 'null' || evalJobId === 'undefined') {
@@ -314,6 +327,12 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
     res.flushHeaders();
     res.write(`event: error\ndata: ${JSON.stringify({ error: 'Invalid evalJobId' })}\n\n`);
     res.end();
+    return;
+  }
+
+  const scopedEval = await ModelEvaluation.findOne({ modelEvalId: evalJobId, ownerId }).select('_id').lean();
+  if (!scopedEval) {
+    res.status(404).json({ error: 'Evaluation not found' });
     return;
   }
 
@@ -342,15 +361,15 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 
         if (data.status === 'COMPLETED') {
           // Lấy kết quả từ GPU rồi lưu MongoDB
-          await _fetchAndSaveResult(evalJobId);
+          await _fetchAndSaveResult(evalJobId, ownerId);
         } else {
           // FAILED — cập nhật DB
-          await ModelEvaluation.updateOne({ modelEvalId: evalJobId }, { status: 'FAILED' });
+          await ModelEvaluation.updateOne({ modelEvalId: evalJobId, ownerId }, { status: 'FAILED' });
           // Tìm jobId để update TrainingHistory
-          const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalJobId });
+          const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalJobId, ownerId });
           if (evalDoc) {
             await TrainingHistory.updateOne(
-              { jobId: evalDoc.jobId },
+              { jobId: evalDoc.jobId, ownerId },
               { status: 'COMPLETED' } // rollback về COMPLETED để có thể thử lại
             );
           }
@@ -373,7 +392,7 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 // Helper nội bộ: lấy kết quả từ GPU → lưu Evaluation MongoDB
 //               → TrainingHistory: status COMPLETED (train xong), auto-pin nếu chưa có
 // ---------------------------------------------------------------------------
-async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
+async function _fetchAndSaveResult(evalJobId: string, ownerId: string): Promise<void> {
   try {
     const resp = await fetch(`${GPU_SERVICE_URL}/api/eval/result/${evalJobId}`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
@@ -395,7 +414,7 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
 
     // Lưu vào Evaluation collection
     await ModelEvaluation.findOneAndUpdate(
-      { modelEvalId: evalJobId },
+      { modelEvalId: evalJobId, ownerId },
       {
         status:             'COMPLETED',
         evalMode:           normalized.evalMode,
@@ -418,13 +437,13 @@ async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
     );
 
     // Training job vẫn là COMPLETED; Leaderboard dựa vào pinnedEvalId (auto-pin lần eval đầu)
-    const history = await TrainingHistory.findOne({ jobId: result.jobId });
+    const history = await TrainingHistory.findOne({ jobId: result.jobId, ownerId });
     const updateFields: Record<string, any> = { status: 'COMPLETED' };
     if (!history?.pinnedEvalId) {
       updateFields.pinnedEvalId = evalJobId;
       console.log(`[Backend] 📌 Auto-pinned first eval ${evalJobId} for job ${result.jobId}`);
     }
-    await TrainingHistory.updateOne({ jobId: result.jobId }, updateFields);
+    await TrainingHistory.updateOne({ jobId: result.jobId, ownerId }, updateFields);
 
     console.log(`[Backend] ✅ Eval result saved for ${evalJobId}, job ${result.jobId} → COMPLETED + pin nếu cần`);
   } catch (err: any) {
@@ -451,6 +470,11 @@ export const getGpuStatusEndpoint = async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const saveEvalResult = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const result = req.body;
     if (!result || !result.modelEvalId || !result.jobId) {
       return res.status(400).json({ error: 'Missing modelEvalId or jobId in body' });
@@ -459,8 +483,9 @@ export const saveEvalResult = async (req: Request, res: Response) => {
     const normalized = normalizeEvalResult(result);
 
     await ModelEvaluation.findOneAndUpdate(
-      { modelEvalId: result.modelEvalId },
+      { modelEvalId: result.modelEvalId, ownerId },
       {
+        ownerId,
         modelEvalId: result.modelEvalId,
         jobId: result.jobId,
         status: result.status || 'COMPLETED',
@@ -481,13 +506,13 @@ export const saveEvalResult = async (req: Request, res: Response) => {
       { upsert: true, new: true }
     );
 
-    const history = await TrainingHistory.findOne({ jobId: result.jobId });
+    const history = await TrainingHistory.findOne({ jobId: result.jobId, ownerId });
     const updateFields: Record<string, any> = { status: 'COMPLETED' };
     if (!history?.pinnedEvalId) {
       updateFields.pinnedEvalId = result.modelEvalId;
       console.log(`[Backend] 📌 Auto-pinned eval ${result.modelEvalId} for job ${result.jobId} (save endpoint)`);
     }
-    await TrainingHistory.updateOne({ jobId: result.jobId }, updateFields);
+    await TrainingHistory.updateOne({ jobId: result.jobId, ownerId }, updateFields);
 
     console.log(`[Backend] ✅ Eval saved via /api/model-eval/save for job ${result.jobId}`);
     return res.status(200).json({ message: 'Eval saved successfully' });
@@ -503,13 +528,18 @@ export const saveEvalResult = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getEvaluation = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { evalId } = req.params;
-    const doc = await ModelEvaluation.findOne({ modelEvalId: evalId }).lean();
+    const doc = await ModelEvaluation.findOne({ modelEvalId: evalId, ownerId }).lean();
     if (!doc) {
       return res.status(404).json({ error: 'Evaluation not found' });
     }
     // Kiểm tra xem eval này có đang được pin không
-    const history = await TrainingHistory.findOne({ jobId: doc.jobId })
+    const history = await TrainingHistory.findOne({ jobId: doc.jobId, ownerId })
       .select('pinnedEvalId projectName')
       .lean();
     return res.json({
@@ -526,21 +556,28 @@ export const getEvaluation = async (req: Request, res: Response) => {
 // GET /api/model-eval/leaderboard
 // Chỉ job đã có eval được chọn (pinned) — ít nhất 1 lần eval xong có pinnedEvalId
 // ---------------------------------------------------------------------------
-export const getEvaluatedModels = async (_req: Request, res: Response) => {
+export const getEvaluatedModels = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const histories = await TrainingHistory.find({
+      ownerId,
       pinnedEvalId: { $exists: true, $ne: null },
     }).lean();
 
     const result = await Promise.all(
       histories.map(async (h) => {
-        const latestEval = await ModelEvaluation.findOne({ jobId: h.jobId, status: 'COMPLETED' })
+        const latestEval = await ModelEvaluation.findOne({ ownerId, jobId: h.jobId, status: 'COMPLETED' })
           .sort({ completedAt: -1 })
           .lean();
 
         let displayEval = latestEval;
         if (h.pinnedEvalId) {
           const pinned = await ModelEvaluation.findOne({
+            ownerId,
             jobId: h.jobId,
             modelEvalId: h.pinnedEvalId,
             status: 'COMPLETED',
@@ -588,12 +625,17 @@ export const getEvaluatedModels = async (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getEvalHistory = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { jobId } = req.params;
 
     // Lấy pinnedEvalId từ TrainingHistory
-    const history = await TrainingHistory.findOne({ jobId }).select('pinnedEvalId projectName baseModel').lean();
+    const history = await TrainingHistory.findOne({ jobId, ownerId }).select('pinnedEvalId projectName baseModel').lean();
 
-    const evals = await ModelEvaluation.find({ jobId, status: 'COMPLETED' })
+    const evals = await ModelEvaluation.find({ ownerId, jobId, status: 'COMPLETED' })
       .sort({ completedAt: -1 })
       .select('modelEvalId jobId status totalConversations judgeModel summary startedAt completedAt systemPromptVersion datasetVersionName')
       .lean();
@@ -623,17 +665,22 @@ export const getEvalHistory = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const pinEvaluation = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { evalId } = req.params;
 
     // Tìm eval để lấy jobId
-    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId, status: 'COMPLETED' });
+    const evalDoc = await ModelEvaluation.findOne({ ownerId, modelEvalId: evalId, status: 'COMPLETED' });
     if (!evalDoc) {
       return res.status(404).json({ error: 'Evaluation not found or not completed' });
     }
 
     // Update pinnedEvalId trên TrainingHistory (ghi đè eval cũ)
     const result = await TrainingHistory.findOneAndUpdate(
-      { jobId: evalDoc.jobId },
+      { jobId: evalDoc.jobId, ownerId },
       { pinnedEvalId: evalId },
       { new: true }
     );
@@ -660,26 +707,31 @@ export const pinEvaluation = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const deleteEvaluation = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { evalId } = req.params;
-    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId });
+    const evalDoc = await ModelEvaluation.findOne({ ownerId, modelEvalId: evalId });
     if (!evalDoc) {
       return res.status(404).json({ error: 'Evaluation not found' });
     }
 
     const { jobId } = evalDoc;
-    const history = await TrainingHistory.findOne({ jobId }).select('pinnedEvalId').lean();
+    const history = await TrainingHistory.findOne({ jobId, ownerId }).select('pinnedEvalId').lean();
     const wasPinned = history?.pinnedEvalId === evalId;
 
-    await ModelEvaluation.deleteOne({ modelEvalId: evalId });
+    await ModelEvaluation.deleteOne({ ownerId, modelEvalId: evalId });
 
     let newPinnedEvalId: string | null = null;
     if (wasPinned) {
-      const newest = await ModelEvaluation.findOne({ jobId, status: 'COMPLETED' })
+      const newest = await ModelEvaluation.findOne({ ownerId, jobId, status: 'COMPLETED' })
         .sort({ completedAt: -1 })
         .select('modelEvalId')
         .lean();
       newPinnedEvalId = newest?.modelEvalId ?? null;
-      await TrainingHistory.updateOne({ jobId }, { $set: { pinnedEvalId: newPinnedEvalId } });
+      await TrainingHistory.updateOne({ jobId, ownerId }, { $set: { pinnedEvalId: newPinnedEvalId } });
       console.log(`[Backend] After delete, repinned job ${jobId} → ${newPinnedEvalId ?? 'null'}`);
     }
 
@@ -711,6 +763,11 @@ function scoreWinner(va: number | null | undefined, vb: number | null | undefine
 // ---------------------------------------------------------------------------
 export const compareEvaluations = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const aId = typeof req.query.a === 'string' ? req.query.a : '';
     const bId = typeof req.query.b === 'string' ? req.query.b : '';
     if (!aId || !bId) {
@@ -721,16 +778,16 @@ export const compareEvaluations = async (req: Request, res: Response) => {
     }
 
     const [evalA, evalB] = await Promise.all([
-      ModelEvaluation.findOne({ modelEvalId: aId }).lean(),
-      ModelEvaluation.findOne({ modelEvalId: bId }).lean(),
+      ModelEvaluation.findOne({ ownerId, modelEvalId: aId }).lean(),
+      ModelEvaluation.findOne({ ownerId, modelEvalId: bId }).lean(),
     ]);
     if (!evalA || !evalB) {
       return res.status(404).json({ error: 'Không tìm thấy một hoặc cả hai bản đánh giá' });
     }
 
     const [histA, histB] = await Promise.all([
-      TrainingHistory.findOne({ jobId: evalA.jobId }).select('projectName').lean(),
-      TrainingHistory.findOne({ jobId: evalB.jobId }).select('projectName').lean(),
+      TrainingHistory.findOne({ ownerId, jobId: evalA.jobId }).select('projectName').lean(),
+      TrainingHistory.findOne({ ownerId, jobId: evalB.jobId }).select('projectName').lean(),
     ]);
 
     const mapA = new Map<number, (typeof evalA.results)[0]>();
@@ -846,6 +903,11 @@ export const compareEvaluations = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const reviewConversation = async (req: Request, res: Response) => {
   try {
+    const ownerId = getAuthUserId(req);
+    if (!ownerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const { evalId, convIndex } = req.params;
     const { verdict, note, reviewer } = req.body;
 
@@ -858,7 +920,7 @@ export const reviewConversation = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'convIndex không hợp lệ' });
     }
 
-    const evalDoc = await ModelEvaluation.findOne({ modelEvalId: evalId });
+    const evalDoc = await ModelEvaluation.findOne({ ownerId, modelEvalId: evalId });
     if (!evalDoc) return res.status(404).json({ error: 'Evaluation not found' });
 
     // Tìm conversation theo conv_index

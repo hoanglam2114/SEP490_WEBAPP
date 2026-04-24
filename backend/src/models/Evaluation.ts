@@ -44,6 +44,7 @@ export interface IEvalResult {
 }
 
 export interface IEvaluation extends Document {
+  ownerId: mongoose.Types.ObjectId;
   modelEvalId: string;
   jobId: string;
   status: string;
@@ -88,6 +89,7 @@ const EvaluationResultSchema = new Schema<IEvalResult>(
 
 const EvaluationSchema = new Schema<IEvaluation>(
   {
+    ownerId:           { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     modelEvalId:       { type: String, required: true, unique: true, index: true },
     jobId:             { type: String, required: true, index: true },
     status:            { type: String, required: true },

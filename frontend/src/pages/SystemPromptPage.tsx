@@ -31,6 +31,18 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
   previewJson,
   projectName = 'default-project',
 }) => {
+  const getAuthHeaders = (includeJsonContentType = false): Record<string, string> => {
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = {};
+    if (includeJsonContentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
   const [content, setContent] = useState(systemPromptText);
   const [description, setDescription] = useState('');
   const [historyList, setHistoryList] = useState<PromptVersionItem[]>([]);
@@ -179,7 +191,9 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
       setError('');
 
       try {
-        const response = await fetch(`/api/dataset-prompts/project/${encodeURIComponent(projectName)}`);
+        const response = await fetch(`/api/dataset-prompts/project/${encodeURIComponent(projectName)}`, {
+          headers: getAuthHeaders(),
+        });
         if (!response.ok) {
           throw new Error(`Failed to fetch history: ${response.status}`);
         }
@@ -231,9 +245,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
     try {
       const response = await fetch('/api/dataset-prompts', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(true),
         body: JSON.stringify({
           projectName,
           content: trimmedContent,
@@ -243,7 +255,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
 
       if (!response.ok) {
         const errorPayload = await response.json().catch(() => null);
-        const message = errorPayload?.message || `Failed to save prompt: ${response.status}`;
+        const message = errorPayload?.error || errorPayload?.message || `Failed to save prompt: ${response.status}`;
         throw new Error(message);
       }
 
@@ -289,11 +301,12 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
     try {
       const response = await fetch(`/api/dataset-prompts/${encodeURIComponent(promptId)}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
         const errorPayload = await response.json().catch(() => null);
-        const message = errorPayload?.message || `Failed to delete prompt: ${response.status}`;
+        const message = errorPayload?.error || errorPayload?.message || `Failed to delete prompt: ${response.status}`;
         throw new Error(message);
       }
 
@@ -360,12 +373,20 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
                 pagedHistoryList.map((item) => {
                   const isSelected = selectedHistoryId === item._id;
                   return (
-                    <button
+                    <div
                       key={item._id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => {
                         setSelectedHistoryId(item._id);
                         setActivePreviewSource('history');
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setSelectedHistoryId(item._id);
+                          setActivePreviewSource('history');
+                        }
                       }}
                       className={`relative w-full rounded-lg border px-3 py-2 text-left transition ${
                         isSelected
@@ -404,7 +425,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
                         V{item.version} - {item.description?.trim() || 'No description'}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">{new Date(item.createdAt).toLocaleString()}</p>
-                    </button>
+                    </div>
                   );
                 })}
             </div>

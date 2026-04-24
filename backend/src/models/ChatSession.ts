@@ -9,6 +9,7 @@ export interface IMessage {
 }
 
 export interface IChatSession extends Document {
+    ownerId: mongoose.Types.ObjectId;
     title: string;
     messages: IMessage[];
     createdAt: Date;
@@ -24,6 +25,7 @@ const messageSchema = new Schema<IMessage>({
 }, { _id: false });
 
 const chatSessionSchema = new Schema<IChatSession>({
+    ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true },
     messages: [messageSchema],
     createdAt: { type: Date, default: Date.now },

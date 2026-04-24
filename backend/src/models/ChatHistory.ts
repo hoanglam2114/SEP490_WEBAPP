@@ -1,6 +1,7 @@
 import mongoose, { Schema } from 'mongoose';
 
 export interface IChatHistory {
+    ownerId: mongoose.Types.ObjectId;
     userMessage: string;
     aiMessage: string;
     model: string;
@@ -9,6 +10,7 @@ export interface IChatHistory {
 }
 
 const chatHistorySchema = new Schema<IChatHistory>({
+    ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     userMessage: { type: String, required: true },
     aiMessage: { type: String, required: true },
     model: { type: String, required: true },
