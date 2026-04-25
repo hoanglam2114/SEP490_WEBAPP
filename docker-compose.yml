@@ -43,16 +43,34 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot
     networks:
       - app_network
     depends_on:
       - backend
+
+  # ── Certbot (tự động gia hạn SSL) ─────────────────────────────────────────
+  certbot:
+    image: certbot/certbot
+    container_name: sep490_certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    # Tự động gia hạn mỗi 12 tiếng
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
 
 # ── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
   mongo_data:
     driver: local
   uploads_data:
+    driver: local
+  certbot_certs:
+    driver: local
+  certbot_webroot:
     driver: local
 
 # ── Network ───────────────────────────────────────────────────────────────────
