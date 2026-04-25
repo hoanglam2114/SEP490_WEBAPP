@@ -588,4 +588,17 @@ export const apiService = {
     const response = await api.get(`/model-versions/evaluations/${jobId}`);
     return response.data;
   },
+
+  // GPU Config
+  getGpuConfig: async (): Promise<{ connected: boolean; url: string }> => {
+    const response = await api.get('/gpu/config');
+    return response.data;
+  },
+  setGpuConfig: async (url: string): Promise<{ connected: boolean; url: string }> => {
+    const response = await api.post('/gpu/config', { url });
+    return response.data;
+  },
+  disconnectGpu: async (): Promise<void> => {
+    await api.delete('/gpu/config');
+  },
 };

@@ -1,18 +1,18 @@
 import { Request, Response } from 'express';
+import { getGpuServiceUrl } from '../utils/gpuConfig';
 import fetch from 'node-fetch'; // assuming node-fetch is available based on package.json
 import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
 
-const rawGpuUrl = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
-// Split by comma and take the first one, or handle based on instanceId
-const gpuServiceUrls = rawGpuUrl.split(',').map(url => url.trim().replace(/\/$/, ''));
 
 const getGpuUrl = (instanceId?: number) => {
-  if (instanceId && instanceId > 0 && instanceId <= gpuServiceUrls.length) {
-    return gpuServiceUrls[instanceId - 1];
+  const urls = getGpuServiceUrl().split(',').map(u => u.trim().replace(/\/$/, '')).filter(Boolean);
+  const list = urls.length ? urls : ['http://localhost:5000'];
+  if (instanceId && instanceId > 0 && instanceId <= list.length) {
+    return list[instanceId - 1];
   }
-  return gpuServiceUrls[0];
+  return list[0];
 };
 
 

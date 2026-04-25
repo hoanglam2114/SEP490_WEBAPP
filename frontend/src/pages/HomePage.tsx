@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { GpuStatusIndicator } from '../components/GpuStatusIndicator';
 
 const tools = [
   {
@@ -116,7 +117,7 @@ export const HomePage: React.FC = () => {
             </div>
             <span className="text-sm font-bold text-slate-800 tracking-tight">Chatbot Training Toolkit</span>
           </div>
-          <span className="text-xs text-slate-400 font-mono">v1.0</span>
+          <GpuStatusIndicator />
         </div>
       </header>
 

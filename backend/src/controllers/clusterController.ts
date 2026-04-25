@@ -1,9 +1,9 @@
 import { Request, Response } from 'express';
+import { getGpuServiceUrl } from '../utils/gpuConfig';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
 
 /**
  * POST /api/cluster
@@ -55,9 +55,9 @@ export const clusterData = async (req: Request, res: Response) => {
 
     // Existing logic for OpenAI format (calling external service)
     const { k, eps, min_samples } = req.body;
-    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${GPU_SERVICE_URL}/api/cluster`);
+    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${getGpuServiceUrl()}/api/cluster`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster`, {
+    const gpuResponse = await fetch(`${getGpuServiceUrl()}/api/cluster`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -101,9 +101,9 @@ export const clusterFilter = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing or empty data array' });
     }
 
-    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/filter`);
+    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${getGpuServiceUrl()}/api/cluster/filter`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/filter`, {
+    const gpuResponse = await fetch(`${getGpuServiceUrl()}/api/cluster/filter`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -141,9 +141,9 @@ export const clusterFilter = async (req: Request, res: Response) => {
  */
 export const deleteClusterCache = async (_req: Request, res: Response) => {
   try {
-    console.log(`[Backend] Clearing Cluster Cache → ${GPU_SERVICE_URL}/api/cluster/cache`);
+    console.log(`[Backend] Clearing Cluster Cache → ${getGpuServiceUrl()}/api/cluster/cache`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/cache`, {
+    const gpuResponse = await fetch(`${getGpuServiceUrl()}/api/cluster/cache`, {
       method: 'DELETE',
       headers: {
         'ngrok-skip-browser-warning': 'true',
@@ -187,10 +187,10 @@ export const clusterVisualize = async (req: Request, res: Response) => {
     }
 
     console.log(
-      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${GPU_SERVICE_URL}/api/cluster/visualize`
+      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${getGpuServiceUrl()}/api/cluster/visualize`
     );
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/visualize`, {
+    const gpuResponse = await fetch(`${getGpuServiceUrl()}/api/cluster/visualize`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

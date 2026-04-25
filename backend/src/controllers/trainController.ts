@@ -7,11 +7,11 @@ import dotenv from 'dotenv';
 import { TrainingHistory } from '../models/TrainingHistory';
 import path from 'path';
 dotenv.config();
+import { getGpuServiceUrls } from '../utils/gpuConfig';
 
 /**
  * GPU Service URLs — set GPU_SERVICE_URL in backend/.env (comma-separated for multiple workers)
  */
-const GPU_SERVICE_URLS = (process.env.GPU_SERVICE_URL || 'http://localhost:5000').split(',').map(url => url.trim());
 
 class WorkerManager {
   private workers: { url: string; activeJobs: number }[];
@@ -44,7 +44,12 @@ class WorkerManager {
   }
 }
 
-const workerManager = new WorkerManager(GPU_SERVICE_URLS);
+let workerManager = new WorkerManager(getGpuServiceUrls().length ? getGpuServiceUrls() : ['http://localhost:5000']);
+// Rebuild workerManager khi GPU URLs thay đổi
+export function rebuildWorkerManager() {
+  workerManager = new WorkerManager(getGpuServiceUrls().length ? getGpuServiceUrls() : ['http://localhost:5000']);
+}
+
 
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '';
 const GOOGLE_DRIVE_CREDENTIALS = process.env.GOOGLE_DRIVE_CREDENTIALS || '';

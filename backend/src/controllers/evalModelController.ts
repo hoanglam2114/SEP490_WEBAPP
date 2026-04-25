@@ -8,7 +8,7 @@ import { ModelEvaluation, IEvalResult } from '../models/Evaluation';
 import { TrainingHistory } from '../models/TrainingHistory';
 dotenv.config();
 
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
+import { getGpuServiceUrl } from '../utils/gpuConfig';
 
 // ---------------------------------------------------------------------------
 // Helper: lấy GPU status — kiểm tra trước khi dispatch eval
@@ -23,7 +23,7 @@ async function getGpuStatus(): Promise<{
   gpu_util: number;
 } | null> {
   try {
-    const resp = await fetch(`${GPU_SERVICE_URL}/api/system-eval/resources`, {
+    const resp = await fetch(`${getGpuServiceUrl()}/api/system-eval/resources`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
       signal: AbortSignal.timeout(5000),
     });
@@ -219,7 +219,7 @@ export const runEvaluation = async (req: Request, res: Response) => {
 
     // 7. Forward sang GPU service
     console.log(`[Backend] Forwarding eval to GPU: /api/eval/start (slots: ${gpuStatus.active_evals}/${gpuStatus.max_evals})`);
-    const gpuResponse = await fetchWithForm(`${GPU_SERVICE_URL}/api/eval/start`, form);
+    const gpuResponse = await fetchWithForm(`${getGpuServiceUrl()}/api/eval/start`, form);
 
     if (gpuResponse.status === 409) {
       // Race condition: GPU vừa nhận job khác trong khoảng thời gian ngắn
@@ -290,7 +290,7 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 
   const intervalId = setInterval(async () => {
     try {
-      const response = await fetch(`${GPU_SERVICE_URL}/api/eval/status/${evalJobId}`, {
+      const response = await fetch(`${getGpuServiceUrl()}/api/eval/status/${evalJobId}`, {
         headers: { 'ngrok-skip-browser-warning': 'true' },
       });
       const text = await response.text();
@@ -341,7 +341,7 @@ export const streamEvalStatus = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 async function _fetchAndSaveResult(evalJobId: string): Promise<void> {
   try {
-    const resp = await fetch(`${GPU_SERVICE_URL}/api/eval/result/${evalJobId}`, {
+    const resp = await fetch(`${getGpuServiceUrl()}/api/eval/result/${evalJobId}`, {
       headers: { 'ngrok-skip-browser-warning': 'true' },
     });
 

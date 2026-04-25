@@ -30,6 +30,7 @@ import {
 import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
 import { PromptController } from '../controllers/promptController';
+import { getGpuConfig, updateGpuConfig, disconnectGpu } from '../controllers/gpuConfigController';
 
 
 import {
@@ -76,6 +77,11 @@ const upload = multer({
     }
   },
 });
+
+// GPU Config Routes
+router.get('/gpu/config', getGpuConfig);
+router.post('/gpu/config', updateGpuConfig);
+router.delete('/gpu/config', disconnectGpu);
 
 // Conversion Routes
 router.post('/upload', upload.single('file'), (req, res) => controller.uploadFile(req, res));
