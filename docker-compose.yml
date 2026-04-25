@@ -1,0 +1,61 @@
+services:
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    container_name: sep490_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend ────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sep490_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/sep_training
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - app_network
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sep490_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    networks:
+      - app_network
+    depends_on:
+      - backend
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  mongo_data:
+    driver: local
+  uploads_data:
+    driver: local
+
+# ── Network ───────────────────────────────────────────────────────────────────
+networks:
+  app_network:
+    driver: bridge
