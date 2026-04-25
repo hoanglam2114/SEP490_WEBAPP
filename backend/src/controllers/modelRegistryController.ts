@@ -91,8 +91,8 @@ export class ModelRegistryController {
       if (!registry) return res.status(404).json({ message: 'Model Registry not found' });
 
       let metrics: any = {};
-      let configSnapshot = null;
-      let datasetInfo = null;
+      let configSnapshot: any = undefined;
+      let datasetInfo: { name: string; source: string } | undefined = undefined;
 
       // 1. Fetch data from Training History
       if (trainingHistoryId) {
