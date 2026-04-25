@@ -234,7 +234,7 @@ export const ModelVersionsPage: React.FC = () => {
                               <Shield
                                 size={14}
                                 className="text-green-600"
-                                title="Active Model"
+                                aria-label="Active Model"
                               />
                             )}
                           </div>
