@@ -55,7 +55,7 @@ export interface ShareGPTFormat {
 
 export type OutputFormat = 'openai' | 'anthropic' | 'alpaca' | 'sharegpt';
 
-export type FileType = 'chat' | 'lesson';
+export type FileType = 'chat' | 'lesson' | 'openai_messages';
 
 export interface ConversionOptions {
   format: OutputFormat;

@@ -106,11 +106,31 @@ type ClusterResponse = {
 
 export type SubjectAutoLabel = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OTHER';
 
+export type ClassificationGroup = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'REJECT' | 'REWRITE' | 'OUT_OF_SCOPE';
+
 export type AutoLabelSuggestion = {
   clusterId: number;
   label: SubjectAutoLabel;
   reason: string;
   sampleCount: number;
+};
+
+export type ClassificationSummaryGroup = {
+  group: ClassificationGroup;
+  count: number;
+  percentage: number;
+};
+
+export type ClassificationResult = {
+  totalSamples: number;
+  groups: ClassificationSummaryGroup[];
+  sampleClassifications: Array<{ sampleId: string; group: ClassificationGroup }>;
+};
+
+export type ClassifiedSamplesResult = {
+  totalSamples: number;
+  groups: ClassificationSummaryGroup[];
+  items: Array<{ _id: string; sampleId: string; data: Record<string, any>; group: ClassificationGroup }>;
 };
 
 export const apiService = {
@@ -791,6 +811,7 @@ export const apiService = {
     const response = await api.post('/model-registry', payload);
     return response.data;
   },
+
   getModelRegistry: async (id: string) => {
     const response = await api.get(`/model-registry/${id}`);
     return response.data;
@@ -832,6 +853,22 @@ export const apiService = {
   },
   getEvaluationsByJob: async (jobId: string) => {
     const response = await api.get(`/model-versions/evaluations/${jobId}`);
+    return response.data;
+  },
+
+  // Classification API
+  classifyVersion: async (versionId: string): Promise<ClassificationResult> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/classification/classify`);
+    return response.data;
+  },
+
+  getClassifiedSamples: async (
+    versionId: string,
+    group?: ClassificationGroup
+  ): Promise<ClassifiedSamplesResult> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/classification`, {
+      params: group ? { group } : undefined,
+    });
     return response.data;
   },
 };

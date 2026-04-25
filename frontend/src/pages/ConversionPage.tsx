@@ -31,6 +31,7 @@ import { RefinementPanel } from '../features/dataprep/evaluation/RefinementPanel
 import { AutoLabelingPanel } from '../features/dataprep/labeling/AutoLabelingPanel';
 import { LabelingWorkflowPanel } from '../features/dataprep/labeling/LabelingWorkflowPanel';
 import { ClusterPanel } from '../features/dataprep/preprocessing/ClusterPanel';
+import { ClassificationPanel } from '../features/dataprep/classification/ClassificationPanel';
 import { CleaningPipelineOptions } from '../features/dataprep/preprocessing/CleaningPipelineOptions';
 import { PostConversionSummary } from '../features/dataprep/preprocessing/PostConversionSummary';
 import { VisualizationPanel, type VisualizationResult } from '../features/dataprep/preprocessing/VisualizationPanel';
@@ -40,9 +41,9 @@ import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 import { useAuthStore } from '../store/authStore';
 import { ExportPanel } from '../features/dataprep/export/ExportPanel';
-import type { AutoLabelSuggestion, SubjectAutoLabel } from '../services/api';
+import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult } from '../services/api';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -319,9 +320,9 @@ type MainPipelineStage = {
 const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'upload', label: 'Upload & Convert', steps: [1] },
   { id: 'preprocessing', label: 'Preprocessing', steps: [2, 3, 4] },
-  { id: 'labeling', label: 'Labeling', steps: [5, 6] },
-  { id: 'evaluation', label: 'Evaluation', steps: [7, 8] },
-  { id: 'finish', label: 'Finish', steps: [9, 10] },
+  { id: 'labeling', label: 'Labeling', steps: [5, 6, 7] },
+  { id: 'evaluation', label: 'Evaluation', steps: [8, 9] },
+  { id: 'finish', label: 'Finish', steps: [10, 11] },
 ];
 
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
@@ -330,10 +331,11 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 4, label: 'K-means Cluster', group: 'Preprocessing' },
   { id: 5, label: 'Auto Labeling', group: 'Labeling' },
   { id: 6, label: 'Labeling', group: 'Labeling' },
-  { id: 7, label: 'Evaluation', group: 'Evaluation' },
-  { id: 8, label: 'Refine', group: 'Evaluation' },
-  { id: 9, label: 'System Prompt', group: 'Finish' },
-  { id: 10, label: 'Train/Test Export', group: 'Finish' },
+  { id: 7, label: 'Classification', group: 'Labeling' },
+  { id: 8, label: 'Evaluation', group: 'Evaluation' },
+  { id: 9, label: 'Refine', group: 'Evaluation' },
+  { id: 10, label: 'System Prompt', group: 'Finish' },
+  { id: 11, label: 'Train/Test Export', group: 'Finish' },
 ];
 
 // NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
@@ -2048,6 +2050,8 @@ export function ConversionPage() {
     total: 0,
     rejected: 0,
   });
+  const [activeClassificationGroup, setActiveClassificationGroup] = useState<ClassificationGroup | null>(null);
+  const [classifiedSamplesResult, setClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
   const loadHandledRef = useRef<boolean>(false);
   const currentUserId = useMemo(() => {
     const candidate = (user as any)?.id || (user as any)?._id || (user as any)?.userId;
@@ -2142,6 +2146,16 @@ export function ConversionPage() {
     () => rowsWithClusterGroups.filter((row) => Number.isFinite(row.groupId)),
     [rowsWithClusterGroups]
   );
+
+  const classificationFilteredRows = useMemo(() => {
+    if (!classifiedSamplesResult?.items) return [];
+    const rawData = classifiedSamplesResult.items.map((item) => ({
+      ...item.data,
+      sampleId: item.sampleId,
+      id: item._id,
+    }));
+    return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
+  }, [classifiedSamplesResult, previewMode, conversionOptions.removeThinkTags]);
 
   const evaluationRows = useMemo(() => {
     if (previewMode !== 'openai') {
@@ -3415,9 +3429,10 @@ export function ConversionPage() {
   const canMoveFromStep3 = true;
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = autoLabelsSaved;
-  const canMoveFromStep7 = !!conversionResult;
+  const canMoveFromStep7 = !!currentDatasetVersionId;
   const canMoveFromStep8 = !!conversionResult;
   const canMoveFromStep9 = !!conversionResult;
+  const canMoveFromStep10 = !!conversionResult;
 
   useEffect(() => {
     if (isGuestMode && currentStep !== 6) {
@@ -3488,7 +3503,7 @@ export function ConversionPage() {
   };
 
   const handleProceedFromSystemPromptStep = async () => {
-    if (!canMoveFromStep9) {
+    if (!canMoveFromStep10) {
       return;
     }
 
@@ -3516,7 +3531,7 @@ export function ConversionPage() {
       }
     }
 
-    setCurrentStep(10);
+    setCurrentStep(11);
   };
 
   const validateRefineScoreThreshold = (value: string): string => {
@@ -3917,6 +3932,29 @@ export function ConversionPage() {
       )}
 
       {currentStep === 7 && (
+        <ClassificationPanel
+          versionId={currentDatasetVersionId || ''}
+          activeGroup={activeClassificationGroup}
+          onGroupFilterChange={async (group) => {
+            setActiveClassificationGroup(group);
+            if (currentDatasetVersionId) {
+              const res = await apiService.getClassifiedSamples(currentDatasetVersionId, group || undefined);
+              setClassifiedSamplesResult(res);
+            }
+          }}
+          table={(
+            <ConvertedDatasetTable
+              rows={classificationFilteredRows}
+              mode={previewMode}
+            />
+          )}
+          onBack={() => setCurrentStep(6)}
+          onNext={() => setCurrentStep(8)}
+          nextDisabled={!canMoveFromStep7}
+        />
+      )}
+
+      {currentStep === 8 && (
         <EvaluationPanel
           table={(
             <ConvertedDatasetTable
@@ -3937,13 +3975,13 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(6)}
-          onNext={() => setCurrentStep(8)}
-          nextDisabled={!canMoveFromStep7}
+          onBack={() => setCurrentStep(2)}
+          onNext={() => setCurrentStep(9)}
+          nextDisabled={!canMoveFromStep8}
         />
       )}
 
-      {currentStep === 8 && (
+      {currentStep === 9 && (
         <RefinementPanel
           table={(
             <ConvertedDatasetTable
@@ -3973,13 +4011,13 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(7)}
-          onNext={() => setCurrentStep(9)}
-          nextDisabled={!canMoveFromStep8}
+          onBack={() => setCurrentStep(8)}
+          onNext={() => setCurrentStep(10)}
+          nextDisabled={!canMoveFromStep9}
         />
       )}
 
-      {currentStep === 9 && (
+      {currentStep === 10 && (
         <SystemPromptStepPanel
           systemPromptText={systemPromptText}
           onSystemPromptTextChange={setSystemPromptText}
@@ -3990,13 +4028,13 @@ export function ConversionPage() {
             setSelectedPromptId(payload.promptId);
             setSelectedSystemPromptVersion(payload.systemPromptVersion);
           }}
-          onBack={() => setCurrentStep(8)}
+          onBack={() => setCurrentStep(9)}
           onNext={handleProceedFromSystemPromptStep}
-          nextDisabled={!canMoveFromStep9}
+          nextDisabled={!canMoveFromStep10}
         />
       )}
 
-      {currentStep === 10 && (
+      {currentStep === 11 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -4026,7 +4064,7 @@ export function ConversionPage() {
         onProviderChange={setEvaluateProvider}
         onClose={() => setIsEvaluateModalOpen(false)}
         onConfirm={() => {
-          const sourceRows = currentStep === 8 ? visibleRowsInRefinement : visibleRowsInEvaluation;
+          const sourceRows = currentStep === 9 ? visibleRowsInRefinement : visibleRowsInEvaluation;
           if (sourceRows.length === 0) {
             toast.error('No visible rows on this page to evaluate.');
             return;

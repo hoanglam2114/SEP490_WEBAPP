@@ -390,6 +390,7 @@ export const EvaluationHistory: React.FC = () => {
           evaluationMap,
           datasetVersionId: versionQuery.data.datasetVersion._id,
           sampleIdMap: Object.fromEntries(visibleItems.map((item) => [item.sampleKey, item.sampleId])),
+          startStep: 8,
         },
       },
     });
