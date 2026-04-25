@@ -142,6 +142,7 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
   const navigate = useNavigate();
   const [models, setModels] = useState<ModelItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [filterModel, setFilterModel] = useState("");
   const [sortField, setSortField] = useState<SortField>("overall");
@@ -151,17 +152,78 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   useEffect(() => {
-    fetch("/api/model-eval/leaderboard")
-      .then((r) => r.json())
-      .then((data: ModelItem[]) => {
-        setModels(data);
-        const unique = Array.from(new Set(data.map((m) => m.baseModel))).filter(
-          Boolean,
+    // Absolute fallback: never keep spinner forever in case browser/network hangs.
+    const watchdog = window.setTimeout(() => {
+      setLoading((prev) => {
+        if (!prev) return prev;
+        setLoadError("Không nhận được phản hồi leaderboard. Vui lòng reload trang.");
+        return false;
+      });
+    }, 15000);
+    return () => window.clearTimeout(watchdog);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+
+    const loadLeaderboard = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        const response = await fetch("/api/model-eval/leaderboard", {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: controller.signal,
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error || "Failed to load leaderboard");
+        }
+
+        const data = Array.isArray(payload)
+          ? payload
+          : Array.isArray((payload as any)?.items)
+            ? (payload as any).items
+            : [];
+
+        if (!isMounted) return;
+        setModels(data as ModelItem[]);
+        const unique: string[] = Array.from(
+          new Set(
+            data
+              .map((m: any) =>
+                typeof m?.baseModel === "string" ? m.baseModel : "",
+              )
+              .filter(Boolean),
+          ),
         );
         setBaseModelOptions(unique);
+        setLoadError(null);
+      } catch (err: any) {
+        if (!isMounted) return;
+        const message =
+          err?.name === "AbortError"
+            ? "Request timeout khi tải leaderboard (10s)."
+            : err?.message || "Không tải được leaderboard";
+        console.error("Leaderboard load error:", err);
+        setModels([]);
+        setBaseModelOptions([]);
+        setLoadError(message);
+      } finally {
+        if (!isMounted) return;
+        window.clearTimeout(timeoutId);
         setLoading(false);
-      })
-      .catch(() => setLoading(false));
+      }
+    };
+
+    loadLeaderboard();
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -228,7 +290,34 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
     }
   };
 
-  if (loading)
+  if (loading) {
+    if (loadError) {
+      return (
+        <div className="flex items-center justify-center min-h-screen bg-slate-50 px-4">
+          <div className="bg-white border border-red-200 rounded-xl p-5 max-w-xl w-full text-center">
+            <p className="text-sm font-semibold text-red-700">
+              Không thể tải Model Evaluation Leaderboard
+            </p>
+            <p className="text-xs text-slate-500 mt-1 break-words">{loadError}</p>
+            <div className="mt-4 flex items-center justify-center gap-2">
+              <button
+                onClick={() => window.location.reload()}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium hover:bg-slate-50"
+              >
+                Reload
+              </button>
+              <button
+                onClick={() => navigate("/login")}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700"
+              >
+                Login lại
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <div className="flex flex-col items-center gap-3">
@@ -237,6 +326,7 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
         </div>
       </div>
     );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 pb-16">
@@ -623,7 +713,7 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
                               </td>
                               <td className="px-4 py-4">
                                 <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-1 rounded block truncate max-w-[150px]">
-                                  {m.baseModel.split("/").pop()}
+                                    {(m.baseModel || "").split("/").pop() || "N/A"}
                                 </span>
                               </td>
                               <td className="px-4 py-4 text-center">

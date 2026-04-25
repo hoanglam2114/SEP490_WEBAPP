@@ -15,27 +15,106 @@ function isCommunityHubRequest(req: Request): boolean {
   return String(req.query.fromCommunityHub || '').toLowerCase() === 'true';
 }
 
-async function getSampleOwnerIdBySampleId(sampleId: string): Promise<string | null> {
+async function getSampleAccessBySampleId(sampleId: string): Promise<{ ownerId: string; isPublic: boolean } | null> {
   const sample = await ProcessedDatasetItem.findById(sampleId).select('datasetVersionId').lean();
   if (!sample?.datasetVersionId) {
     return null;
   }
 
-  const version = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId').lean();
+  const version = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId isPublic').lean();
   if (!version?.ownerId) {
     return null;
   }
 
-  return String(version.ownerId);
+  return {
+    ownerId: String(version.ownerId),
+    isPublic: Boolean((version as any).isPublic),
+  };
 }
 
-async function getSampleOwnerIdByLabelId(labelId: string): Promise<string | null> {
+async function getSampleAccessByLabelId(labelId: string): Promise<{ ownerId: string; isPublic: boolean } | null> {
   const label = await Label.findById(labelId).select('sampleId').lean();
   if (!label?.sampleId) {
     return null;
   }
 
-  return getSampleOwnerIdBySampleId(String(label.sampleId));
+  return getSampleAccessBySampleId(String(label.sampleId));
+}
+
+async function assertLabelAccessBySampleId(sampleId: string, userId: string, req: Request): Promise<void> {
+  const access = await getSampleAccessBySampleId(sampleId);
+  if (!access) {
+    const error = new Error('Sample not found');
+    (error as any).statusCode = 404;
+    throw error;
+  }
+
+  const isOwner = access.ownerId === String(userId);
+  if (isCommunityHubRequest(req)) {
+    if (!access.isPublic) {
+      const error = new Error('Dataset version is not public.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    if (isOwner) {
+      const error = new Error('Owner cannot add/vote labels from Community Hub route.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    return;
+  }
+
+  if (!isOwner) {
+    const error = new Error('Forbidden: only the dataset owner can label from the internal workflow.');
+    (error as any).statusCode = 403;
+    throw error;
+  }
+}
+
+async function assertLabelReadAccessBySampleId(sampleId: string, userId: string): Promise<void> {
+  const access = await getSampleAccessBySampleId(sampleId);
+  if (!access) {
+    const error = new Error('Sample not found');
+    (error as any).statusCode = 404;
+    throw error;
+  }
+
+  const isOwner = access.ownerId === String(userId);
+  if (!isOwner && !access.isPublic) {
+    const error = new Error('Forbidden: you do not have access to this sample labels.');
+    (error as any).statusCode = 403;
+    throw error;
+  }
+}
+
+async function assertLabelAccessByLabelId(labelId: string, userId: string, req: Request): Promise<void> {
+  const access = await getSampleAccessByLabelId(labelId);
+  if (!access) {
+    const error = new Error('Label not found');
+    (error as any).statusCode = 404;
+    throw error;
+  }
+
+  const isOwner = access.ownerId === String(userId);
+  if (isCommunityHubRequest(req)) {
+    if (!access.isPublic) {
+      const error = new Error('Dataset version is not public.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    if (isOwner) {
+      const error = new Error('Owner cannot vote labels from Community Hub route.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    return;
+  }
+
+  if (!isOwner) {
+    const error = new Error('Forbidden: only the dataset owner can vote from the internal workflow.');
+    (error as any).statusCode = 403;
+    throw error;
+  }
 }
 
 /** Shape each label document into the client-facing DTO. */
@@ -86,6 +165,8 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    await assertLabelReadAccessBySampleId(sampleId, userId);
+
     const labels = await Label.find({ sampleId: new mongoose.Types.ObjectId(sampleId) })
       .sort({ createdAt: -1 })
       .lean();
@@ -95,7 +176,7 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
     res.status(200).json({ labels: result });
   } catch (error: any) {
     console.error('getLabelsBySample error:', error);
-    res.status(500).json({ error: error.message || 'Failed to get labels' });
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to get labels' });
   }
 };
 
@@ -127,13 +208,7 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (isCommunityHubRequest(req)) {
-      const sampleOwnerId = await getSampleOwnerIdBySampleId(sampleId);
-      if (sampleOwnerId && sampleOwnerId === String(userId)) {
-        res.status(403).json({ error: 'Owner cannot add labels from Community Hub route.' });
-        return;
-      }
-    }
+    await assertLabelAccessBySampleId(sampleId, userId, req);
 
     let normalizedName = String(name).trim();
 
@@ -154,14 +229,15 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       name: normalizedName,
       type,
       createdBy: new mongoose.Types.ObjectId(userId),
-      upvotes: [],
+      // In the internal dataset-version workflow, the creator's label starts with one upvote.
+      upvotes: isCommunityHubRequest(req) ? [] : [new mongoose.Types.ObjectId(userId)],
       downvotes: [],
     });
 
     res.status(201).json({ label: formatLabel(created.toObject(), userId) });
   } catch (error: any) {
     console.error('addLabel error:', error);
-    res.status(500).json({ error: error.message || 'Failed to create label' });
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to create label' });
   }
 };
 
@@ -175,7 +251,7 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
 //   - 'down': if already downvoted → undo (remove from downvotes).
 //             otherwise → add to downvotes, remove from upvotes.
 //
-// Hard-label constraint: 'down' votes are NOT allowed on hard labels.
+// Hard-label constraint: 'down' votes are now allowed on hard labels.
 
 export const voteLabel = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -201,13 +277,7 @@ export const voteLabel = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (isCommunityHubRequest(req)) {
-      const sampleOwnerId = await getSampleOwnerIdByLabelId(labelId);
-      if (sampleOwnerId && sampleOwnerId === String(userId)) {
-        res.status(403).json({ error: 'Owner cannot vote labels from Community Hub route.' });
-        return;
-      }
-    }
+    await assertLabelAccessByLabelId(labelId, userId, req);
 
     const label = await Label.findById(labelId);
     if (!label) {
@@ -216,7 +286,7 @@ export const voteLabel = async (req: Request, res: Response): Promise<void> => {
     }
 
     // Hard labels only accept upvotes.
-    if (label.type === 'hard' && voteAction === 'down') {
+    if (false && label.type === 'hard' && voteAction === 'down') {
       res.status(400).json({
         error: `Hard labels (e.g. ${label.name}) only support upvotes. Downvoting is not allowed.`,
       });
@@ -263,6 +333,6 @@ export const voteLabel = async (req: Request, res: Response): Promise<void> => {
     });
   } catch (error: any) {
     console.error('voteLabel error:', error);
-    res.status(500).json({ error: error.message || 'Failed to vote label' });
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to vote label' });
   }
 };

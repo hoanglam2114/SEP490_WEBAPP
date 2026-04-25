@@ -48,6 +48,71 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+type DatasetVersionDetailResponse = {
+  datasetVersion: {
+    _id: string;
+    projectId?: string | null;
+    parentVersionId?: string | null;
+    versionNo?: number | null;
+    projectName: string;
+    versionName: string;
+    isPublic?: boolean;
+    operationType?: string;
+    similarityThreshold: number;
+    totalSamples: number;
+    createdAt: string;
+  };
+  items: Array<{
+    _id: string;
+    sampleId: string;
+    sampleKey: string;
+    data: Record<string, any>;
+    evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+    results: {
+      accuracy?: number | null;
+      clarity?: number | null;
+      completeness?: number | null;
+      socratic?: number | null;
+      encouragement?: number | null;
+      factuality?: number | null;
+      overall: number | null;
+      reason: string;
+    };
+    evaluations?: Array<{
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+      scores: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      reason?: string;
+      timestamp?: string;
+    }>;
+    createdAt: string;
+    updatedAt?: string;
+  }>;
+};
+
+type ClusterResponse = {
+  data: any[];
+  groups: any[];
+  assignments: number[];
+};
+
+export type SubjectAutoLabel = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OTHER';
+
+export type AutoLabelSuggestion = {
+  clusterId: number;
+  label: SubjectAutoLabel;
+  reason: string;
+  sampleCount: number;
+};
+
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "", provider?: string) => {
     const response = await api.post("/chat", { text_input, hf_hub_id, provider });
@@ -340,6 +405,10 @@ export const apiService = {
 
   createDatasetVersion: async (payload: {
     projectName: string;
+    projectId?: string;
+    parentVersionId?: string;
+    operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+    operationParams?: Record<string, any>;
     similarityThreshold: number;
     format: 'openai' | 'alpaca';
     data: Array<Record<string, any>>;
@@ -349,65 +418,30 @@ export const apiService = {
     message: string;
     datasetVersion: {
       _id: string;
+      projectId?: string | null;
+      parentVersionId?: string | null;
+      versionNo?: number | null;
       projectName: string;
       versionName: string;
       isPublic?: boolean;
+      operationType?: string;
       similarityThreshold: number;
       totalSamples: number;
       createdAt: string;
+    };
+    project?: {
+      _id: string;
+      name: string;
+      sourceType: 'chat' | 'lesson';
     };
     sampleIdMap: Record<string, string>;
   }> => {
-    const response = await api.post('/dataset-versions/create', payload);
+    const response = await api.post('/dataprep/versions', payload);
     return response.data;
   },
 
-  getDatasetVersionDetail: async (id: string, showRejected = false, community = false): Promise<{
-    datasetVersion: {
-      _id: string;
-      projectName: string;
-      versionName: string;
-      isPublic?: boolean;
-      similarityThreshold: number;
-      totalSamples: number;
-      createdAt: string;
-    };
-    items: Array<{
-      _id: string;
-      sampleId: string;
-      sampleKey: string;
-      data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
-      results: {
-        accuracy?: number | null;
-        clarity?: number | null;
-        completeness?: number | null;
-        socratic?: number | null;
-        encouragement?: number | null;
-        factuality?: number | null;
-        overall: number | null;
-        reason: string;
-      };
-      evaluations?: Array<{
-        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
-        scores: {
-          accuracy?: number | null;
-          clarity?: number | null;
-          completeness?: number | null;
-          socratic?: number | null;
-          encouragement?: number | null;
-          factuality?: number | null;
-          overall: number | null;
-          reason: string;
-        };
-        reason?: string;
-        timestamp?: string;
-      }>;
-      createdAt: string;
-      updatedAt?: string;
-    }>;
-  }> => {
-    const response = await api.get(`/dataset-versions/${id}`, {
+  getDatasetVersionDetail: async (id: string, showRejected = false, community = false): Promise<DatasetVersionDetailResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}`, {
       params: {
         ...(showRejected ? { showRejected: 'true' } : {}),
         ...(community ? { community: 'true' } : {}),
@@ -417,7 +451,7 @@ export const apiService = {
   },
 
   deleteDatasetVersionItem: async (sampleId: string): Promise<{ message: string; deletedSampleId: string }> => {
-    const response = await api.delete(`/dataset-versions/items/${sampleId}`);
+    const response = await api.delete(`/dataprep/versions/items/${sampleId}`);
     return response.data;
   },
 
@@ -450,7 +484,50 @@ export const apiService = {
       versionName: string;
     };
   }> => {
-    const response = await api.patch(`/dataset-versions/${id}/visibility`, { isPublic });
+    const response = await api.patch(`/dataprep/versions/${id}/visibility`, { isPublic });
+    return response.data;
+  },
+
+  getSampleLabels: async (sampleId: string): Promise<{ labels: any[] }> => {
+    const response = await api.get(`/dataprep/samples/${sampleId}/labels`);
+    return response.data;
+  },
+
+  addSampleLabel: async (
+    sampleId: string,
+    payload: { name: string; type: 'hard' | 'soft' },
+    fromCommunityHub = false
+  ): Promise<{ label: any }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/labels`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  voteSampleLabel: async (
+    labelId: string,
+    voteAction: 'up' | 'down',
+    fromCommunityHub = false
+  ): Promise<any> => {
+    const response = await api.post(`/dataprep/labels/${labelId}/votes`, { voteAction }, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  previewAutoLabels: async (
+    versionId: string,
+    provider: 'gemini' | 'openai' | 'deepseek'
+  ): Promise<{ suggestions: AutoLabelSuggestion[] }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/auto-label/preview`, { provider });
+    return response.data;
+  },
+
+  saveAutoLabels: async (
+    versionId: string,
+    labels: Array<{ clusterId: number; label: SubjectAutoLabel }>
+  ): Promise<{ message: string; insertedCount: number }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/auto-label/save`, { labels });
     return response.data;
   },
 
@@ -562,6 +639,20 @@ export const apiService = {
       })
       .then((res) => res.data),
 
+  clusterVersion: (
+    versionId: string,
+    k?: number,
+    eps?: number,
+    minSamples?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/cluster`, {
+        k,
+        eps,
+        min_samples: minSamples,
+      })
+      .then((res) => res.data),
+
   clusterFilter: (
     data: any[],
     threshold?: number
@@ -574,6 +665,14 @@ export const apiService = {
       .post('/cluster/filter', { data, threshold })
       .then((res) => res.data),
 
+  clusterVersionFilter: (
+    versionId: string,
+    threshold?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/filter`, { threshold })
+      .then((res) => res.data),
+
   clusterRemoveNoise: (): Promise<{
     data: any[];
     groups: any[];
@@ -581,6 +680,13 @@ export const apiService = {
   }> =>
     api
       .post('/cluster/remove-noise')
+      .then((res) => res.data),
+
+  clusterVersionRemoveNoise: (
+    versionId: string
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/remove-noise`)
       .then((res) => res.data),
 
   clusterDeduplicate: (
@@ -594,9 +700,17 @@ export const apiService = {
       .post('/cluster/deduplicate', { threshold })
       .then((res) => res.data),
 
+  clusterVersionDeduplicate: (
+    versionId: string,
+    threshold?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/deduplicate`, { threshold })
+      .then((res) => res.data),
+
   deleteClusterCache: (): Promise<any> =>
     api
-      .delete('/cluster/cache')
+      .delete('/dataprep/preprocessing/cache')
       .then((res) => res.data),
 
   clusterVisualize: (
@@ -612,6 +726,25 @@ export const apiService = {
   }> =>
     api
       .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
+      .then((res) => res.data),
+
+  clusterVersionVisualize: (
+    versionId: string,
+    maxK: number = 20,
+    eps: number = 0.15,
+    minSamples: number = 6
+  ): Promise<{
+    elbow: Array<{ k: number; wcss: number }>;
+    kDistance: Array<{ rank: number; distance: number }>;
+    pointCount: number;
+    noiseCount?: number;
+  }> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/visualize`, {
+        max_k: maxK,
+        eps,
+        min_samples: minSamples,
+      })
       .then((res) => res.data),
 
   getChatSessions: async (limit = 30): Promise<any[]> => {

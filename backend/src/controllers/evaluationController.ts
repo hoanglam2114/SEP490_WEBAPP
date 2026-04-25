@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { EvaluationSample, EvaluationService, RefinementSample } from '../services/evaluationService';
 import { EvaluationHistory } from '../models/EvaluationHistory';
+import { DataPrepProject } from '../models/DataPrepProject';
 import { DatasetVersion } from '../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { User } from '../models/User';
@@ -11,8 +12,7 @@ import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 import { getAuthUserId } from '../utils/auth';
 import { getHardRejectedSampleIds } from '../utils/labelFilters';
-
-type EvalFormat = 'openai' | 'alpaca';
+import { EvalFormat, inferFormatFromRow, resolveSampleKey, normalizeEvaluationData } from '../utils/evalUtils';
 
 type EvaluationScorePayload = {
   accuracy?: number | null;
@@ -67,65 +67,6 @@ function normalizeProjectName(input?: string): string {
     return `Project_${dd}${mm}_${hh}${min}`;
   }
   return value;
-}
-
-function inferFormatFromRow(row: Record<string, any>): EvalFormat {
-  if (Array.isArray(row?.messages)) {
-    return 'openai';
-  }
-  return 'alpaca';
-}
-
-function resolveSampleKey(row: Record<string, any>, index: number): string {
-  const keyCandidates = [row?.sourceKey, row?.sampleId, row?.blockId, row?.id, row?.conversation_id, row?.uuid];
-  for (const candidate of keyCandidates) {
-    if (candidate !== undefined && candidate !== null && String(candidate).trim() !== '') {
-      return String(candidate).trim();
-    }
-  }
-  return `sample-${index + 1}`;
-}
-
-function normalizeEvaluationData(format: EvalFormat, rawData: Record<string, any>): Record<string, any> | null {
-  if (!rawData || typeof rawData !== 'object') {
-    return null;
-  }
-
-  if (format === 'openai') {
-    const rawMessages = Array.isArray(rawData.messages) ? rawData.messages : [];
-
-    let messages = rawMessages
-      .map((message) => ({
-        role: String(message?.role || '').trim(),
-        content: String(message?.content || '').trim(),
-      }))
-      .filter((message) => !!message.role && !!message.content);
-
-    if (!messages.length) {
-      const legacyUser = String(rawData.userText ?? rawData.instruction ?? '').trim();
-      const legacyAssistant = String(rawData.assistantText ?? rawData.output ?? '').trim();
-      messages = [
-        legacyUser ? { role: 'user', content: legacyUser } : null,
-        legacyAssistant ? { role: 'assistant', content: legacyAssistant } : null,
-      ].filter(Boolean) as Array<{ role: string; content: string }>;
-    }
-
-    if (!messages.length) {
-      return null;
-    }
-
-    return { messages };
-  }
-
-  const instruction = String(rawData.instruction ?? rawData.userText ?? '').trim();
-  const input = String(rawData.input ?? '').trim();
-  const output = String(rawData.output ?? rawData.assistantText ?? '').trim();
-
-  if (!instruction || !output) {
-    return null;
-  }
-
-  return { instruction, input, output };
 }
 
 function buildEvaluationSummary(results: any) {
@@ -286,6 +227,11 @@ export class EvaluationController {
       }
 
       const { projectName, similarityThreshold, format, data, promptId, promptContentSnapshot } = req.body as {
+        projectId?: string;
+        parentVersionId?: string;
+        operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+        operationParams?: Record<string, unknown>;
+        sourceType?: 'chat' | 'lesson';
         projectName?: string;
         similarityThreshold?: number;
         format?: string;
@@ -306,9 +252,42 @@ export class EvaluationController {
       const threshold = Number.isFinite(Number(similarityThreshold))
         ? Math.min(1, Math.max(0, Number(similarityThreshold)))
         : 0.9;
+      const requestedProjectId =
+        typeof req.body?.projectId === 'string' && mongoose.Types.ObjectId.isValid(req.body.projectId)
+          ? new mongoose.Types.ObjectId(req.body.projectId)
+          : undefined;
+      const requestedParentVersionId =
+        typeof req.body?.parentVersionId === 'string' && mongoose.Types.ObjectId.isValid(req.body.parentVersionId)
+          ? new mongoose.Types.ObjectId(req.body.parentVersionId)
+          : undefined;
+      const requestedOperationType = (req.body?.operationType || 'legacy') as
+        | 'upload'
+        | 'clean'
+        | 'cluster'
+        | 'refine_approved'
+        | 'manual_edit'
+        | 'legacy';
+      const normalizedSourceType = req.body?.sourceType === 'lesson' ? 'lesson' : 'chat';
 
-      const versionCount = await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
-      const versionName = `Version ${versionCount + 1}`;
+      const existingProject = requestedProjectId
+        ? await DataPrepProject.findOne({ _id: requestedProjectId, ownerId }).lean()
+        : await DataPrepProject.findOne({ ownerId, name: normalizedProjectName, isArchived: { $ne: true } })
+            .sort({ createdAt: -1 })
+            .lean();
+
+      const project = existingProject
+        ? existingProject
+        : await DataPrepProject.create({
+            ownerId,
+            name: normalizedProjectName,
+            sourceType: normalizedSourceType,
+          });
+
+      const versionCount = project?._id
+        ? await DatasetVersion.countDocuments({ projectId: project._id })
+        : await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
+      const nextVersionNo = versionCount + 1;
+      const versionName = `Version ${nextVersionNo}`;
 
       const normalizedPromptId =
         typeof promptId === 'string' && mongoose.Types.ObjectId.isValid(promptId)
@@ -317,14 +296,39 @@ export class EvaluationController {
       const normalizedPromptSnapshot = String(promptContentSnapshot || '').trim();
 
       const datasetVersion = await DatasetVersion.create({
+        projectId: project._id,
         ownerId,
         projectName: normalizedProjectName,
+        parentVersionId: requestedParentVersionId,
+        createdFromVersionId: requestedParentVersionId,
+        versionNo: nextVersionNo,
         versionName,
+        operationType: requestedOperationType,
+        operationParams: req.body?.operationParams,
         similarityThreshold: threshold,
         totalSamples: data.length,
         promptId: normalizedPromptId,
         promptContentSnapshot: normalizedPromptSnapshot || undefined,
       });
+
+      await DataPrepProject.updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            latestVersionId: datasetVersion._id,
+          },
+          $setOnInsert: {
+            rootVersionId: datasetVersion._id,
+          },
+        }
+      );
+
+      if (!project.rootVersionId) {
+        await DataPrepProject.updateOne(
+          { _id: project._id, rootVersionId: { $exists: false } },
+          { $set: { rootVersionId: datasetVersion._id } }
+        );
+      }
 
       const operations = data
         .map((row, index) => {
@@ -375,6 +379,11 @@ export class EvaluationController {
 
       res.status(201).json({
         message: 'Đã tạo dataset version thành công.',
+        project: {
+          _id: String(project._id),
+          name: project.name,
+          sourceType: project.sourceType,
+        },
         datasetVersion,
         sampleIdMap,
       });
@@ -801,7 +810,7 @@ export class EvaluationController {
           datasetVersionId: String(datasetVersion._id),
           sampleIdMap,
           ownerId: String(datasetVersion.ownerId),
-          startStep: 5,
+          startStep: 6,
           totalSamples: items.length,
           visibleSamples: filteredItems.length,
           rejectedSamples,
@@ -839,9 +848,8 @@ export class EvaluationController {
 
       const isOwner = String((version as any).ownerId) === String(viewerId);
       const isPublicVersion = Boolean((version as any).isPublic);
-      const isCommunityAccess = String(req.query.community || req.query.fromCommunityHub || '').toLowerCase() === 'true';
 
-      if (!isOwner && !isPublicVersion && !isCommunityAccess) {
+      if (!isOwner && !isPublicVersion) {
         res.status(403).json({ error: 'Forbidden: you do not have access to this dataset version.' });
         return;
       }
@@ -909,9 +917,13 @@ export class EvaluationController {
       res.json({
         datasetVersion: {
           _id: String(version._id),
+          projectId: version.projectId ? String(version.projectId) : null,
+          parentVersionId: version.parentVersionId ? String(version.parentVersionId) : null,
+          versionNo: version.versionNo ?? null,
           projectName: version.projectName,
           versionName: version.versionName,
           isPublic: Boolean((version as any).isPublic),
+          operationType: version.operationType || 'legacy',
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,

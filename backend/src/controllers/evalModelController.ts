@@ -15,6 +15,11 @@ dotenv.config();
 
 const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
 
+function getOwnerFilter(req: Request): { ownerId?: string } {
+  const ownerId = getAuthUserId(req);
+  return ownerId ? { ownerId } : {};
+}
+
 // ---------------------------------------------------------------------------
 // Helper: lấy GPU status — kiểm tra trước khi dispatch eval
 // ---------------------------------------------------------------------------
@@ -531,18 +536,15 @@ export const saveEvalResult = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getEvaluation = async (req: Request, res: Response) => {
   try {
-    const ownerId = getAuthUserId(req);
-    if (!ownerId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const ownerFilter = getOwnerFilter(req);
 
     const { evalId } = req.params;
-    const doc = await ModelEvaluation.findOne({ modelEvalId: evalId, ownerId }).lean();
+    const doc = await ModelEvaluation.findOne({ modelEvalId: evalId, ...ownerFilter }).lean();
     if (!doc) {
       return res.status(404).json({ error: 'Evaluation not found' });
     }
     // Kiểm tra xem eval này có đang được pin không
-    const history = await TrainingHistory.findOne({ jobId: doc.jobId, ownerId })
+    const history = await TrainingHistory.findOne({ jobId: doc.jobId, ...ownerFilter })
       .select('pinnedEvalId projectName')
       .lean();
     return res.json({
@@ -561,26 +563,23 @@ export const getEvaluation = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getEvaluatedModels = async (req: Request, res: Response) => {
   try {
-    const ownerId = getAuthUserId(req);
-    if (!ownerId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const ownerFilter = getOwnerFilter(req);
 
     const histories = await TrainingHistory.find({
-      ownerId,
+      ...ownerFilter,
       pinnedEvalId: { $exists: true, $ne: null },
     }).lean();
 
     const result = await Promise.all(
       histories.map(async (h) => {
-        const latestEval = await ModelEvaluation.findOne({ ownerId, jobId: h.jobId, status: 'COMPLETED' })
+        const latestEval = await ModelEvaluation.findOne({ ...ownerFilter, jobId: h.jobId, status: 'COMPLETED' })
           .sort({ completedAt: -1 })
           .lean();
 
         let displayEval = latestEval;
         if (h.pinnedEvalId) {
           const pinned = await ModelEvaluation.findOne({
-            ownerId,
+            ...ownerFilter,
             jobId: h.jobId,
             modelEvalId: h.pinnedEvalId,
             status: 'COMPLETED',
@@ -628,17 +627,14 @@ export const getEvaluatedModels = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const getEvalHistory = async (req: Request, res: Response) => {
   try {
-    const ownerId = getAuthUserId(req);
-    if (!ownerId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const ownerFilter = getOwnerFilter(req);
 
     const { jobId } = req.params;
 
     // Lấy pinnedEvalId từ TrainingHistory
-    const history = await TrainingHistory.findOne({ jobId, ownerId }).select('pinnedEvalId projectName baseModel').lean();
+    const history = await TrainingHistory.findOne({ jobId, ...ownerFilter }).select('pinnedEvalId projectName baseModel').lean();
 
-    const evals = await ModelEvaluation.find({ ownerId, jobId, status: 'COMPLETED' })
+    const evals = await ModelEvaluation.find({ ...ownerFilter, jobId, status: 'COMPLETED' })
       .sort({ completedAt: -1 })
       .select('modelEvalId jobId status totalConversations judgeModel summary startedAt completedAt systemPromptVersion datasetVersionName')
       .lean();

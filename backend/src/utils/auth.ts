@@ -6,5 +6,10 @@ export function getAuthUserId(req: Request): string | null {
   if (!userId) {
     return null;
   }
-  return String(userId);
+  const normalized = String(userId);
+  // Only return Mongo ObjectId-like ids to avoid cast errors in mongoose filters.
+  if (!/^[a-f\d]{24}$/i.test(normalized)) {
+    return null;
+  }
+  return normalized;
 }

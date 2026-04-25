@@ -44,8 +44,9 @@ import {
   getGpuStatusEndpoint,
   reviewConversation
 } from '../controllers/evalModelController';
-import { authMiddleware } from '../middleware/authMiddleware';
+import { authMiddleware, optionalAuthMiddleware } from '../middleware/authMiddleware';
 import labelRoutes from './labelRoutes';
+import dataprepRoutes from './dataprepRoutes';
 
 
 const router = express.Router();
@@ -79,7 +80,7 @@ const upload = multer({
 });
 
 router.use('/auth', authRoutes);
-router.use(authMiddleware);
+router.use(optionalAuthMiddleware);
 // Conversion Routes
 router.post('/upload', upload.single('file'), (req, res) => controller.uploadFile(req, res));
 router.post('/convert', (req, res) => controller.convertData(req, res));
@@ -176,6 +177,7 @@ router.get('/model-versions/download-dataset/:id', (req, res) => registryControl
 router.get('/model-registry/:registryId/active', (req, res) => registryController.getActiveVersion(req, res));
 
 // Dataset Prompt Routes
+router.get('/dataset-prompts', (req, res) => promptController.listByProject(req, res));
 router.get('/dataset-prompts/project/:projectName', (req, res) => promptController.listByProject(req, res));
 router.get('/dataset-prompts/:id', (req, res) => promptController.getById(req, res));
 router.post('/dataset-prompts', (req, res) => promptController.create(req, res));
@@ -183,5 +185,8 @@ router.delete('/dataset-prompts/:id', (req, res) => promptController.delete(req,
 
 // Data Labeling Routes
 router.use('/labels', labelRoutes);
+
+// Data Preparation routes must stay protected.
+router.use('/dataprep', authMiddleware, dataprepRoutes);
 
 export default router;

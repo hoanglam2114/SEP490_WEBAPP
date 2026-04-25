@@ -162,7 +162,6 @@ function computeEtaFromPayload(
     return Math.max(0, SEC_RUBRIC - elapsedSec);
   }
 
-  const K = oneBasedKFromPayload(payload);
   if (N <= 0) return null;
 
   if (stage === "replay") {

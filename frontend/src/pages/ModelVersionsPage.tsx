@@ -6,7 +6,6 @@ import {
   GitBranch,
   Shield,
   Zap,
-  Archive,
   Trash2,
   Info,
   ExternalLink,
@@ -231,11 +230,9 @@ export const ModelVersionsPage: React.FC = () => {
                               {v.version}
                             </div>
                             {v.status === "Use" && (
-                              <Shield
-                                size={14}
-                                className="text-green-600"
-                                title="Active Model"
-                              />
+                              <span title="Active Model">
+                                <Shield size={14} className="text-green-600" />
+                              </span>
                             )}
                           </div>
                           <div className="text-[10px] text-gray-400 mt-0.5">

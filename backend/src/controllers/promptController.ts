@@ -1,13 +1,14 @@
 import { Request, Response } from 'express';
-import { DatasetPrompt } from '../models/DatasetPrompt';
+import { PromptLibraryItem } from '../models/PromptLibraryItem';
 import { DatasetVersion } from '../models/DatasetVersion';
 import mongoose from 'mongoose';
 import { getAuthUserId } from '../utils/auth';
 
 export class PromptController {
   /**
-   * GET /dataset-prompts/project/:projectName
-   * List all prompt versions for a given project, sorted newest first.
+   * GET /dataset-prompts
+   * List all prompts for a given user, sorted newest first.
+   * (Adapter: we can still accept /project/:projectName but ignore the parameter to keep frontend unbroken for now, or just provide a new route /dataset-prompts)
    */
   async listByProject(req: Request, res: Response): Promise<void> {
     try {
@@ -17,14 +18,8 @@ export class PromptController {
         return;
       }
 
-      const { projectName } = req.params;
-      if (!projectName || !String(projectName).trim()) {
-        res.status(400).json({ error: 'projectName is required.' });
-        return;
-      }
-
-      const prompts = await DatasetPrompt.find({ ownerId, projectName: String(projectName).trim() })
-        .sort({ version: -1 })
+      const prompts = await PromptLibraryItem.find({ ownerId })
+        .sort({ createdAt: -1 })
         .lean();
 
       res.json({ prompts });
@@ -52,7 +47,7 @@ export class PromptController {
         return;
       }
 
-      const prompt = await DatasetPrompt.findOne({ _id: id, ownerId }).lean();
+      const prompt = await PromptLibraryItem.findOne({ _id: id, ownerId }).lean();
       if (!prompt) {
         res.status(404).json({ error: 'Prompt not found.' });
         return;
@@ -67,9 +62,8 @@ export class PromptController {
 
   /**
    * POST /dataset-prompts
-   * Create a new prompt version for a project.
-   * Auto-increments the version number.
-   * Body: { projectName, content, description? }
+   * Create a new prompt in the library.
+   * Body: { name, content, description?, isPublic? }
    */
   async create(req: Request, res: Response): Promise<void> {
     try {
@@ -79,17 +73,18 @@ export class PromptController {
         return;
       }
 
-      const { projectName, content, description } = req.body as {
-        projectName?: string;
+      const { name, content, description, isPublic } = req.body as {
+        name?: string;
         content?: string;
         description?: string;
+        isPublic?: boolean;
       };
 
-      const trimmedProject = String(projectName || '').trim();
+      const trimmedName = String(name || '').trim();
       const trimmedContent = String(content || '').trim();
 
-      if (!trimmedProject) {
-        res.status(400).json({ error: 'projectName is required.' });
+      if (!trimmedName) {
+        res.status(400).json({ error: 'name is required.' });
         return;
       }
       if (!trimmedContent) {
@@ -97,30 +92,22 @@ export class PromptController {
         return;
       }
 
-      // Auto-increment version number
-      const latestPrompt = await DatasetPrompt.findOne({ ownerId, projectName: trimmedProject })
-        .sort({ version: -1 })
-        .select('version')
-        .lean();
-      const nextVersion = (latestPrompt?.version || 0) + 1;
-
-      const prompt = await DatasetPrompt.create({
+      const prompt = await PromptLibraryItem.create({
         ownerId,
-        projectName: trimmedProject,
-        version: nextVersion,
+        name: trimmedName,
         content: trimmedContent,
         description: String(description || '').trim(),
+        isPublic: Boolean(isPublic),
       });
 
       res.status(201).json({
-        message: `Created prompt version ${nextVersion} for project "${trimmedProject}".`,
+        message: `Created prompt "${trimmedName}".`,
         prompt,
       });
     } catch (error: any) {
       console.error('Create prompt error:', error);
-      // Handle duplicate key error (race condition)
       if (error.code === 11000) {
-        res.status(409).json({ error: 'Duplicate version number. Please try again.' });
+        res.status(409).json({ error: 'A prompt with this name already exists. Please choose a different name.' });
         return;
       }
       res.status(500).json({ error: 'Failed to create prompt', details: error.message });
@@ -129,7 +116,7 @@ export class PromptController {
 
   /**
    * DELETE /dataset-prompts/:id
-   * Delete a prompt version, only if no DatasetVersion references it.
+   * Delete a prompt, only if no DatasetVersion references it.
    */
   async delete(req: Request, res: Response): Promise<void> {
     try {
@@ -145,7 +132,6 @@ export class PromptController {
         return;
       }
 
-      // Check if any DatasetVersion references this prompt
       const linkedCount = await DatasetVersion.countDocuments({ ownerId, promptId: new mongoose.Types.ObjectId(id) });
       if (linkedCount > 0) {
         res.status(409).json({
@@ -154,7 +140,7 @@ export class PromptController {
         return;
       }
 
-      const deleted = await DatasetPrompt.findOneAndDelete({ _id: id, ownerId });
+      const deleted = await PromptLibraryItem.findOneAndDelete({ _id: id, ownerId });
       if (!deleted) {
         res.status(404).json({ error: 'Prompt not found.' });
         return;

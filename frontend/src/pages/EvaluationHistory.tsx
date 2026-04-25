@@ -5,6 +5,7 @@ import { Toaster, toast } from 'react-hot-toast';
 import { MoreVertical, Trash2 } from 'lucide-react';
 import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
 import { apiService } from '../services/api';
+import { dataprepApi } from '../features/dataprep/api/dataprepApi';
 
 type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'openrouter' | 'none';
 
@@ -299,7 +300,7 @@ export const EvaluationHistory: React.FC = () => {
   const versionQuery = useQuery<VersionDetailResponse>({
     queryKey: ['dataset-version-detail', selectedVersionId, showRejectedSamples],
     enabled: Boolean(selectedVersionId),
-    queryFn: () => apiService.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
+    queryFn: () => dataprepApi.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
   });
 
   useEffect(() => {
