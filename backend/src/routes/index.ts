@@ -1,5 +1,18 @@
 import express from 'express';
 import multer from 'multer';
+
+// ── Admin: API Key Management ────────────────────────────────────────────────
+import { pinAuth } from '../middlewares/pinAuth';
+import { setupPin, verifyPinHandler, changePin, logoutPin, getPinStatus } from '../controllers/pinController';
+import {
+  getApiKeys,
+  createOrUpdateApiKey,
+  deleteApiKey,
+  toggleApiKey,
+  updateDescription,
+  parseImportFile,
+  getAuditLogHandler,
+} from '../controllers/apiKeyController';
 import { ConversionController } from '../controllers/conversionController';
 import { HuggingFaceController } from '../controllers/huggingfaceController';
 import { EvaluationController } from '../controllers/evaluationController';
@@ -177,5 +190,40 @@ router.get('/model-registry/:registryId/active', (req, res) => registryControlle
 router.get('/prompts/project/:projectName', (req, res) => promptController.getProjectPrompts(req, res));
 router.post('/prompts', (req, res) => promptController.createPrompt(req, res));
 router.delete('/prompts/:id', (req, res) => promptController.deletePrompt(req, res));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: API Key Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Multer riêng cho import file (hỗ trợ .env, .xlsx, .xls, .csv)
+const importUpload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    const allowed = ['.env', '.xlsx', '.xls', '.csv'];
+    if (allowed.some((ext) => name.endsWith(ext)) || name === '.env') {
+      cb(null, true);
+    } else {
+      cb(new Error('Chỉ hỗ trợ .env, .xlsx, .xls, .csv'));
+    }
+  },
+});
+
+// PIN (không cần xác thực session để gọi)
+router.get('/admin/pin/status', getPinStatus);
+router.post('/admin/pin/setup', setupPin);
+router.post('/admin/pin/verify', verifyPinHandler);
+router.post('/admin/pin/logout', logoutPin);
+router.post('/admin/pin/change', pinAuth, changePin);  // đổi PIN cần đang mở khoá
+
+// API Keys — tất cả đều cần pinAuth ⚠️ route cụ thể phải đứng trước wildcard
+router.get('/admin/api-keys/audit-log', pinAuth, getAuditLogHandler);
+router.post('/admin/api-keys/import/parse', pinAuth, importUpload.single('file'), parseImportFile);
+router.get('/admin/api-keys', pinAuth, getApiKeys);
+router.post('/admin/api-keys', pinAuth, createOrUpdateApiKey);
+router.patch('/admin/api-keys/:name/toggle', pinAuth, toggleApiKey);
+router.patch('/admin/api-keys/:name/description', pinAuth, updateDescription);
+router.delete('/admin/api-keys/:name', pinAuth, deleteApiKey);
 
 export default router;

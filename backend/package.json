@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "lint": "eslint src/**/*.ts"
+    "lint": "eslint src/**/*.ts",
+    "setup": "npx tsx src/scripts/setup-apikey.ts"
   },
   "keywords": [
     "chatbot",
@@ -28,7 +29,8 @@
     "mongoose": "^9.2.4",
     "multer": "^1.4.5-lts.1",
     "node-fetch": "^3.3.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/compression": "^1.7.5",

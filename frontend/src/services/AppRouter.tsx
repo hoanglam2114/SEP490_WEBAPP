@@ -17,6 +17,7 @@ import { ModelEvalCompareScreen } from '../pages/ModelEvalCompareScreen';
 import { EvaluationHistory } from '../pages/EvaluationHistory';
 import { ModelRegistryPage } from '../pages/ModelRegistryPage';
 import { ModelVersionsPage } from '../pages/ModelVersionsPage';
+import { ApiKeyManagerPage } from '../pages/ApiKeyManagerPage';
 
 
 const queryClient = new QueryClient({
@@ -61,6 +62,9 @@ export default function AppRouter() {
           <Route path="/model-eval/compare" element={<ModelEvalCompareScreen />} />
           {/* /model-eval/:evalId phải đứng SAU /model-eval/run, /history, /compare để không bị shadow */}
           <Route path="/model-eval/:evalId" element={<ModelEvalResultScreen />} />
+
+          {/* Admin */}
+          <Route path="/admin/api-keys" element={<ApiKeyManagerPage />} />
         </Routes>
       </Router>
     </QueryClientProvider>
