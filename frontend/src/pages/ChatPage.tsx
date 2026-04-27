@@ -446,10 +446,9 @@ function ChatPanel({
     useEffect(() => {
         onModelLoadedChange?.(modelLoaded);
     }, [modelLoaded]);
-
     const fetchChatSessions = async () => {
         try {
-            const sessions = await apiService.getChatSessions(30);
+            const sessions = await apiService.getChatSessions();
             setChatSessions(sessions);
         } catch (error) {
             console.error("Failed to fetch chat sessions:", error);

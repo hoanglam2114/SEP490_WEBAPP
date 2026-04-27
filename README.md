@@ -1,98 +1,61 @@
-# Chatbot Finetuning Data Converter
+# SEP490 - AI Chatbot Training & Evaluation Platform
 
-Giải pháp web để convert dữ liệu chat từ MongoDB sang các format phổ biến cho finetuning chatbot.
+Hệ thống quản lý, huấn luyện (Fine-tuning) và đánh giá các mô hình ngôn ngữ lớn (LLM). Hỗ trợ đóng gói hoàn chỉnh bằng Docker để triển khai dễ dàng.
 
-## Tính năng
+## Kiến trúc hệ thống
 
-- Upload file JSON từ MongoDB
-- Convert sang nhiều format:
-  - **OpenAI Format** (JSONL): Cho GPT-3.5/GPT-4 finetuning
-  - **Anthropic Format** (JSONL): Cho Claude finetuning
-  - **LLaMA/Alpaca Format** (JSON): Cho các mô hình open-source
-  - **ShareGPT Format** (JSON): Format phổ biến cho nhiều công cụ
-- Xem trước dữ liệu trước khi download
-- Lọc theo conversation, user, date range
-- Thống kê tổng quan về dữ liệu
+Dự án được chia thành 4 dịch vụ chính:
+- **Frontend (React + Vite)**: Giao diện người dùng quản lý dataset, huấn luyện và đánh giá.
+- **Backend (Node.js + Express)**: Quản lý API, lưu trữ metadata và kết nối các dịch vụ.
+- **GPU Service (Python + Unsloth)**: Dịch vụ chuyên biệt xử lý huấn luyện (Fine-tuning) và Inference sử dụng thư viện Unsloth (tối ưu cho GPU).
+- **Database (MongoDB)**: Lưu trữ dữ liệu dataset, lịch sử huấn luyện và kết quả đánh giá.
 
-## Tech Stack
+## Hướng dẫn cài đặt và chạy (Dành cho thầy giáo)
 
-### Frontend
-- TypeScript
-- React + Vite
-- TailwindCSS
-- React Query
-- Zustand (state management)
+### Yêu cầu hệ thống
+- **Docker & Docker Compose**: Đã cài đặt trên máy.
+- **Hardware**: Cần có NVIDIA GPU (với NVIDIA Container Toolkit) để chạy dịch vụ GPU Service. Nếu không có GPU, dịch vụ này có thể gặp lỗi khi khởi động.
 
-### Backend
-- Node.js + Express
-- TypeScript
-- Multer (file upload)
-- MongoDB (optional - để lưu history)
+### Các bước khởi động
 
-## Cấu trúc thư mục
+1.  **Cấu hình biến môi trường**:
+    - Tạo file `.env` tại thư mục gốc (nếu chưa có).
+    - Điền đầy đủ các API key cần thiết:
+      ```env
+      ANTHROPIC_API_KEY=your_key_here
+      HF_TOKEN=your_token_here
+      NGROK_TOKEN=your_token_here
+      # Các key khác nếu cần (OPENAI_API_KEY, GEMINI_API_KEY...)
+      ```
+
+2.  **Khởi động bằng Docker Compose**:
+    Mở Terminal tại thư mục gốc của dự án và chạy lệnh:
+    ```powershell
+    docker-compose up --build
+    ```
+
+3.  **Truy cập ứng dụng**:
+    - **Frontend**: `http://localhost`
+    - **Backend API**: `http://localhost:3000`
+    - **GPU Service API**: `http://localhost:5000`
+
+## Cách đóng gói để gửi
+
+1.  **Xóa dữ liệu rác**: Đảm bảo đã xóa các thư mục `node_modules`, `dist`, `__pycache__` và các file `.env` (chỉ nên gửi `.env.example`).
+2.  **Nén thư mục**: Nén toàn bộ thư mục dự án thành file `.zip`.
+3.  **Lưu ý**: Nhắc thầy giáo kiểm tra file `.env` và yêu cầu phần cứng GPU trước khi chạy.
+
+---
+
+## Cấu trúc thư mục chi tiết
 
 ```
-chatbot-data-converter/
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── services/
-│   │   ├── types/
-│   │   └── utils/
-│   ├── package.json
-│   └── tsconfig.json
-├── backend/
-│   ├── src/
-│   │   ├── controllers/
-│   │   ├── services/
-│   │   ├── types/
-│   │   └── utils/
-│   ├── package.json
-│   └── tsconfig.json
-└── README.md
+SEP490_WEBAPP/
+├── frontend/          # React + Vite application
+├── backend/           # Node.js Express API
+├── gpu-service/       # Python Unsloth Service
+├── docker-compose.yml # Cấu hình Docker toàn hệ thống
+├── .env.example       # File mẫu cấu hình biến môi trường
+└── README.md          # Hướng dẫn này
 ```
 
-## Cài đặt
-
-### Backend
-```bash
-cd backend
-npm install
-npm run dev
-```
-
-### Frontend
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-## API Endpoints
-
-- `POST /api/upload` - Upload file JSON
-- `POST /api/convert` - Convert dữ liệu sang format mong muốn
-- `GET /api/stats/:fileId` - Lấy thống kê về file
-- `GET /api/preview/:fileId` - Xem trước dữ liệu
-
-## Format Output
-
-### 1. OpenAI Format
-```jsonl
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
-```
-
-### 2. Anthropic Format
-```jsonl
-{"prompt": "Human: ...\n\nAssistant:", "completion": "..."}
-```
-
-### 3. LLaMA/Alpaca Format
-```json
-[{"instruction": "...", "input": "", "output": "..."}]
-```
-
-### 4. ShareGPT Format
-```json
-[{"conversations": [{"from": "human", "value": "..."}, {"from": "gpt", "value": "..."}]}]
-```
