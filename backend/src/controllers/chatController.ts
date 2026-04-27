@@ -389,10 +389,21 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    // Pipe the response body from Python server to Express response
+    // Manually handle the stream from Python server to Express response
     if (inferResponse.body) {
-      (inferResponse.body as any).pipe(res, { end: false });
-      (inferResponse.body as any).on('end', () => {
+      let streamFinished = false;
+      const reader = (inferResponse.body as any);
+
+      reader.on('data', (chunk: Buffer) => {
+        if (!streamFinished) {
+          res.write(chunk);
+        }
+      });
+
+      const finishStream = () => {
+        if (streamFinished || res.writableEnded) return;
+        streamFinished = true;
+
         const input_parameters = {
           do_sample: true,
           max_new_tokens,
@@ -409,10 +420,15 @@ export const chatWithAIStream = async (req: Request, res: Response): Promise<voi
         });
         res.write(`data: ${finalChunk}\n\n`);
         res.end();
-      });
-      inferResponse.body.on('error', (err) => {
-        console.error('Stream piping error:', err);
-        res.end();
+      };
+
+      reader.on('end', finishStream);
+      reader.on('close', finishStream);
+      reader.on('error', (err: Error) => {
+        console.error('Stream error:', err);
+        if (!res.writableEnded) {
+          res.end();
+        }
       });
     } else {
       res.status(500).json({ error: 'Không nhận được luồng dữ liệu từ GPU service' });
@@ -536,10 +552,21 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    // Pipe the response body
+    // Manually handle the stream
     if (inferResponse.body) {
-      (inferResponse.body as any).pipe(res, { end: false });
-      (inferResponse.body as any).on('end', () => {
+      let streamFinished = false;
+      const reader = (inferResponse.body as any);
+
+      reader.on('data', (chunk: Buffer) => {
+        if (!streamFinished) {
+          res.write(chunk);
+        }
+      });
+
+      const finishStream = () => {
+        if (streamFinished || res.writableEnded) return;
+        streamFinished = true;
+
         const input_parameters = {
           do_sample: true,
           max_new_tokens,
@@ -556,10 +583,15 @@ export const inferWithAIStream = async (req: Request, res: Response): Promise<vo
         });
         res.write(`data: ${finalChunk}\n\n`);
         res.end();
-      });
-      inferResponse.body.on('error', (err) => {
-        console.error('Stream piping error:', err);
-        res.end();
+      };
+
+      reader.on('end', finishStream);
+      reader.on('close', finishStream);
+      reader.on('error', (err: Error) => {
+        console.error('Stream error:', err);
+        if (!res.writableEnded) {
+          res.end();
+        }
       });
     } else {
       res.status(500).json({ error: 'Không nhận được luồng dữ liệu từ GPU service' });

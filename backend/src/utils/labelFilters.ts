@@ -25,6 +25,11 @@ export async function getHardRejectedSampleIds(
     name: 'REJECT',
     type: 'hard',
     $expr: { $gte: [{ $size: '$upvotes' }, HARD_REJECT_UPVOTE_THRESHOLD] },
+    $or: [
+      { targetScope: 'sample' },
+      { targetScope: { $exists: false } },
+      { targetScope: null },
+    ],
   };
 
   if (scopedSampleIds && scopedSampleIds.length > 0) {

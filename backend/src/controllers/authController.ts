@@ -107,3 +107,25 @@ export const getMe = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error.' });
   }
 };
+
+export const listUsers = async (req: Request, res: Response) => {
+  try {
+    const currentUserId = String((req as any).user?.userId || (req as any).user?.id || '');
+    const query = currentUserId ? { _id: { $ne: currentUserId } } : {};
+    const users = await User.find(query)
+      .select('_id name email')
+      .sort({ name: 1, email: 1 })
+      .lean();
+
+    res.status(200).json({
+      users: users.map((user: any) => ({
+        id: String(user._id),
+        name: String(user.name || ''),
+        email: String(user.email || ''),
+      })),
+    });
+  } catch (error: any) {
+    console.error('List users error:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+};

@@ -57,6 +57,7 @@ type DatasetVersionDetailResponse = {
     projectName: string;
     versionName: string;
     isPublic?: boolean;
+    sharedWithUsers?: ShareUser[];
     operationType?: string;
     similarityThreshold: number;
     totalSamples: number;
@@ -98,15 +99,24 @@ type DatasetVersionDetailResponse = {
   }>;
 };
 
+export type ShareUser = {
+  id: string;
+  name: string;
+  email: string;
+};
+
 type ClusterResponse = {
   data: any[];
   groups: any[];
   assignments: number[];
+  clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+  avgSimilarity?: number;
 };
 
 export type SubjectAutoLabel = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OTHER';
 
 export type ClassificationGroup = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'REJECT' | 'REWRITE' | 'OUT_OF_SCOPE';
+export type QualityBucket = 'Gold' | 'Rewrite' | 'Reject';
 
 export type AutoLabelSuggestion = {
   clusterId: number;
@@ -131,6 +141,50 @@ export type ClassifiedSamplesResult = {
   totalSamples: number;
   groups: ClassificationSummaryGroup[];
   items: Array<{ _id: string; sampleId: string; data: Record<string, any>; group: ClassificationGroup }>;
+};
+
+export type QualitySummaryGroup = {
+  group: QualityBucket;
+  count: number;
+  percentage: number;
+};
+
+export type QualityClassificationItem = {
+  _id: string;
+  sampleId: string;
+  data: Record<string, any>;
+  bucket: QualityBucket;
+  score: number;
+  vector: number[];
+  intentCounts: number[];
+  iar: Array<number | null>;
+  criticalFailures: number;
+  scorableTurns: number;
+};
+
+export type QualityWrongPair = {
+  intent: string;
+  action: string;
+  count: number;
+  criticalFailures: number;
+};
+
+export type QualityClassificationResult = {
+  summary?: {
+    totalSamples: number;
+    classifiedSamples: number;
+    skippedSamples: number;
+    groups: QualitySummaryGroup[];
+    wrongPairs?: QualityWrongPair[];
+    rejectTaggedCount?: number;
+  };
+  totalSamples: number;
+  classifiedSamples: number;
+  skippedSamples: number;
+  groups: QualitySummaryGroup[];
+  wrongPairs?: QualityWrongPair[];
+  rejectTaggedCount?: number;
+  items: QualityClassificationItem[];
 };
 
 export const apiService = {
@@ -189,10 +243,47 @@ export const apiService = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
+    let receivedText = false;
+
+    const processSseLine = (line: string) => {
+      if (!line.trim().startsWith('data:')) {
+        return;
+      }
+
+      const dataText = line.trim().substring(5).trim();
+      if (!dataText || dataText === '[DONE]') {
+        return;
+      }
+
+      try {
+        const dataObj = JSON.parse(dataText);
+        if (dataObj.error) {
+          const streamErr = new Error(dataObj.error);
+          (streamErr as any).isStreamingError = true;
+          throw streamErr;
+        }
+        if (dataObj.is_final && onFinalInfo) {
+          onFinalInfo(dataObj);
+        } else if (typeof dataObj.text === "string" && dataObj.text.length > 0) {
+          receivedText = true;
+          onChunk(dataObj.text);
+        } else if (typeof dataObj.result === "string" && dataObj.result.length > 0) {
+          receivedText = true;
+          onChunk(dataObj.result);
+        }
+      } catch (e: any) {
+        if (e.isStreamingError) {
+          throw e;
+        }
+        console.warn("Lỗi parse SSE JSON:", dataText, e);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -201,36 +292,17 @@ export const apiService = {
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        if (line.trim().startsWith('data:')) {
-          const dataText = line.trim().substring(5).trim();
-
-          if (dataText === '[DONE]') {
-            continue;
-          }
-
-          if (dataText) {
-            try {
-              const dataObj = JSON.parse(dataText);
-              if (dataObj.error) {
-                const streamErr = new Error(dataObj.error);
-                (streamErr as any).isStreamingError = true;
-                throw streamErr;
-              }
-              if (dataObj.is_final && onFinalInfo) {
-                onFinalInfo(dataObj);
-              } else if (dataObj.text) {
-                onChunk(dataObj.text);
-              }
-            } catch (e: any) {
-              // Always rethrow if it's an error object we created or if it's a known error format
-              if (e.isStreamingError || e.message) {
-                throw e;
-              }
-              console.warn("Lỗi parse SSE JSON:", dataText, e);
-            }
-          }
-        }
+        processSseLine(line);
       }
+    }
+
+    const remaining = buffer.trim();
+    if (remaining) {
+      processSseLine(remaining);
+    }
+
+    if (!receivedText) {
+      throw new Error("Model không trả về nội dung. Vui lòng thử lại hoặc kiểm tra GPU service.");
     }
   },
 
@@ -291,6 +363,11 @@ export const apiService = {
 
   deleteFile: async (fileId: string): Promise<void> => {
     await api.delete(`/file/${fileId}`);
+  },
+
+  listUsers: async (): Promise<{ users: ShareUser[] }> => {
+    const response = await api.get('/auth/users');
+    return response.data;
   },
 
   evaluateData: async (
@@ -482,6 +559,7 @@ export const apiService = {
       versionName: string;
       ownerId: string;
       ownerName: string;
+      accessType?: 'public' | 'shared';
       updatedAt: string;
       topLabel: {
         _id: string;
@@ -508,14 +586,38 @@ export const apiService = {
     return response.data;
   },
 
-  getSampleLabels: async (sampleId: string): Promise<{ labels: any[] }> => {
-    const response = await api.get(`/dataprep/samples/${sampleId}/labels`);
+  updateDatasetVersionSharing: async (id: string, userId: string | null): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      isPublic: boolean;
+      projectName: string;
+      versionName: string;
+      sharedWithUsers: ShareUser[];
+    };
+  }> => {
+    const response = await api.patch(`/dataprep/versions/${id}/share`, { userId });
+    return response.data;
+  },
+
+  getSampleLabels: async (
+    sampleId: string,
+    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number }
+  ): Promise<{ labels: any[] }> => {
+    const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
     return response.data;
   },
 
   addSampleLabel: async (
     sampleId: string,
-    payload: { name: string; type: 'hard' | 'soft' },
+    payload: {
+      name: string;
+      type: 'hard' | 'soft';
+      targetScope?: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+      targetTextSnapshot?: string;
+    },
     fromCommunityHub = false
   ): Promise<{ label: any }> => {
     const response = await api.post(`/dataprep/samples/${sampleId}/labels`, payload, {
@@ -532,6 +634,42 @@ export const apiService = {
     const response = await api.post(`/dataprep/labels/${labelId}/votes`, { voteAction }, {
       params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
     });
+    return response.data;
+  },
+
+  previewMessageAutoLabels: async (
+    sampleId: string,
+    payload: {
+      provider?: 'gemini' | 'openai' | 'deepseek';
+      messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+    }
+  ): Promise<{
+    suggestions: Array<{
+      messageIndex: number;
+      role: 'user' | 'assistant';
+      label: string[];
+      confidence?: number;
+      is_correct_logic?: boolean;
+    }>;
+  }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/preview`, payload);
+    return response.data;
+  },
+
+  saveMessageAutoLabels: async (
+    sampleId: string,
+    payload: {
+      suggestions: Array<{
+        messageIndex: number;
+        role: 'user' | 'assistant';
+        label: string[] | string;
+        confidence?: number;
+        is_correct_logic?: boolean;
+      }>;
+      messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+    }
+  ): Promise<{ message: string; insertedCount: number }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/save`, payload);
     return response.data;
   },
 
@@ -649,6 +787,8 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster', {
@@ -680,6 +820,8 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/filter', { data, threshold })
@@ -697,6 +839,8 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/remove-noise')
@@ -715,6 +859,8 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/deduplicate', { threshold })
@@ -867,6 +1013,21 @@ export const apiService = {
     group?: ClassificationGroup
   ): Promise<ClassifiedSamplesResult> => {
     const response = await api.get(`/dataprep/versions/${versionId}/classification`, {
+      params: group ? { group } : undefined,
+    });
+    return response.data;
+  },
+
+  classifyQuality: async (versionId: string): Promise<QualityClassificationResult> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/quality/classify`);
+    return response.data;
+  },
+
+  getQualityClassifiedSamples: async (
+    versionId: string,
+    group?: QualityBucket
+  ): Promise<QualityClassificationResult> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/quality`, {
       params: group ? { group } : undefined,
     });
     return response.data;

@@ -7,7 +7,8 @@ export function getAuthUserId(req: Request): string | null {
     return null;
   }
   const normalized = String(userId);
-  // Only return Mongo ObjectId-like ids to avoid cast errors in mongoose filters.
+  // Persistence-scoped controllers store ownerId as a Mongo ObjectId.
+  // optionalAuthMiddleware uses "public" as a request role marker, not a DB owner.
   if (!/^[a-f\d]{24}$/i.test(normalized)) {
     return null;
   }

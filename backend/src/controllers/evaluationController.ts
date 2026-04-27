@@ -86,6 +86,37 @@ function getLatestEvaluationEntry(entries: any[]): any | null {
   return [...entries].sort((a, b) => getEvaluationTimestamp(a) - getEvaluationTimestamp(b))[entries.length - 1] || null;
 }
 
+function getSharedUserIds(version: any): string[] {
+  return Array.isArray(version?.sharedWithUserIds)
+    ? version.sharedWithUserIds.map((id: any) => String(id)).filter(Boolean)
+    : [];
+}
+
+function isVersionSharedWithUser(version: any, userId: string): boolean {
+  return getSharedUserIds(version).includes(String(userId));
+}
+
+async function buildSharedUserDtos(version: any): Promise<Array<{ id: string; name: string; email: string }>> {
+  const sharedUserIds = getSharedUserIds(version);
+  if (!sharedUserIds.length) {
+    return [];
+  }
+
+  const users = await User.find({ _id: { $in: sharedUserIds } })
+    .select('_id name email')
+    .lean();
+
+  const byId = new Map(users.map((user: any) => [String(user._id), user]));
+  return sharedUserIds
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((user: any) => ({
+      id: String(user._id),
+      name: String(user.name || ''),
+      email: String(user.email || ''),
+    }));
+}
+
 function buildAverageResults(entries: any[]): EvaluationScorePayload {
   if (!Array.isArray(entries) || entries.length === 0) {
     return {
@@ -642,9 +673,21 @@ export class EvaluationController {
     }
   }
 
-  async getPublicProjectsHub(_req: Request, res: Response): Promise<void> {
+  async getPublicProjectsHub(req: Request, res: Response): Promise<void> {
     try {
-      const versionRows = await DatasetVersion.find({ isPublic: true })
+      const viewerId = getAuthUserId(req);
+      if (!viewerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const viewerObjectId = new mongoose.Types.ObjectId(viewerId);
+      const versionRows = await DatasetVersion.find({
+        $or: [
+          { isPublic: true },
+          { sharedWithUserIds: viewerObjectId },
+        ],
+      })
         .sort({ createdAt: -1 })
         .lean();
 
@@ -687,6 +730,11 @@ export class EvaluationController {
             {
               $match: {
                 'version._id': new mongoose.Types.ObjectId(datasetVersionId),
+                $or: [
+                  { targetScope: 'sample' },
+                  { targetScope: { $exists: false } },
+                  { targetScope: null },
+                ],
               },
             },
             {
@@ -718,6 +766,7 @@ export class EvaluationController {
             ownerId,
             ownerName: ownerNameMap.get(ownerId) || 'Unknown',
             updatedAt: row.createdAt,
+            accessType: Boolean(row.isPublic) ? 'public' : 'shared',
             topLabel,
           };
         })
@@ -747,8 +796,16 @@ export class EvaluationController {
         return;
       }
 
-      if (!datasetVersion.isPublic) {
-        res.status(403).json({ error: 'Project này chưa được public.' });
+      const viewerId = getAuthUserId(req);
+      if (!viewerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const isOwner = String(datasetVersion.ownerId) === String(viewerId);
+      const hasSharedAccess = isVersionSharedWithUser(datasetVersion, viewerId);
+      if (!datasetVersion.isPublic && !hasSharedAccess && !isOwner) {
+        res.status(403).json({ error: 'Bạn chưa được cấp quyền truy cập project này.' });
         return;
       }
 
@@ -848,8 +905,9 @@ export class EvaluationController {
 
       const isOwner = String((version as any).ownerId) === String(viewerId);
       const isPublicVersion = Boolean((version as any).isPublic);
+      const hasSharedAccess = isVersionSharedWithUser(version, viewerId);
 
-      if (!isOwner && !isPublicVersion) {
+      if (!isOwner && !isPublicVersion && !hasSharedAccess) {
         res.status(403).json({ error: 'Forbidden: you do not have access to this dataset version.' });
         return;
       }
@@ -923,6 +981,7 @@ export class EvaluationController {
           projectName: version.projectName,
           versionName: version.versionName,
           isPublic: Boolean((version as any).isPublic),
+          sharedWithUsers: await buildSharedUserDtos(version),
           operationType: version.operationType || 'legacy',
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
@@ -984,6 +1043,72 @@ export class EvaluationController {
       console.error('Update dataset version visibility error:', error);
       res.status(500).json({
         error: 'Cập nhật visibility thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async updateDatasetVersionSharing(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const rawUserId = req.body?.userId;
+      const userId = rawUserId ? String(rawUserId) : '';
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'userId không hợp lệ.' });
+        return;
+      }
+
+      if (userId && userId === String(ownerId)) {
+        res.status(400).json({ error: 'Owner đã có quyền trên dataset version này.' });
+        return;
+      }
+
+      if (userId) {
+        const targetUser = await User.findById(userId).select('_id').lean();
+        if (!targetUser) {
+          res.status(404).json({ error: 'Không tìm thấy tài khoản được chọn.' });
+          return;
+        }
+      }
+
+      const sharedWithUserIds = userId ? [new mongoose.Types.ObjectId(userId)] : [];
+      const updated = await DatasetVersion.findOneAndUpdate(
+        { _id: id, ownerId },
+        { $set: { sharedWithUserIds } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      res.json({
+        message: userId ? 'Đã cấp quyền cho tài khoản được chọn.' : 'Đã xóa quyền chia sẻ riêng.',
+        datasetVersion: {
+          _id: String(updated._id),
+          isPublic: Boolean((updated as any).isPublic),
+          projectName: updated.projectName,
+          versionName: updated.versionName,
+          sharedWithUsers: await buildSharedUserDtos(updated),
+        },
+      });
+    } catch (error: any) {
+      console.error('Update dataset version sharing error:', error);
+      res.status(500).json({
+        error: 'Cập nhật quyền chia sẻ thất bại',
         details: error.message,
       });
     }

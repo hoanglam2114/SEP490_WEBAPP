@@ -6,6 +6,7 @@ type ClusterGroup = {
   groupId: number;
   count: number;
   label: string;
+  avgSimilarity?: number | null;
 };
 
 type ClusterPanelProps = {
@@ -63,6 +64,12 @@ export function ClusterPanel({
 }: ClusterPanelProps) {
   const hasClusters = clusterGroups.length > 0;
   const isFiltering = isRemovingNoise || isDeduplicating;
+  const formatAvgSimilarity = (value: number | null | undefined): string => {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+      return '-';
+    }
+    return Number(value).toFixed(4);
+  };
 
   return (
     <div className="space-y-5">
@@ -175,6 +182,7 @@ export function ClusterPanel({
                       <th className="px-4 py-2 text-left font-semibold text-gray-700">Select</th>
                       <th className="px-4 py-2 text-left font-semibold text-gray-700">Group</th>
                       <th className="px-4 py-2 text-left font-semibold text-gray-700">Count</th>
+                      <th className="px-4 py-2 text-left font-semibold text-gray-700">Avg Similarity</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -183,6 +191,7 @@ export function ClusterPanel({
                         <td className="px-4 py-2"><input type="checkbox" checked={selectedClusterIds.includes(group.groupId)} onChange={() => toggleClusterSelection(group.groupId)} /></td>
                         <td className="px-4 py-2 font-medium text-gray-800">Group {group.groupId}</td>
                         <td className="px-4 py-2 text-gray-700">{group.count}</td>
+                        <td className="px-4 py-2 font-mono text-gray-700">{formatAvgSimilarity(group.avgSimilarity)}</td>
                       </tr>
                     ))}
                   </tbody>

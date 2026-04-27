@@ -17,10 +17,10 @@ export const FileUploader: React.FC = () => {
       dataprepApi.deleteClusterCache().catch((err) => {
         console.error('Failed to clear cluster cache:', err);
       });
-      toast.success('File uploaded successfully!');
+      toast.success('Tải tệp lên thành công!');
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Upload failed');
+      toast.error(error.response?.data?.error || 'Tải tệp lên thất bại');
     },
   });
 
@@ -36,7 +36,8 @@ export const FileUploader: React.FC = () => {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      'application/json': ['.json'],
+      'application/json': ['.json', '.jsonl'],
+      'application/x-jsonlines': ['.jsonl'],
     },
     multiple: false,
     disabled: uploadMutation.isPending,
@@ -48,7 +49,7 @@ export const FileUploader: React.FC = () => {
 
   if (uploadedFile) {
     return (
-      <div className="bg-white rounded-lg border-2 border-green-500 p-6">
+      <div className="bg-white rounded-lg border-2 border-green-500 p-6 shadow-sm">
         <div className="flex items-start justify-between">
           <div className="flex items-start space-x-3">
             <File className="w-8 h-8 text-green-500 flex-shrink-0" />
@@ -59,13 +60,19 @@ export const FileUploader: React.FC = () => {
               <div className="mt-2 space-y-1 text-sm text-gray-600">
                 {uploadedFile.fileType === 'lesson' ? (
                   <>
-                    <p>📚 {uploadedFile.lessonCount?.toLocaleString()} lessons</p>
-                    <p>📝 {uploadedFile.exerciseCount?.toLocaleString()} exercises</p>
+                    <p>📚 {uploadedFile.lessonCount?.toLocaleString()} bài học</p>
+                    <p>📝 {uploadedFile.exerciseCount?.toLocaleString()} bài tập</p>
+                  </>
+                ) : uploadedFile.fileType === 'openai_messages' ? (
+                  <>
+                    <p>🤖 Định dạng OpenAI Messages</p>
+                    <p>📊 {uploadedFile.messageCount?.toLocaleString()} tin nhắn</p>
+                    <p>💬 {uploadedFile.conversationCount?.toLocaleString()} hội thoại</p>
                   </>
                 ) : (
                   <>
-                    <p>📊 {uploadedFile.messageCount?.toLocaleString()} messages</p>
-                    <p>💬 {uploadedFile.conversationCount?.toLocaleString()} conversations</p>
+                    <p>📊 {uploadedFile.messageCount?.toLocaleString()} tin nhắn</p>
+                    <p>💬 {uploadedFile.conversationCount?.toLocaleString()} hội thoại</p>
                   </>
                 )}
                 <p>📦 {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB</p>
@@ -74,7 +81,7 @@ export const FileUploader: React.FC = () => {
           </div>
           <button
             onClick={handleRemove}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-gray-400 hover:text-gray-600 transition-colors p-1"
           >
             <X className="w-5 h-5" />
           </button>
@@ -103,21 +110,21 @@ export const FileUploader: React.FC = () => {
       />
       {uploadMutation.isPending ? (
         <div>
-          <p className="text-lg font-medium text-gray-700">Uploading...</p>
-          <p className="text-sm text-gray-500 mt-2">Please wait</p>
+          <p className="text-lg font-medium text-gray-700">Đang tải lên...</p>
+          <p className="text-sm text-gray-500 mt-2">Vui lòng chờ trong giây lát</p>
         </div>
       ) : (
         <div>
           <p className="text-lg font-medium text-gray-700">
             {isDragActive
-              ? 'Drop the file here'
-              : 'Drag & drop your JSON file here'}
+              ? 'Thả tệp vào đây'
+              : 'Kéo & thả tệp JSON/JSONL vào đây'}
           </p>
           <p className="text-sm text-gray-500 mt-2">
-            or click to select a file
+            hoặc nhấp để chọn tệp từ máy tính
           </p>
           <p className="text-xs text-gray-400 mt-4">
-            Supports JSON files from MongoDB export (Max: 50MB)
+            Hỗ trợ định dạng MongoDB export và OpenAI messages (Tối đa: 50MB)
           </p>
         </div>
       )}

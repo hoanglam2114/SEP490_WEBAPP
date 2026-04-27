@@ -32,6 +32,8 @@ import { AutoLabelingPanel } from '../features/dataprep/labeling/AutoLabelingPan
 import { LabelingWorkflowPanel } from '../features/dataprep/labeling/LabelingWorkflowPanel';
 import { ClusterPanel } from '../features/dataprep/preprocessing/ClusterPanel';
 import { ClassificationPanel } from '../features/dataprep/classification/ClassificationPanel';
+import { SubjectDistributionPanel } from '../features/dataprep/classification/SubjectDistributionPanel';
+import { BalanceDatasetPanel } from '../features/dataprep/classification/BalanceDatasetPanel';
 import { CleaningPipelineOptions } from '../features/dataprep/preprocessing/CleaningPipelineOptions';
 import { PostConversionSummary } from '../features/dataprep/preprocessing/PostConversionSummary';
 import { VisualizationPanel, type VisualizationResult } from '../features/dataprep/preprocessing/VisualizationPanel';
@@ -41,9 +43,9 @@ import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 import { useAuthStore } from '../store/authStore';
 import { ExportPanel } from '../features/dataprep/export/ExportPanel';
-import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult } from '../services/api';
+import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult, QualityBucket, QualityClassificationResult } from '../services/api';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -89,6 +91,13 @@ type ClusterGroup = {
   groupId: number;
   count: number;
   label: string;
+  avgSimilarity?: number | null;
+};
+
+type ClusterStat = {
+  clusterId: number;
+  avgSimilarity: number;
+  count: number;
 };
 
 type LoadProjectPayload = {
@@ -312,7 +321,7 @@ function formatDefaultProjectName(date = new Date()): string {
 }
 
 type MainPipelineStage = {
-  id: 'upload' | 'preprocessing' | 'labeling' | 'evaluation' | 'finish';
+  id: 'upload' | 'preprocessing' | 'labeling' | 'classification' | 'evaluation' | 'finish';
   label: string;
   steps: Step[];
 };
@@ -320,9 +329,10 @@ type MainPipelineStage = {
 const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'upload', label: 'Upload & Convert', steps: [1] },
   { id: 'preprocessing', label: 'Preprocessing', steps: [2, 3, 4] },
-  { id: 'labeling', label: 'Labeling', steps: [5, 6, 7] },
-  { id: 'evaluation', label: 'Evaluation', steps: [8, 9] },
-  { id: 'finish', label: 'Finish', steps: [10, 11] },
+  { id: 'labeling', label: 'Labeling', steps: [5, 6] },
+  { id: 'classification', label: 'Classification', steps: [7, 8, 9] },
+  { id: 'evaluation', label: 'Evaluation', steps: [10, 11] },
+  { id: 'finish', label: 'Finish', steps: [12, 13] },
 ];
 
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
@@ -331,11 +341,13 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 4, label: 'K-means Cluster', group: 'Preprocessing' },
   { id: 5, label: 'Auto Labeling', group: 'Labeling' },
   { id: 6, label: 'Labeling', group: 'Labeling' },
-  { id: 7, label: 'Classification', group: 'Labeling' },
-  { id: 8, label: 'Evaluation', group: 'Evaluation' },
-  { id: 9, label: 'Refine', group: 'Evaluation' },
-  { id: 10, label: 'System Prompt', group: 'Finish' },
-  { id: 11, label: 'Train/Test Export', group: 'Finish' },
+  { id: 7, label: 'Classification', group: 'Classification' },
+  { id: 8, label: 'Distribution', group: 'Classification' },
+  { id: 9, label: 'Balance Dataset', group: 'Classification' },
+  { id: 10, label: 'Evaluation', group: 'Evaluation' },
+  { id: 11, label: 'Refine', group: 'Evaluation' },
+  { id: 12, label: 'System Prompt', group: 'Finish' },
+  { id: 13, label: 'Train/Test Export', group: 'Finish' },
 ];
 
 // NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
@@ -556,7 +568,7 @@ function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; locke
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
         {MAIN_PIPELINE_STAGES.map((stage, index) => {
           const stageStart = stage.steps[0];
           const stageEnd = stage.steps[stage.steps.length - 1];
@@ -603,32 +615,48 @@ function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; locke
       </div>
 
       {visibleSubsteps.length > 0 && (
-        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
-          <div className="mx-auto flex max-w-3xl items-start justify-center">
-            {visibleSubsteps.map((step) => {
+        <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/50 p-4">
+          <div className="mx-auto flex max-w-4xl items-start justify-center">
+            {visibleSubsteps.map((step, idx) => {
               const isActive = step.id === currentStep;
               const isCompleted = step.id < currentStep;
               const isLocked = Boolean(lockedToStep && step.id !== lockedToStep);
 
               return (
-                <div key={step.id} className="flex flex-1 items-start">
-                  <div className="flex min-w-[84px] flex-col items-center">
+                <div 
+                  key={step.id} 
+                  className={`flex items-start ${idx !== visibleSubsteps.length - 1 ? 'flex-1' : ''}`}
+                >
+                  <div className="relative flex flex-col items-center group min-w-[100px]">
                     <div
-                      className={`flex h-11 w-11 items-center justify-center rounded-full border-2 text-sm font-bold transition-colors ${isLocked
-                        ? 'border-slate-300 bg-white text-slate-400 opacity-60'
-                        : isActive
-                          ? 'border-slate-700 bg-sky-200 text-slate-900 shadow-sm'
+                      className={`z-10 flex h-10 w-10 items-center justify-center rounded-full border-2 text-sm font-bold shadow-sm transition-all duration-300 ${
+                        isLocked
+                          ? 'border-slate-200 bg-slate-50 text-slate-300 opacity-60'
+                          : isActive
+                          ? 'border-blue-600 bg-blue-50 text-blue-700 ring-4 ring-blue-50/50'
                           : isCompleted
-                            ? 'border-emerald-500 bg-emerald-100 text-emerald-900'
-                            : 'border-slate-500 bg-sky-100 text-slate-800'
-                        }`}
+                          ? 'border-emerald-500 bg-emerald-500 text-white'
+                          : 'border-slate-300 bg-white text-slate-500 hover:border-slate-400'
+                      }`}
                     >
-                      {visibleSubsteps.findIndex((item) => item.id === step.id) + 1}
+                      {isCompleted ? <CheckCircle2 className="h-5 w-5" /> : idx + 1}
                     </div>
-                    <p className="mt-2 text-center text-xs font-medium leading-tight text-slate-800">{step.label}</p>
+                    
+                    <span className={`mt-2.5 text-center text-[11px] font-bold tracking-tight transition-colors duration-300 px-1 ${
+                      isActive ? 'text-blue-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'
+                    }`}>
+                      {step.label}
+                    </span>
                   </div>
-                  {visibleSubsteps[visibleSubsteps.length - 1].id !== step.id && (
-                    <div className="mt-[21px] h-0.5 flex-1 bg-blue-800" />
+
+                  {idx !== visibleSubsteps.length - 1 && (
+                    <div className="mt-5 h-[2px] flex-1 bg-slate-200 mx-[-20px] relative z-0">
+                      <div 
+                        className={`h-full bg-emerald-500 transition-all duration-700 ease-in-out ${
+                          isCompleted ? 'w-full' : 'w-0'
+                        }`} 
+                      />
+                    </div>
                   )}
                 </div>
               );
@@ -2002,7 +2030,7 @@ export function ConversionPage() {
   const [downloadTestPercentage, setDownloadTestPercentage] = useState<number>(10);
   const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
   const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
-  const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[] } | null>(null);
+  const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[]; clusterStats?: ClusterStat[]; avgSimilarity?: number } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
   const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
   const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
@@ -2043,6 +2071,8 @@ export function ConversionPage() {
   const [activeProjectOwnerId, setActiveProjectOwnerId] = useState<string | null>(null);
   const [isCurrentVersionPublic, setIsCurrentVersionPublic] = useState(false);
   const [isTogglingVersionPublic, setIsTogglingVersionPublic] = useState(false);
+  const [selectedSharedUserId, setSelectedSharedUserId] = useState('');
+  const [isUpdatingVersionSharing, setIsUpdatingVersionSharing] = useState(false);
   const [communityShowRejectedSamples, setCommunityShowRejectedSamples] = useState(false);
   const [communityLoadedRejectedMode, setCommunityLoadedRejectedMode] = useState<boolean | null>(null);
   const [communityCounts, setCommunityCounts] = useState<{ visible: number; total: number; rejected: number }>({
@@ -2052,6 +2082,9 @@ export function ConversionPage() {
   });
   const [activeClassificationGroup, setActiveClassificationGroup] = useState<ClassificationGroup | null>(null);
   const [classifiedSamplesResult, setClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
+  const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
+  const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
+  const [balanceApplied, setBalanceApplied] = useState(false);
   const loadHandledRef = useRef<boolean>(false);
   const currentUserId = useMemo(() => {
     const candidate = (user as any)?.id || (user as any)?._id || (user as any)?.userId;
@@ -2074,9 +2107,23 @@ export function ConversionPage() {
     currentDatasetVersionId && activeProjectOwnerId && currentUserId && currentUserId === String(activeProjectOwnerId)
   );
 
+  const shareUsersQuery = useQuery({
+    queryKey: ['share-users'],
+    queryFn: () => apiService.listUsers(),
+    enabled: canManageVersionVisibility,
+  });
+
+  useEffect(() => {
+    setActiveClassificationGroup(null);
+    setClassifiedSamplesResult(null);
+    setActiveQualityBucket(null);
+    setQualitySamplesResult(null);
+  }, [currentDatasetVersionId]);
+
   useEffect(() => {
     if (!currentDatasetVersionId) {
       setIsCurrentVersionPublic(false);
+      setSelectedSharedUserId('');
       return;
     }
 
@@ -2090,10 +2137,12 @@ export function ConversionPage() {
         );
         if (!disposed) {
           setIsCurrentVersionPublic(Boolean(detail?.datasetVersion?.isPublic));
+          setSelectedSharedUserId(String(detail?.datasetVersion?.sharedWithUsers?.[0]?.id || ''));
         }
       } catch {
         if (!disposed) {
           setIsCurrentVersionPublic(false);
+          setSelectedSharedUserId('');
         }
       }
     };
@@ -2148,14 +2197,15 @@ export function ConversionPage() {
   );
 
   const classificationFilteredRows = useMemo(() => {
-    if (!classifiedSamplesResult?.items) return [];
-    const rawData = classifiedSamplesResult.items.map((item) => ({
+    const sourceItems = qualitySamplesResult?.items || classifiedSamplesResult?.items;
+    if (!sourceItems) return [];
+    const rawData = sourceItems.map((item) => ({
       ...item.data,
       sampleId: item.sampleId,
       id: item._id,
     }));
     return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
-  }, [classifiedSamplesResult, previewMode, conversionOptions.removeThinkTags]);
+  }, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
 
   const evaluationRows = useMemo(() => {
     if (previewMode !== 'openai') {
@@ -2401,6 +2451,44 @@ export function ConversionPage() {
     };
   }, [evaluationMap, previewMode]);
 
+  const attachClusterStats = (groups: ClusterGroup[] = [], clusterStats?: ClusterStat[]): ClusterGroup[] => {
+    if (!Array.isArray(clusterStats) || clusterStats.length === 0) {
+      return groups;
+    }
+
+    const statByCluster = new Map(
+      clusterStats.map((stat) => [
+        Number(stat.clusterId),
+        Number.isFinite(Number(stat.avgSimilarity)) ? Number(stat.avgSimilarity) : null,
+      ])
+    );
+
+    return groups.map((group) => ({
+      ...group,
+      avgSimilarity: statByCluster.get(Number(group.groupId)) ?? group.avgSimilarity ?? null,
+    }));
+  };
+
+  const handleUpdateVersionSharing = async (userId: string) => {
+    if (!currentDatasetVersionId || !canManageVersionVisibility || isUpdatingVersionSharing) {
+      return;
+    }
+
+    const previous = selectedSharedUserId;
+    try {
+      setSelectedSharedUserId(userId);
+      setIsUpdatingVersionSharing(true);
+      const response = await dataprepApi.updateDatasetVersionSharing(currentDatasetVersionId, userId || null);
+      setSelectedSharedUserId(String(response?.datasetVersion?.sharedWithUsers?.[0]?.id || ''));
+      toast.success(response?.message || 'Updated sharing permission.');
+    } catch (error: any) {
+      setSelectedSharedUserId(previous);
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to update sharing permission.');
+    } finally {
+      setIsUpdatingVersionSharing(false);
+    }
+  };
+
   const convertMutation = useMutation({
     mutationFn: (mode: 'initial' | 'clean') => {
       const options = mode === 'initial' ? { ...conversionOptions, enableCleaning: false } : conversionOptions;
@@ -2418,6 +2506,7 @@ export function ConversionPage() {
       setAutoLabelSuggestions([]);
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
+      setBalanceApplied(false);
       setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
@@ -2751,8 +2840,9 @@ export function ConversionPage() {
       return apiService.clusterData(conversionResult.data, clusterK, dbscanEps, dbscanMinSamples);
     },
     onSuccess: (result) => {
+      const groupsWithStats = attachClusterStats(result.groups || [], result.clusterStats);
       setConversionResult((prev) => (prev ? { ...prev, data: result.data } : null));
-      setClusteredResult(result);
+      setClusteredResult({ ...result, groups: groupsWithStats });
       const nextMap: Record<string, number> = {};
       if (previewMode === 'openai') {
         normalizeOpenAIConversations(result.data).forEach((conv, idx) => {
@@ -2765,12 +2855,12 @@ export function ConversionPage() {
         });
       }
       setRowClusterMap(nextMap);
-      setClusterGroups(result.groups);
+      setClusterGroups(groupsWithStats);
       setSelectedClusterIds([]);
       setAutoLabelSuggestions([]);
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
-      toast.success(`Clustered data into ${result.groups.length} groups.`);
+      toast.success(`Clustered data into ${groupsWithStats.length} groups.`);
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Clustering failed'),
   });
@@ -2780,7 +2870,7 @@ export function ConversionPage() {
 
     // Handle missing groups by recalculating from data or preserving existing ones
     if (result.groups) {
-      setClusterGroups(result.groups);
+      setClusterGroups(attachClusterStats(result.groups, result.clusterStats));
     } else if (result.data) {
       // Simple recalculation of counts if groups are missing
       const counts: Record<number, number> = {};
@@ -3000,6 +3090,61 @@ export function ConversionPage() {
       isProjectLabelingRoute
     );
     return detail;
+  };
+
+  const handleApplySubjectBalance = (
+    keptItems: ClassifiedSamplesResult['items'],
+    removedCount: number
+  ) => {
+    if (!conversionResult || !keptItems.length) {
+      toast.error('No balanced data available to apply.');
+      return;
+    }
+
+    const nextData = keptItems.map((item) => {
+      const data = { ...(item.data || {}) };
+      if (previewMode === 'openai') {
+        return {
+          ...data,
+          conversation_id: String((data as any).conversation_id || item.sampleId),
+        };
+      }
+
+      return {
+        ...data,
+        id: String((data as any).id || item.sampleId),
+      };
+    });
+
+    const nextStats = {
+      ...conversionResult.stats,
+      totalConversations: nextData.length,
+      totalMessages: previewMode === 'openai'
+        ? normalizeOpenAIConversations(nextData).reduce((sum, conv) => sum + (Array.isArray(conv.messages) ? conv.messages.length : 0), 0)
+        : nextData.length,
+    };
+
+    setConversionResult({
+      ...conversionResult,
+      data: nextData,
+      output: JSON.stringify(nextData),
+      stats: nextStats,
+    });
+    setOriginalConvertedResult((prev) => prev || conversionResult);
+    setCurrentDatasetVersionId(null);
+    setDatasetVersionPromptId('');
+    setSampleIdMap({});
+    setEvaluationMap({});
+    setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    setActiveClassificationGroup(null);
+    setClassifiedSamplesResult(null);
+    setActiveQualityBucket(null);
+    setQualitySamplesResult(null);
+    setBalanceApplied(true);
+    toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
   };
 
   const handleDownloadTrainTestZip = async () => {
@@ -3258,9 +3403,9 @@ export function ConversionPage() {
     setActiveProjectOwnerId(payload.ownerId ? String(payload.ownerId) : (currentUserId || null));
     updateConversionOptions({ format: normalizedFormat });
     setProjectName(payload.projectName || formatDefaultProjectName());
-    setCurrentStep((payload.startStep && payload.startStep >= 1 && payload.startStep <= 10
+    setCurrentStep((payload.startStep && payload.startStep >= 1 && payload.startStep <= 13
       ? payload.startStep
-      : 7) as Step);
+      : 10) as Step);
     loadHandledRef.current = true;
 
     // Clear consumed router state to avoid accidental re-processing on future renders.
@@ -3343,6 +3488,7 @@ export function ConversionPage() {
         setAutoLabelSuggestions([]);
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
+        setBalanceApplied(false);
         setVisibleRowsInEvaluation([]);
         setVisibleRowsInRefinement([]);
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
@@ -3414,6 +3560,7 @@ export function ConversionPage() {
     setAutoLabelSuggestions([]);
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
+    setBalanceApplied(false);
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setActiveProjectOwnerId(null);
@@ -3430,9 +3577,11 @@ export function ConversionPage() {
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = autoLabelsSaved;
   const canMoveFromStep7 = !!currentDatasetVersionId;
-  const canMoveFromStep8 = !!conversionResult;
+  const canMoveFromStep8 = !!currentDatasetVersionId;
   const canMoveFromStep9 = !!conversionResult;
   const canMoveFromStep10 = !!conversionResult;
+  const canMoveFromStep11 = !!conversionResult;
+  const canMoveFromStep12 = !!conversionResult;
 
   useEffect(() => {
     if (isGuestMode && currentStep !== 6) {
@@ -3503,7 +3652,7 @@ export function ConversionPage() {
   };
 
   const handleProceedFromSystemPromptStep = async () => {
-    if (!canMoveFromStep10) {
+    if (!canMoveFromStep12) {
       return;
     }
 
@@ -3531,7 +3680,7 @@ export function ConversionPage() {
       }
     }
 
-    setCurrentStep(11);
+    setCurrentStep(13);
   };
 
   const validateRefineScoreThreshold = (value: string): string => {
@@ -3902,6 +4051,10 @@ export function ConversionPage() {
           isCurrentVersionPublic={isCurrentVersionPublic}
           isTogglingVersionPublic={isTogglingVersionPublic}
           onToggleVersionVisibility={handleToggleVersionVisibility}
+          shareUsers={shareUsersQuery.data?.users || []}
+          selectedSharedUserId={selectedSharedUserId}
+          isUpdatingVersionSharing={isUpdatingVersionSharing}
+          onUpdateVersionSharing={handleUpdateVersionSharing}
           labelingPanel={(
             <DataLabelingPanel
               samples={allRows.map((row) => ({
@@ -3937,9 +4090,21 @@ export function ConversionPage() {
           activeGroup={activeClassificationGroup}
           onGroupFilterChange={async (group) => {
             setActiveClassificationGroup(group);
+            setActiveQualityBucket(null);
+            setQualitySamplesResult(null);
             if (currentDatasetVersionId) {
               const res = await apiService.getClassifiedSamples(currentDatasetVersionId, group || undefined);
               setClassifiedSamplesResult(res);
+            }
+          }}
+          activeQualityBucket={activeQualityBucket}
+          onQualityBucketFilterChange={async (bucket) => {
+            setActiveQualityBucket(bucket);
+            setActiveClassificationGroup(null);
+            setClassifiedSamplesResult(null);
+            if (currentDatasetVersionId) {
+              const res = await apiService.getQualityClassifiedSamples(currentDatasetVersionId, bucket || undefined);
+              setQualitySamplesResult(res);
             }
           }}
           table={(
@@ -3955,6 +4120,26 @@ export function ConversionPage() {
       )}
 
       {currentStep === 8 && (
+        <SubjectDistributionPanel
+          versionId={currentDatasetVersionId || ''}
+          onBack={() => setCurrentStep(7)}
+          onNext={() => setCurrentStep(9)}
+          nextDisabled={!canMoveFromStep8}
+        />
+      )}
+
+      {currentStep === 9 && (
+        <BalanceDatasetPanel
+          versionId={currentDatasetVersionId || ''}
+          alreadyApplied={balanceApplied}
+          onApply={handleApplySubjectBalance}
+          onBack={() => setCurrentStep(8)}
+          onNext={() => setCurrentStep(10)}
+          nextDisabled={!canMoveFromStep9}
+        />
+      )}
+
+      {currentStep === 10 && (
         <EvaluationPanel
           table={(
             <ConvertedDatasetTable
@@ -3975,13 +4160,13 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(2)}
-          onNext={() => setCurrentStep(9)}
-          nextDisabled={!canMoveFromStep8}
+          onBack={() => setCurrentStep(9)}
+          onNext={() => setCurrentStep(11)}
+          nextDisabled={!canMoveFromStep10}
         />
       )}
 
-      {currentStep === 9 && (
+      {currentStep === 11 && (
         <RefinementPanel
           table={(
             <ConvertedDatasetTable
@@ -4011,13 +4196,13 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(8)}
-          onNext={() => setCurrentStep(10)}
-          nextDisabled={!canMoveFromStep9}
+          onBack={() => setCurrentStep(10)}
+          onNext={() => setCurrentStep(12)}
+          nextDisabled={!canMoveFromStep11}
         />
       )}
 
-      {currentStep === 10 && (
+      {currentStep === 12 && (
         <SystemPromptStepPanel
           systemPromptText={systemPromptText}
           onSystemPromptTextChange={setSystemPromptText}
@@ -4028,13 +4213,13 @@ export function ConversionPage() {
             setSelectedPromptId(payload.promptId);
             setSelectedSystemPromptVersion(payload.systemPromptVersion);
           }}
-          onBack={() => setCurrentStep(9)}
+          onBack={() => setCurrentStep(11)}
           onNext={handleProceedFromSystemPromptStep}
-          nextDisabled={!canMoveFromStep10}
+          nextDisabled={!canMoveFromStep12}
         />
       )}
 
-      {currentStep === 11 && (
+      {currentStep === 13 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -4064,7 +4249,7 @@ export function ConversionPage() {
         onProviderChange={setEvaluateProvider}
         onClose={() => setIsEvaluateModalOpen(false)}
         onConfirm={() => {
-          const sourceRows = currentStep === 9 ? visibleRowsInRefinement : visibleRowsInEvaluation;
+          const sourceRows = currentStep === 11 ? visibleRowsInRefinement : visibleRowsInEvaluation;
           if (sourceRows.length === 0) {
             toast.error('No visible rows on this page to evaluate.');
             return;

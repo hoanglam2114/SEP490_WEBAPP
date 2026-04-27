@@ -5,6 +5,7 @@ export interface IDatasetVersion extends Document {
   ownerId: mongoose.Types.ObjectId;
   projectName: string;
   isPublic?: boolean;
+  sharedWithUserIds?: mongoose.Types.ObjectId[];
   parentVersionId?: mongoose.Types.ObjectId;
   createdFromVersionId?: mongoose.Types.ObjectId;
   versionNo?: number;
@@ -25,6 +26,7 @@ const DatasetVersionSchema = new Schema<IDatasetVersion>(
     ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     projectName: { type: String, required: true, index: true, trim: true },
     isPublic: { type: Boolean, default: false, index: true },
+    sharedWithUserIds: [{ type: Schema.Types.ObjectId, ref: 'User', index: true }],
     parentVersionId: { type: Schema.Types.ObjectId, ref: 'DatasetVersion', index: true },
     createdFromVersionId: { type: Schema.Types.ObjectId, ref: 'DatasetVersion', index: true },
     versionNo: { type: Number, min: 1 },

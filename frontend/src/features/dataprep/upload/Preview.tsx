@@ -7,7 +7,6 @@ import { useAppStore } from '../../../hooks/useAppStore';
 export const Preview: React.FC = () => {
   const { uploadedFile } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
-  const [expandedConv, setExpandedConv] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['preview', uploadedFile?.fileId],
@@ -20,14 +19,14 @@ export const Preview: React.FC = () => {
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
       >
         <div className="flex items-center space-x-2">
           <Eye className="w-5 h-5 text-gray-600" />
-          <span className="font-semibold text-gray-900">Preview Data</span>
+          <span className="font-semibold text-gray-900">Xem trước dữ liệu gốc (Raw Data Preview)</span>
         </div>
         {isOpen ? (
           <ChevronUp className="w-5 h-5 text-gray-600" />
@@ -37,85 +36,52 @@ export const Preview: React.FC = () => {
       </button>
 
       {isOpen && (
-        <div className="border-t border-gray-200 p-6">
+        <div className="border-t border-gray-200 p-6 bg-white">
           {isLoading ? (
-            <div className="text-center py-8 text-gray-500">Loading preview...</div>
+            <div className="text-center py-10 text-gray-500 italic flex flex-col items-center gap-2">
+              <div className="w-6 h-6 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
+              <span>Đang tải bản xem trước...</span>
+            </div>
           ) : data ? (
             <div className="space-y-4">
-              <p className="text-sm text-gray-600 mb-4">
-                Showing {data.showing} of {data.total} {uploadedFile.fileType === 'lesson' ? 'lessons' : 'conversations'}
+              <p className="text-sm text-gray-600 mb-4 font-medium px-1">
+                Hiển thị <span className="text-blue-600">{data.showing}</span> trên tổng số <span className="text-blue-600">{data.total}</span> mẫu dữ liệu gốc dưới định dạng JSON:
               </p>
-              {data.preview.map((conv) => (
-                <div
-                  key={conv.conversation_id}
-                  className="border border-gray-200 rounded-lg overflow-hidden"
-                >
-                  <button
-                    onClick={() =>
-                      setExpandedConv(
-                        expandedConv === conv.conversation_id
-                          ? null
-                          : conv.conversation_id
-                      )
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-between"
-                  >
-                    <div className="flex items-center space-x-4 text-sm">
-                      <span className="font-mono text-xs text-gray-500">
-                        {conv.conversation_id.slice(0, 8)}...
-                      </span>
-                      <span className="text-gray-600">
-                        {conv.message_count} {uploadedFile.fileType === 'lesson' ? 'exercises' : 'messages'}
-                      </span>
-                      {uploadedFile.fileType !== 'lesson' && (
-                        <span className="text-gray-400">
-                          {new Date(conv.start_time).toLocaleDateString()}
-                        </span>
-                      )}
+              
+              <div className="space-y-6">
+                {data.preview.map((item: any, idx: number) => (
+                  <div key={idx} className="bg-slate-50 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Original Item #{idx + 1}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="text-[10px] text-slate-400 font-mono">raw_json</span>
+                      </div>
                     </div>
-                    {expandedConv === conv.conversation_id ? (
-                      <ChevronUp className="w-4 h-4 text-gray-600" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-gray-600" />
-                    )}
-                  </button>
+                    <div className="p-4 overflow-x-auto custom-scrollbar">
+                      <pre className="text-[11px] font-mono text-slate-800 whitespace-pre leading-relaxed selection:bg-blue-100">
+                        {JSON.stringify(item, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                ))}
+              </div>
 
-                  {expandedConv === conv.conversation_id && (
-                    <div className="p-4 space-y-3 bg-white">
-                      {conv.messages.map((msg, idx) => (
-                        <div
-                          key={idx}
-                          className={`p-3 rounded-lg ${msg.role === 'user'
-                              ? 'bg-blue-50 border border-blue-200'
-                              : 'bg-gray-50 border border-gray-200'
-                            }`}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <span
-                              className={`text-xs font-semibold uppercase ${msg.role === 'user'
-                                  ? 'text-blue-700'
-                                  : 'text-gray-700'
-                                }`}
-                            >
-                              {msg.role}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {uploadedFile.fileType === 'lesson' ? 'Content preview' : new Date(msg.created_at).toLocaleTimeString()}
-                            </span>
-                          </div>
-                          <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                            {msg.content}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+              <div className="mt-6 p-4 rounded-lg bg-blue-50 border border-blue-100 flex items-start gap-3">
+                <div className="mt-0.5 text-blue-500">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                  </svg>
                 </div>
-              ))}
+                <p className="text-[11px] text-blue-700 leading-normal">
+                  Dữ liệu trên là cấu trúc nguyên bản từ tệp tin bạn vừa tải lên. 
+                  Các bước tiếp theo sẽ chuyển đổi dữ liệu này sang định dạng chuẩn để xử lý.
+                </p>
+              </div>
             </div>
           ) : (
-            <div className="text-center py-8 text-gray-500">
-              No preview available
+            <div className="text-center py-10 text-gray-500 italic">
+              Không có dữ liệu xem trước cho tệp này.
             </div>
           )}
         </div>

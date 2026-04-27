@@ -114,14 +114,15 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
 router.post('/evaluate/refine', (req, res) => evalController.refine(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
-router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistory(req, res));
-router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
+router.get('/evaluate/history', authMiddleware, (req, res) => evalController.getEvaluationHistory(req, res));
+router.patch('/evaluate/history/:id', authMiddleware, (req, res) => evalController.updateEvaluationHistory(req, res));
 router.post('/dataset-versions/create', (req, res) => evalController.createDatasetVersion(req, res));
 router.get('/dataset-versions/:id', (req, res) => evalController.getDatasetVersionDetail(req, res));
 router.patch('/dataset-versions/:id/visibility', (req, res) => evalController.updateDatasetVersionVisibility(req, res));
+router.patch('/dataset-versions/:id/share', (req, res) => evalController.updateDatasetVersionSharing(req, res));
 router.delete('/dataset-versions/items/:sampleId', (req, res) => evalController.deleteDatasetVersionSample(req, res));
-router.get('/community/public-projects', (req, res) => evalController.getPublicProjectsHub(req, res));
-router.get('/community/public-projects/:id/labeling', (req, res) => evalController.getPublicProjectLabeling(req, res));
+router.get('/community/public-projects', authMiddleware, (req, res) => evalController.getPublicProjectsHub(req, res));
+router.get('/community/public-projects/:id/labeling', authMiddleware, (req, res) => evalController.getPublicProjectLabeling(req, res));
 
 // Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
 router.post('/cluster/visualize', clusterVisualize);
@@ -154,7 +155,7 @@ router.get('/model-eval/leaderboard', getEvaluatedModels);
 router.post('/model-eval/run/:jobId', upload.single('eval_file'), runEvaluation);
 router.get('/model-eval/stream/:evalJobId', streamEvalStatus);
 router.post('/model-eval/save', saveEvalResult);
-router.get('/model-eval/history/:jobId', getEvalHistory);
+router.get('/model-eval/history/:jobId', authMiddleware, getEvalHistory);
 router.post('/model-eval/pin/:evalId', pinEvaluation);         // ⚠️ phải đứng trước /:evalId
 router.get('/model-eval/compare', compareEvaluations);         // ⚠️ trước GET /:evalId
 router.delete('/model-eval/:evalId', deleteEvaluation);        // ⚠️ trước GET /:evalId

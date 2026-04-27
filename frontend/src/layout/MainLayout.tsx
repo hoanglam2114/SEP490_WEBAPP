@@ -18,7 +18,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [dataPrepStep, setDataPrepStep] = useState<number | null>(null);
 
   const isHomePage = location.pathname === '/';
-  const showDataPrepNextButton = location.pathname === '/chatbotconverter' && dataPrepStep === 8;
+  const showDataPrepNextButton = location.pathname === '/chatbotconverter' && dataPrepStep === 9;
 
   useEffect(() => {
     const handleDataPrepStepChange = (event: Event) => {

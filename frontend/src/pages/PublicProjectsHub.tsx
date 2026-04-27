@@ -10,6 +10,7 @@ type PublicProject = {
   versionName: string;
   ownerId: string;
   ownerName: string;
+  accessType?: 'public' | 'shared';
   updatedAt: string;
   topLabel: {
     _id: string;
@@ -50,7 +51,7 @@ export const PublicProjectsHub: React.FC = () => {
             </button>
             <div>
               <h1 className="text-xl font-bold text-slate-900">Community Hub</h1>
-              <p className="text-xs text-slate-500">Explore public projects and jump straight to Data Labeling.</p>
+              <p className="text-xs text-slate-500">Explore public or shared projects and jump straight to Data Labeling.</p>
             </div>
           </div>
           <button
@@ -65,11 +66,11 @@ export const PublicProjectsHub: React.FC = () => {
 
       <main className="max-w-6xl mx-auto px-6 py-6">
         {hubQuery.isLoading && (
-          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">Loading public projects...</div>
+          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">Loading projects...</div>
         )}
 
         {!hubQuery.isLoading && projects.length === 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">No public projects found.</div>
+          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">No public or shared projects found.</div>
         )}
 
         {!hubQuery.isLoading && projects.length > 0 && (
@@ -78,7 +79,16 @@ export const PublicProjectsHub: React.FC = () => {
               <article key={project.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="space-y-2">
                   <h2 className="text-base font-semibold text-slate-900 break-words">{project.projectName}</h2>
-                  <p className="text-xs text-slate-500">Version: <span className="font-semibold text-slate-700">{project.versionName}</span></p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-500">Version: <span className="font-semibold text-slate-700">{project.versionName}</span></p>
+                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${project.accessType === 'shared'
+                      ? 'border-blue-200 bg-blue-50 text-blue-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      }`}
+                    >
+                      {project.accessType === 'shared' ? 'Shared' : 'Public'}
+                    </span>
+                  </div>
                   <p className="text-sm text-slate-600">Owner: <span className="font-medium text-slate-800">{project.ownerName}</span></p>
                   <p className="text-xs text-slate-500">Updated: {formatDateTime(project.updatedAt)}</p>
 

@@ -334,77 +334,13 @@ export class ConversionController {
         return;
       }
 
-      if (stored.metadata.fileType === 'lesson') {
-        const preview: any[] = [];
-        let totalExercises = 0;
-        stored.data.slice(0, limit).forEach(record => {
-          if (record.lessons && Array.isArray(record.lessons)) {
-            record.lessons.forEach((lesson: any) => {
-              const exercises = lesson.sections?.filter((s: any) => s.type === 'exercise') || [];
-              totalExercises += exercises.length;
-              if (exercises.length > 0) {
-                preview.push({
-                  conversation_id: lesson.lesson_title || record._id?.$oid || 'Unknown',
-                  user_id: 'LessonSystem',
-                  message_count: exercises.length,
-                  start_time: new Date().toISOString(),
-                  messages: exercises.map((ex: any) => ({
-                    role: 'exercise',
-                    content: ex.content.substring(0, 200) + (ex.content.length > 200 ? '...' : ''),
-                    created_at: new Date().toISOString()
-                  }))
-                });
-              }
-            })
-          }
-        });
-
-        res.json({
-          preview,
-          total: stored.metadata.lessonCount || 0,
-          showing: preview.length,
-        });
-        return;
-      }
-
-      if (stored.metadata.fileType === 'openai_messages') {
-        const preview = stored.data.slice(0, limit).map((conv: any, idx: number) => ({
-          conversation_id: conv.conversation_id || `conv-${idx}`,
-          user_id: 'OpenAI-Import',
-          message_count: conv.messages?.length || 0,
-          start_time: new Date().toISOString(),
-          messages: (conv.messages || []).slice(0, 5).map((m: any) => ({
-            role: m.role,
-            content: (m.content || '').substring(0, 200) + ((m.content || '').length > 200 ? '...' : ''),
-            created_at: new Date().toISOString(),
-          })),
-        }));
-
-        res.json({
-          preview,
-          total: stored.data.length,
-          showing: preview.length,
-        });
-        return;
-      }
-
-      const conversations = conversionService.groupByConversations(stored.data as MongoDBMessage[]);
-      const preview = conversations.slice(0, limit).map((conv) => ({
-        conversation_id: conv.conversation_id,
-        user_id: conv.user_id,
-        message_count: conv.message_count,
-        start_time: conv.start_time,
-        messages: conv.messages.map((m) => ({
-          role: m.role,
-          content: m.content.substring(0, 200) + (m.content.length > 200 ? '...' : ''),
-          created_at: m.created_at.$date,
-        })),
-      }));
-
+      const rawPreview = stored.data.slice(0, limit);
+      
       res.json({
-        preview,
-        total: conversations.length,
-        showing: preview.length,
+        preview: rawPreview,
+        total: stored.data.length,
+        showing: rawPreview.length,
+        isRaw: true
       });
     } catch (error: any) {
       console.error('Preview error:', error);

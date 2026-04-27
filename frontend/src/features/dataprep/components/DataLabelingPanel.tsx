@@ -10,15 +10,39 @@ import {
   MessageSquare,
   AlertCircle,
   Tags,
+  Check,
+  X,
+  Lightbulb,
+  BookOpen,
+  MessageCircle,
+  Minimize2,
+  SkipForward,
+  Heart,
+  Ban,
+  ArrowRight,
+  Clock,
+  Sparkles,
+  HelpCircle,
+  ListTree,
+  Navigation,
+  RefreshCw,
+  PauseCircle,
+  AlertTriangle,
+  type LucideIcon,
 } from 'lucide-react';
 import { dataprepApi } from '../api/dataprepApi';
 
 type VoteType = 'up' | 'down';
+type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type LabelItem = {
   _id: string;
   name: string;
   type: 'hard' | 'soft';
+  targetScope: 'sample' | 'message';
+  messageIndex?: number;
+  messageRole?: 'user' | 'assistant';
+  targetTextSnapshot?: string;
   upvotes?: string[];
   downvotes?: string[];
   score: number;
@@ -31,6 +55,14 @@ type LabelItem = {
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
+};
+
+type MessageAutoLabelSuggestion = {
+  messageIndex: number;
+  role: 'user' | 'assistant';
+  label: string[] | string;
+  confidence?: number;
+  is_correct_logic?: boolean;
 };
 
 type LabelingSample = {
@@ -52,14 +84,74 @@ type DataLabelingStepProps = {
   lockReason?: string;
 };
 
-const HARD_LABELS = ['REJECT', 'ERROR_FORMULAR', 'USER_SPAM', 'ERROR_RESPONSE', 'ERROR_FORMAT'] as const;
+const CONVERSATION_HARD_LABELS = ['REJECT', 'ERROR_FORMULAR', 'USER_SPAM', 'ERROR_RESPONSE', 'ERROR_FORMAT'] as const;
+const USER_MESSAGE_HARD_LABELS = [
+  'CORRECT',
+  'INCORRECT',
+  'REQUEST_HINT',
+  'ASK_THEORY',
+  'REQUEST_EXPLANATION',
+  'REQUEST_SIMPLER',
+  'SKIP_EXERCISE',
+  'ENCOURAGE',
+  'OFF_TOPIC',
+  'NEXT_SECTION',
+  'WAIT_READY',
+] as const;
+const ASSISTANT_MESSAGE_HARD_LABELS = [
+  'PRAISING',
+  'SCAFFOLDING',
+  'HINTING',
+  'CONCEPT_CLARIFY',
+  'LOGIC_BREAKDOWN',
+  'SIMPLIFYING',
+  'NAVIGATING',
+  'MOTIVATING',
+  'REDIRECTING',
+  'TRANSITIONING',
+  'WAITING',
+] as const;
 
-const HARD_LABEL_COLORS: Record<string, string> = {
-  REJECT: 'bg-red-600 hover:bg-red-700 text-white border-red-600',
-  ERROR_FORMULAR: 'bg-orange-500 hover:bg-orange-600 text-white border-orange-500',
-  USER_SPAM: 'bg-yellow-500 hover:bg-yellow-600 text-white border-yellow-500',
-  ERROR_RESPONSE: 'bg-purple-600 hover:bg-purple-700 text-white border-purple-600',
-  ERROR_FORMAT: 'bg-pink-600 hover:bg-pink-700 text-white border-pink-600',
+type HardLabelChip = {
+  short: string;
+  icon: LucideIcon;
+  className: string;
+};
+
+const DEFAULT_HARD_LABEL_CHIP: HardLabelChip = {
+  short: 'LBL',
+  icon: Tag,
+  className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100',
+};
+
+const HARD_LABEL_CHIPS: Record<string, HardLabelChip> = {
+  REJECT: { short: 'REJ', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100' },
+  ERROR_FORMULAR: { short: 'FORM', icon: AlertTriangle, className: 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100' },
+  USER_SPAM: { short: 'SPAM', icon: Ban, className: 'border-yellow-200 bg-yellow-50 text-yellow-700 hover:bg-yellow-100' },
+  ERROR_RESPONSE: { short: 'RESP', icon: MessageCircle, className: 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100' },
+  ERROR_FORMAT: { short: 'FMT', icon: ListTree, className: 'border-pink-200 bg-pink-50 text-pink-700 hover:bg-pink-100' },
+  CORRECT: { short: 'OK', icon: Check, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
+  INCORRECT: { short: 'NO', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100' },
+  REQUEST_HINT: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100' },
+  ASK_THEORY: { short: 'THEO', icon: BookOpen, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100' },
+  REQUEST_EXPLANATION: { short: 'WHY', icon: HelpCircle, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' },
+  REQUEST_SIMPLER: { short: 'EASY', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100' },
+  SKIP_EXERCISE: { short: 'SKIP', icon: SkipForward, className: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100' },
+  ENCOURAGE: { short: 'ENC', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' },
+  OFF_TOPIC: { short: 'OFF', icon: Ban, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
+  NEXT_SECTION: { short: 'NEXT', icon: ArrowRight, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100' },
+  WAIT_READY: { short: 'WAIT', icon: Clock, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100' },
+  PRAISING: { short: 'PR', icon: Sparkles, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
+  SCAFFOLDING: { short: 'SCAF', icon: ListTree, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100' },
+  HINTING: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100' },
+  CONCEPT_CLARIFY: { short: 'CLR', icon: BookOpen, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' },
+  LOGIC_BREAKDOWN: { short: 'LOG', icon: ListTree, className: 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100' },
+  SIMPLIFYING: { short: 'SIMP', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100' },
+  NAVIGATING: { short: 'NAV', icon: Navigation, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100' },
+  MOTIVATING: { short: 'MOT', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' },
+  REDIRECTING: { short: 'REDIR', icon: RefreshCw, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
+  TRANSITIONING: { short: 'TRAN', icon: ArrowRight, className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100' },
+  WAITING: { short: 'WAIT', icon: PauseCircle, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100' },
 };
 
 function getCurrentUserId(): string {
@@ -86,6 +178,10 @@ function normalizeLabel(label: any): LabelItem {
     _id: String(label?._id || ''),
     name: String(label?.name || ''),
     type: label?.type === 'hard' ? 'hard' : 'soft',
+    targetScope: label?.targetScope === 'message' ? 'message' : 'sample',
+    messageIndex: Number.isInteger(label?.messageIndex) ? Number(label.messageIndex) : undefined,
+    messageRole: label?.messageRole === 'user' || label?.messageRole === 'assistant' ? label.messageRole : undefined,
+    targetTextSnapshot: typeof label?.targetTextSnapshot === 'string' ? label.targetTextSnapshot : undefined,
     upvotes,
     downvotes,
     score: Number(label?.score ?? upvoteCount - downvoteCount),
@@ -94,6 +190,16 @@ function normalizeLabel(label: any): LabelItem {
     hasVoted: Boolean(label?.hasVoted ?? userVoteType),
     userVoteType,
   };
+}
+
+function suggestionLabels(suggestion?: MessageAutoLabelSuggestion): string[] {
+  if (!suggestion) {
+    return [];
+  }
+  const labels = Array.isArray(suggestion.label) ? suggestion.label : [suggestion.label];
+  return labels
+    .map((label) => String(label || '').trim().toUpperCase())
+    .filter(Boolean);
 }
 
 function applyOptimisticVote(label: LabelItem, voteAction: VoteType, currentUserId: string): LabelItem {
@@ -158,16 +264,43 @@ export function DataLabelingPanel({
 }: DataLabelingStepProps) {
   const currentUserId = useMemo(() => getCurrentUserId(), []);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [selectedMessageIndex, setSelectedMessageIndex] = useState<number | null>(null);
   const [labels, setLabels] = useState<LabelItem[]>([]);
+  const [messageLabelCounts, setMessageLabelCounts] = useState<Record<number, number>>({});
   const [softLabelInput, setSoftLabelInput] = useState('');
   const [isLoadingLabels, setIsLoadingLabels] = useState(false);
   const [isSavingLabel, setIsSavingLabel] = useState(false);
+  const [isAutoLabelingMessages, setIsAutoLabelingMessages] = useState(false);
+  const [isSavingAutoLabels, setIsSavingAutoLabels] = useState(false);
+  const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
+  const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<Record<number, MessageAutoLabelSuggestion>>({});
   const [error, setError] = useState('');
 
   const currentSample = samples[currentIndex] || null;
+  const selectedMessage = selectedMessageIndex !== null ? currentSample?.messages[selectedMessageIndex] : null;
+  const selectedTargetIndex = selectedMessage ? selectedMessageIndex : null;
+  const targetLabel = selectedMessage
+    ? `Message #${selectedMessageIndex! + 1} - ${selectedMessage.role.toUpperCase()}`
+    : 'Conversation';
+  const availableHardLabels = selectedMessage?.role === 'user'
+    ? USER_MESSAGE_HARD_LABELS
+    : selectedMessage?.role === 'assistant'
+      ? ASSISTANT_MESSAGE_HARD_LABELS
+      : CONVERSATION_HARD_LABELS;
 
   const canGoPrevSample = currentIndex > 0;
   const canGoNextSample = currentIndex < samples.length - 1;
+  const currentMessagesPayload = useMemo(
+    () => (currentSample?.messages || []).map((message, index) => ({
+      messageIndex: index,
+      role: message.role,
+      content: message.content,
+    })),
+    [currentSample?.messages]
+  );
+  const autoLabelSuggestionCount = Object.keys(autoLabelSuggestions).length;
+  const autoLabelSuggestedLabelCount = Object.values(autoLabelSuggestions)
+    .reduce((sum, suggestion) => sum + suggestionLabels(suggestion).length, 0);
 
   const scoreColorClass = (score: number): string => {
     if (score > 0) return 'text-emerald-700 font-semibold';
@@ -175,12 +308,30 @@ export function DataLabelingPanel({
     return 'text-gray-500';
   };
 
-  const fetchLabels = async (sampleId: string) => {
+  const fetchMessageLabelCounts = async (sampleId: string) => {
+    try {
+      const payload = await dataprepApi.getSampleLabels(sampleId, { scope: 'all' });
+      const counts: Record<number, number> = {};
+      (Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : [])
+        .filter((label) => label.targetScope === 'message' && Number.isInteger(label.messageIndex))
+        .forEach((label) => {
+          const index = Number(label.messageIndex);
+          counts[index] = (counts[index] || 0) + 1;
+        });
+      setMessageLabelCounts(counts);
+    } catch {
+      setMessageLabelCounts({});
+    }
+  };
+
+  const fetchLabels = async (sampleId: string, messageIndex: number | null = selectedTargetIndex) => {
     setIsLoadingLabels(true);
     setError('');
 
     try {
-      const payload = await dataprepApi.getSampleLabels(sampleId);
+      const payload = messageIndex === null
+        ? await dataprepApi.getSampleLabels(sampleId)
+        : await dataprepApi.getSampleLabels(sampleId, { scope: 'message', messageIndex });
       setLabels(Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : []);
     } catch (err: any) {
       setLabels([]);
@@ -198,12 +349,20 @@ export function DataLabelingPanel({
 
     if (!currentSample.sampleId) {
       setLabels([]);
+      setMessageLabelCounts({});
       setError('This sample has no persisted sampleId yet. Proceed through Step 4 (Clustering) to create a dataset version first.');
       return;
     }
 
-    fetchLabels(currentSample.sampleId);
+    fetchLabels(currentSample.sampleId, selectedTargetIndex);
+    fetchMessageLabelCounts(currentSample.sampleId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSample?.sampleId, selectedTargetIndex]);
+
+  useEffect(() => {
+    setSelectedMessageIndex(null);
+    setSoftLabelInput('');
+    setAutoLabelSuggestions({});
   }, [currentSample?.sampleId]);
 
   useEffect(() => {
@@ -248,6 +407,10 @@ export function DataLabelingPanel({
         {
           name: normalizedName,
           type,
+          targetScope: selectedMessage ? 'message' : 'sample',
+          messageIndex: selectedTargetIndex ?? undefined,
+          messageRole: selectedMessage?.role,
+          targetTextSnapshot: selectedMessage?.content,
         },
         fromCommunityHub
       );
@@ -259,8 +422,15 @@ export function DataLabelingPanel({
       const created = payload?.label ? normalizeLabel(payload.label) : null;
       if (created) {
         setLabels((prev) => [created, ...prev]);
+        if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
+          setMessageLabelCounts((prev) => ({
+            ...prev,
+            [Number(created.messageIndex)]: (prev[Number(created.messageIndex)] || 0) + 1,
+          }));
+        }
       } else {
         await fetchLabels(currentSample.sampleId);
+        await fetchMessageLabelCounts(currentSample.sampleId);
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to add label');
@@ -330,21 +500,102 @@ export function DataLabelingPanel({
     try {
       const payload = await dataprepApi.addSampleLabel(
         currentSample.sampleId,
-        { name: hardLabelName, type: 'hard' },
+        {
+          name: hardLabelName,
+          type: 'hard',
+          targetScope: selectedMessage ? 'message' : 'sample',
+          messageIndex: selectedTargetIndex ?? undefined,
+          messageRole: selectedMessage?.role,
+          targetTextSnapshot: selectedMessage?.content,
+        },
         fromCommunityHub
       );
       const created = payload?.label ? normalizeLabel(payload.label) : null;
       if (!created?._id) {
         await fetchLabels(currentSample.sampleId);
+        await fetchMessageLabelCounts(currentSample.sampleId);
         return;
       }
 
       setLabels((prev) => [created, ...prev]);
-      await handleVote(created._id, 'up');
+      if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
+        setMessageLabelCounts((prev) => ({
+          ...prev,
+          [Number(created.messageIndex)]: (prev[Number(created.messageIndex)] || 0) + 1,
+        }));
+      }
+      if (fromCommunityHub) {
+        await handleVote(created._id, 'up');
+      }
     } catch (err: any) {
       setError(err?.message || 'Failed to vote hard label');
     } finally {
       setIsSavingLabel(false);
+    }
+  };
+
+  const handleAutoLabelMessages = async () => {
+    if (!currentSample?.sampleId) {
+      setError('Cannot auto-label: missing sampleId');
+      return;
+    }
+    if (!currentMessagesPayload.length) {
+      setError('Cannot auto-label: this conversation has no messages.');
+      return;
+    }
+
+    setIsAutoLabelingMessages(true);
+    setError('');
+
+    try {
+      const payload = await dataprepApi.previewMessageAutoLabels(currentSample.sampleId, {
+        provider: autoLabelProvider,
+        messages: currentMessagesPayload,
+      });
+      const nextSuggestions = (payload?.suggestions || []).reduce<Record<number, MessageAutoLabelSuggestion>>((acc, suggestion) => {
+        if (Number.isInteger(suggestion.messageIndex)) {
+          acc[Number(suggestion.messageIndex)] = suggestion;
+        }
+        return acc;
+      }, {});
+      setAutoLabelSuggestions(nextSuggestions);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || err?.message || 'Message auto-labeling failed');
+    } finally {
+      setIsAutoLabelingMessages(false);
+    }
+  };
+
+  const handleSaveAutoLabels = async () => {
+    if (!currentSample?.sampleId) {
+      setError('Cannot save AI labels: missing sampleId');
+      return;
+    }
+
+    const suggestions = Object.values(autoLabelSuggestions);
+    if (!suggestions.length) {
+      setError('No AI label suggestions to save.');
+      return;
+    }
+
+    setIsSavingAutoLabels(true);
+    setError('');
+
+    try {
+      const result = await dataprepApi.saveMessageAutoLabels(currentSample.sampleId, {
+        suggestions,
+        messages: currentMessagesPayload,
+      });
+      await fetchLabels(currentSample.sampleId, selectedTargetIndex);
+      await fetchMessageLabelCounts(currentSample.sampleId);
+      setAutoLabelSuggestions({});
+      if (result.insertedCount === 0) {
+        setError('AI labels were already saved for these messages.');
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.error || err?.message || 'Save AI labels failed');
+    } finally {
+      setIsSavingAutoLabels(false);
     }
   };
 
@@ -386,25 +637,71 @@ export function DataLabelingPanel({
               </div>
             )}
 
-            {currentSample?.messages.map((message, index) => (
+            {currentSample?.messages.map((message, index) => {
+              const isSelected = selectedMessageIndex === index;
+              const labelCount = messageLabelCounts[index] || 0;
+              const aiSuggestion = autoLabelSuggestions[index];
+              const aiLabels = suggestionLabels(aiSuggestion);
+
+              return (
               <div
                 key={`${message.role}-${index}`}
                 className={`flex ${message.role === 'user' ? 'justify-start' : 'justify-end'}`}
               >
-                <div
-                  className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
+                <button
+                  type="button"
+                  onClick={() => setSelectedMessageIndex(index)}
+                  className={`relative max-w-[88%] rounded-2xl px-4 py-3 text-left text-sm shadow-sm transition-all ${
                     message.role === 'user'
                       ? 'bg-blue-600 text-white rounded-tl-sm'
                       : 'bg-gray-100 text-gray-800 border border-gray-200 rounded-tr-sm'
-                  }`}
+                  } ${isSelected ? 'ring-2 ring-amber-400 ring-offset-2' : 'hover:ring-2 hover:ring-blue-200 hover:ring-offset-1'}`}
+                  title="Select this message for labeling"
                 >
+                  {labelCount > 0 && (
+                    <span
+                      className={`absolute -top-2 ${message.role === 'user' ? '-right-2' : '-left-2'} rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${
+                        message.role === 'user'
+                          ? 'border-blue-200 bg-white text-blue-700'
+                          : 'border-violet-200 bg-violet-600 text-white'
+                      }`}
+                    >
+                      {labelCount}
+                    </span>
+                  )}
+                  {aiSuggestion && aiLabels.length > 0 && (
+                    <span
+                      className={`absolute -bottom-2 ${message.role === 'user' ? '-right-2' : '-left-2'} flex max-w-[260px] flex-wrap items-center justify-end gap-1`}
+                      title={`AI: ${aiLabels.join(', ')}${Number.isFinite(aiSuggestion.confidence) ? ` (${Math.round((aiSuggestion.confidence || 0) * 100)}%)` : ''}`}
+                    >
+                      {aiLabels.slice(0, 4).map((label) => {
+                        const aiChip = HARD_LABEL_CHIPS[label] || DEFAULT_HARD_LABEL_CHIP;
+                        const AiIcon = aiChip.icon;
+                        return (
+                          <span
+                            key={label}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${aiChip.className}`}
+                          >
+                            <AiIcon className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate">{aiChip.short}</span>
+                          </span>
+                        );
+                      })}
+                      {aiLabels.length > 4 && (
+                        <span className="inline-flex rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-bold text-gray-600 shadow-sm">
+                          +{aiLabels.length - 4}
+                        </span>
+                      )}
+                    </span>
+                  )}
                   <p className={`mb-1 text-[10px] font-bold uppercase tracking-wider ${message.role === 'user' ? 'text-blue-200' : 'text-gray-400'}`}>
                     {message.role}
                   </p>
                   <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content || '–'}</p>
-                </div>
+                </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -413,14 +710,30 @@ export function DataLabelingPanel({
 
           {/* ── Area 2: Current Labels ── */}
           <div className="rounded-xl border border-gray-200 bg-white shadow-sm flex-shrink-0">
-            <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-violet-50 to-purple-50 rounded-t-xl">
-              <Tags className="w-4 h-4 text-violet-600" />
-              <h3 className="text-sm font-semibold text-gray-900">Current Labels</h3>
-              {labels.length > 0 && (
-                <span className="ml-auto text-xs font-medium text-violet-700 bg-violet-100 border border-violet-200 rounded-full px-2 py-0.5">
-                  {labels.length}
+            <div className="border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-violet-50 to-purple-50 rounded-t-xl">
+              <div className="flex items-center gap-2">
+                <Tags className="w-4 h-4 text-violet-600" />
+                <h3 className="text-sm font-semibold text-gray-900">Current Labels</h3>
+                {labels.length > 0 && (
+                  <span className="ml-auto text-xs font-medium text-violet-700 bg-violet-100 border border-violet-200 rounded-full px-2 py-0.5">
+                    {labels.length}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate rounded-full border border-violet-200 bg-white px-2.5 py-1 text-xs font-semibold text-violet-700">
+                  {targetLabel}
                 </span>
-              )}
+                {selectedMessage && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMessageIndex(null)}
+                    className="rounded-full border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                  >
+                    Conversation
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="max-h-[200px] overflow-auto p-3 space-y-2">
@@ -432,7 +745,9 @@ export function DataLabelingPanel({
               )}
 
               {!isLoadingLabels && labels.length === 0 && (
-                <p className="text-sm text-gray-400 py-2 text-center">No labels for this sample yet.</p>
+                <p className="text-sm text-gray-400 py-2 text-center">
+                  No labels for this {selectedMessage ? 'message' : 'conversation'} yet.
+                </p>
               )}
 
               {!isLoadingLabels && labels.map((label) => (
@@ -498,20 +813,63 @@ export function DataLabelingPanel({
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-t-xl">
               <Tag className="w-4 h-4 text-amber-600" />
               <h3 className="text-sm font-semibold text-gray-900">Add Label</h3>
+              <select
+                value={autoLabelProvider}
+                onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || lockInteractions}
+                className="ml-auto rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Choose AI provider for message auto-labeling"
+              >
+                <option value="gemini">Gemini</option>
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">Deepseek</option>
+              </select>
+              <button
+                type="button"
+                onClick={handleAutoLabelMessages}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || !currentSample?.sampleId || lockInteractions}
+                className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Use AI to suggest hard labels for every message in this conversation"
+              >
+                {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                Auto Labeling
+              </button>
             </div>
 
             <div className="p-3 space-y-3">
+              {autoLabelSuggestionCount > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-amber-800">
+                      AI suggested {autoLabelSuggestedLabelCount} labels across {autoLabelSuggestionCount} messages.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleSaveAutoLabels}
+                      disabled={isSavingAutoLabels || lockInteractions}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+                    >
+                      {isSavingAutoLabels ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                      Save AI Labels
+                    </button>
+                  </div>
+                </div>
+              )}
               {/* Hard Labels */}
               <div>
-                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Hard Labels</p>
-                <div className="grid grid-cols-1 gap-1.5">
-                  {HARD_LABELS.map((hardLabel) => (
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  {selectedMessage ? `${selectedMessage.role.toUpperCase()} Hard Labels` : 'Conversation Hard Labels'}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {availableHardLabels.map((hardLabel) => (
                     (() => {
                       const existing = labels.find((item) => item.type === 'hard' && item.name === hardLabel);
                       const upCount = existing?.upvoteCount ?? existing?.upvotes?.length ?? 0;
                       const hasUpvoted = Boolean(
                         existing && currentUserId && Array.isArray(existing.upvotes) && existing.upvotes.includes(currentUserId)
                       );
+                      const chip = HARD_LABEL_CHIPS[hardLabel] || DEFAULT_HARD_LABEL_CHIP;
+                      const Icon = chip.icon;
 
                       return (
                     <button
@@ -519,12 +877,15 @@ export function DataLabelingPanel({
                       type="button"
                       disabled={isSavingLabel || !currentSample?.sampleId || lockInteractions}
                       onClick={() => handleHardLabelVote(hardLabel)}
-                      className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition-all disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center justify-between ${
-                        HARD_LABEL_COLORS[hardLabel] || 'bg-gray-600 hover:bg-gray-700 text-white border-gray-600'
-                      } ${hasUpvoted ? 'ring-2 ring-white/80' : ''}`}
+                      title={hardLabel}
+                      aria-label={`Add hard label ${hardLabel}`}
+                      className={`min-w-0 rounded-full border px-2.5 py-1.5 text-[11px] font-bold transition-all disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center justify-center gap-1.5 shadow-sm ${
+                        chip.className
+                      } ${hasUpvoted ? 'ring-2 ring-blue-300 ring-offset-1' : ''}`}
                     >
-                      <span>{hardLabel}</span>
-                      <span className="ml-2 rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-semibold">
+                      <Icon className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span className="truncate">{chip.short}</span>
+                      <span className="ml-auto rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-current">
                         {upCount}
                       </span>
                     </button>
@@ -579,7 +940,10 @@ export function DataLabelingPanel({
               <button
                 type="button"
                 disabled={!canGoPrevSample}
-                onClick={() => setCurrentIndex((prev) => Math.max(prev - 1, 0))}
+                onClick={() => {
+                  setSelectedMessageIndex(null);
+                  setCurrentIndex((prev) => Math.max(prev - 1, 0));
+                }}
                 className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
@@ -588,7 +952,10 @@ export function DataLabelingPanel({
               <button
                 type="button"
                 disabled={!canGoNextSample}
-                onClick={() => setCurrentIndex((prev) => Math.min(prev + 1, samples.length - 1))}
+                onClick={() => {
+                  setSelectedMessageIndex(null);
+                  setCurrentIndex((prev) => Math.min(prev + 1, samples.length - 1));
+                }}
                 className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
               >
                 Next

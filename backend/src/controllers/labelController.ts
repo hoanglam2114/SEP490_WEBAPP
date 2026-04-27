@@ -4,7 +4,38 @@ import { Label } from '../models/Label';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { DatasetVersion } from '../models/DatasetVersion';
 
-const HARD_LABELS = ['REJECT', 'ERROR_FORMULAR', 'USER_SPAM', 'ERROR_RESPONSE', 'ERROR_FORMAT'];
+const HARD_LABELS = [
+  'REJECT',
+  'ERROR_FORMULAR',
+  'USER_SPAM',
+  'ERROR_RESPONSE',
+  'ERROR_FORMAT',
+  'CORRECT',
+  'INCORRECT',
+  'REQUEST_HINT',
+  'ASK_THEORY',
+  'REQUEST_EXPLANATION',
+  'REQUEST_SIMPLER',
+  'SKIP_EXERCISE',
+  'ENCOURAGE',
+  'OFF_TOPIC',
+  'NEXT_SECTION',
+  'WAIT_READY',
+  'PRAISING',
+  'SCAFFOLDING',
+  'HINTING',
+  'CONCEPT_CLARIFY',
+  'LOGIC_BREAKDOWN',
+  'SIMPLIFYING',
+  'NAVIGATING',
+  'MOTIVATING',
+  'REDIRECTING',
+  'TRANSITIONING',
+  'WAITING',
+];
+const LABEL_SCOPES = ['sample', 'message'] as const;
+const LABEL_QUERY_SCOPES = ['sample', 'message', 'all'] as const;
+const MESSAGE_ROLES = ['user', 'assistant'] as const;
 
 function getCurrentUserId(req: Request): string | null {
   const user = (req as any).user;
@@ -15,13 +46,35 @@ function isCommunityHubRequest(req: Request): boolean {
   return String(req.query.fromCommunityHub || '').toLowerCase() === 'true';
 }
 
-async function getSampleAccessBySampleId(sampleId: string): Promise<{ ownerId: string; isPublic: boolean } | null> {
+function sampleScopeQuery(): Record<string, any> {
+  return {
+    $or: [
+      { targetScope: 'sample' },
+      { targetScope: { $exists: false } },
+      { targetScope: null },
+    ],
+  };
+}
+
+function normalizeTargetScope(value: unknown): 'sample' | 'message' {
+  return value === 'message' ? 'message' : 'sample';
+}
+
+function normalizeQueryScope(value: unknown): 'sample' | 'message' | 'all' {
+  return LABEL_QUERY_SCOPES.includes(value as any) ? value as 'sample' | 'message' | 'all' : 'sample';
+}
+
+async function getSampleAccessBySampleId(
+  sampleId: string
+): Promise<{ ownerId: string; isPublic: boolean; sharedWithUserIds: string[] } | null> {
   const sample = await ProcessedDatasetItem.findById(sampleId).select('datasetVersionId').lean();
   if (!sample?.datasetVersionId) {
     return null;
   }
 
-  const version = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId isPublic').lean();
+  const version = await DatasetVersion.findById(sample.datasetVersionId)
+    .select('ownerId isPublic sharedWithUserIds')
+    .lean();
   if (!version?.ownerId) {
     return null;
   }
@@ -29,10 +82,15 @@ async function getSampleAccessBySampleId(sampleId: string): Promise<{ ownerId: s
   return {
     ownerId: String(version.ownerId),
     isPublic: Boolean((version as any).isPublic),
+    sharedWithUserIds: Array.isArray((version as any).sharedWithUserIds)
+      ? (version as any).sharedWithUserIds.map((id: any) => String(id))
+      : [],
   };
 }
 
-async function getSampleAccessByLabelId(labelId: string): Promise<{ ownerId: string; isPublic: boolean } | null> {
+async function getSampleAccessByLabelId(
+  labelId: string
+): Promise<{ ownerId: string; isPublic: boolean; sharedWithUserIds: string[] } | null> {
   const label = await Label.findById(labelId).select('sampleId').lean();
   if (!label?.sampleId) {
     return null;
@@ -50,9 +108,10 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
   }
 
   const isOwner = access.ownerId === String(userId);
+  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic) {
-      const error = new Error('Dataset version is not public.');
+    if (!access.isPublic && !hasSharedAccess) {
+      const error = new Error('Dataset version is not public or shared with this account.');
       (error as any).statusCode = 403;
       throw error;
     }
@@ -80,7 +139,8 @@ async function assertLabelReadAccessBySampleId(sampleId: string, userId: string)
   }
 
   const isOwner = access.ownerId === String(userId);
-  if (!isOwner && !access.isPublic) {
+  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
+  if (!isOwner && !access.isPublic && !hasSharedAccess) {
     const error = new Error('Forbidden: you do not have access to this sample labels.');
     (error as any).statusCode = 403;
     throw error;
@@ -96,9 +156,10 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
   }
 
   const isOwner = access.ownerId === String(userId);
+  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic) {
-      const error = new Error('Dataset version is not public.');
+    if (!access.isPublic && !hasSharedAccess) {
+      const error = new Error('Dataset version is not public or shared with this account.');
       (error as any).statusCode = 403;
       throw error;
     }
@@ -136,6 +197,10 @@ function formatLabel(label: any, userId: string) {
     sampleId: label.sampleId,
     name: label.name,
     type: label.type,
+    targetScope: label.targetScope || 'sample',
+    messageIndex: label.messageIndex,
+    messageRole: label.messageRole,
+    targetTextSnapshot: label.targetTextSnapshot,
     createdBy: label.createdBy,
     createdAt: label.createdAt,
     updatedAt: label.updatedAt,
@@ -167,7 +232,27 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
 
     await assertLabelReadAccessBySampleId(sampleId, userId);
 
-    const labels = await Label.find({ sampleId: new mongoose.Types.ObjectId(sampleId) })
+    const scope = normalizeQueryScope(req.query.scope);
+    const query: Record<string, any> = {
+      sampleId: new mongoose.Types.ObjectId(sampleId),
+    };
+
+    if (scope === 'sample') {
+      Object.assign(query, sampleScopeQuery());
+    } else if (scope === 'message') {
+      query.targetScope = 'message';
+      const rawMessageIndex = req.query.messageIndex;
+      if (rawMessageIndex !== undefined) {
+        const messageIndex = Number(rawMessageIndex);
+        if (!Number.isInteger(messageIndex) || messageIndex < 0) {
+          res.status(400).json({ error: 'messageIndex must be a non-negative integer' });
+          return;
+        }
+        query.messageIndex = messageIndex;
+      }
+    }
+
+    const labels = await Label.find(query)
       .sort({ createdAt: -1 })
       .lean();
 
@@ -191,7 +276,14 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
     }
 
     const { sampleId } = req.params;
-    const { name, type } = req.body as { name?: string; type?: 'hard' | 'soft' };
+    const { name, type, targetScope: rawTargetScope, messageIndex: rawMessageIndex, messageRole, targetTextSnapshot } = req.body as {
+      name?: string;
+      type?: 'hard' | 'soft';
+      targetScope?: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+      targetTextSnapshot?: string;
+    };
 
     if (!mongoose.Types.ObjectId.isValid(sampleId)) {
       res.status(400).json({ error: 'Invalid sampleId' });
@@ -209,6 +301,33 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
     }
 
     await assertLabelAccessBySampleId(sampleId, userId, req);
+
+    const targetScope = normalizeTargetScope(rawTargetScope);
+    let messageIndex: number | undefined;
+    let normalizedMessageRole: 'user' | 'assistant' | undefined;
+    let normalizedTargetTextSnapshot: string | undefined;
+
+    if (!LABEL_SCOPES.includes(targetScope)) {
+      res.status(400).json({ error: "targetScope must be 'sample' or 'message'" });
+      return;
+    }
+
+    if (targetScope === 'message') {
+      messageIndex = Number(rawMessageIndex);
+      if (!Number.isInteger(messageIndex) || messageIndex < 0) {
+        res.status(400).json({ error: 'messageIndex must be a non-negative integer for message labels' });
+        return;
+      }
+
+      if (!MESSAGE_ROLES.includes(messageRole as any)) {
+        res.status(400).json({ error: "messageRole must be 'user' or 'assistant' for message labels" });
+        return;
+      }
+
+      normalizedMessageRole = messageRole as 'user' | 'assistant';
+      const text = String(targetTextSnapshot || '').trim();
+      normalizedTargetTextSnapshot = text ? text.slice(0, 2000) : undefined;
+    }
 
     let normalizedName = String(name).trim();
 
@@ -228,6 +347,10 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       sampleId: new mongoose.Types.ObjectId(sampleId),
       name: normalizedName,
       type,
+      targetScope,
+      messageIndex,
+      messageRole: normalizedMessageRole,
+      targetTextSnapshot: normalizedTargetTextSnapshot,
       createdBy: new mongoose.Types.ObjectId(userId),
       // In the internal dataset-version workflow, the creator's label starts with one upvote.
       upvotes: isCommunityHubRequest(req) ? [] : [new mongoose.Types.ObjectId(userId)],
@@ -282,14 +405,6 @@ export const voteLabel = async (req: Request, res: Response): Promise<void> => {
     const label = await Label.findById(labelId);
     if (!label) {
       res.status(404).json({ error: 'Label not found' });
-      return;
-    }
-
-    // Hard labels only accept upvotes.
-    if (false && label.type === 'hard' && voteAction === 'down') {
-      res.status(400).json({
-        error: `Hard labels (e.g. ${label.name}) only support upvotes. Downvoting is not allowed.`,
-      });
       return;
     }
 

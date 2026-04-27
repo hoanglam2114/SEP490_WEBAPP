@@ -83,6 +83,11 @@ function formatDate(dateStr: string): string {
   });
 }
 
+const getAuthHeaders = (): Record<string, string> => {
+  const token = localStorage.getItem('token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
 export const TrainingHistoryScreen: React.FC = () => {
   const navigate = useNavigate();
   const [histories, setHistories] = useState<TrainingHistoryItem[]>([]);
@@ -107,7 +112,9 @@ export const TrainingHistoryScreen: React.FC = () => {
   // Fetch distinct base models for filter dropdown
   const fetchBaseModels = useCallback(async () => {
     try {
-      const res = await fetch('/api/train/history/models');
+      const res = await fetch('/api/train/history/models', {
+        headers: getAuthHeaders(),
+      });
       const data = await res.json();
       if (Array.isArray(data)) {
         setBaseModels(data);
@@ -134,7 +141,9 @@ export const TrainingHistoryScreen: React.FC = () => {
       const url = modelFilter
         ? `/api/train/history?baseModel=${encodeURIComponent(modelFilter)}`
         : '/api/train/history';
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: getAuthHeaders(),
+      });
       const data = await res.json();
       setHistories(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -207,7 +216,10 @@ export const TrainingHistoryScreen: React.FC = () => {
     if (!confirm('Are you sure you want to delete this training record?')) return;
     setDeleteLoading(jobId);
     try {
-      await fetch(`/api/train/history/${jobId}`, { method: 'DELETE' });
+      await fetch(`/api/train/history/${jobId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
       setHistories(prev => prev.filter(h => h.jobId !== jobId));
       if (expandedId === jobId) setExpandedId(null);
       // Refresh base models list in case we deleted the last record for a model
@@ -225,7 +237,10 @@ export const TrainingHistoryScreen: React.FC = () => {
     e.stopPropagation();
     setResumeLoading(jobId);
     try {
-      const res = await fetch(`/api/train/resume/${jobId}`, { method: 'POST' });
+      const res = await fetch(`/api/train/resume/${jobId}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to resume training');

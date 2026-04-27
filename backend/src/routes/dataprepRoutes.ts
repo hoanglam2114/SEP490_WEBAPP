@@ -6,6 +6,7 @@ import { preprocessingRouter, versionPreprocessingRouter } from '../modules/data
 import exportRoutes from '../modules/dataprep/export/export.routes';
 import autoLabelRoutes from '../modules/dataprep/auto-label/autoLabel.routes';
 import classificationRoutes from '../modules/dataprep/classification/classification.routes';
+import qualityRoutes from '../modules/dataprep/quality/quality.routes';
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ router.use('/projects', projectRoutes);
 router.use('/versions', versionRoutes);
 router.use('/versions/:versionId/auto-label', autoLabelRoutes);
 router.use('/versions/:versionId/classification', classificationRoutes);
+router.use('/versions/:versionId/quality', qualityRoutes);
 router.use('/versions/:versionId/preprocessing', versionPreprocessingRouter);
 router.use('/preprocessing', preprocessingRouter);
 router.use('/export', exportRoutes);

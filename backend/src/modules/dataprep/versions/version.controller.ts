@@ -16,6 +16,10 @@ export class DataPrepVersionController {
     return legacyEvaluationController.updateDatasetVersionVisibility(req, res);
   }
 
+  async updateSharing(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.updateDatasetVersionSharing(req, res);
+  }
+
   async deleteSample(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.deleteDatasetVersionSample(req, res);
   }

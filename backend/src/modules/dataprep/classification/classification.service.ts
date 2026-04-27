@@ -85,7 +85,14 @@ export class ClassificationService {
     const sampleOids = items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)));
 
     // 2. Load all labels associated with these samples
-    const labels = await Label.find({ sampleId: { $in: sampleOids } }).lean();
+    const labels = await Label.find({
+      sampleId: { $in: sampleOids },
+      $or: [
+        { targetScope: 'sample' },
+        { targetScope: { $exists: false } },
+        { targetScope: null },
+      ],
+    }).lean();
 
     // 3. Build per-sample label index
     const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; upvoteCount: number }>>();

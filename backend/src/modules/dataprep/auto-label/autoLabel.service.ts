@@ -224,12 +224,18 @@ export class AutoLabelingService {
         sampleId: { $in: sampleIds },
         type: 'hard',
         name: { $in: subjectNames },
+        $or: [
+          { targetScope: 'sample' },
+          { targetScope: { $exists: false } },
+          { targetScope: null },
+        ],
       });
 
       const docs = sampleIds.map((sampleId) => ({
         sampleId,
         name: item.label,
         type: 'hard' as const,
+        targetScope: 'sample' as const,
         createdBy: userOid,
         upvotes: [userOid],
         downvotes: [],
