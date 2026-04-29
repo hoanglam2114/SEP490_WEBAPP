@@ -227,7 +227,7 @@ function ParamsDropdown({
                     <ChevronUp size={14} />
                 </button>
             </div>
-
+            <div className="p-4 flex-1 overflow-y-auto"></div>
             {/* Number fields — 2 cols */}
             <div className="grid grid-cols-2 gap-2 mb-3">
                 {fields.map(({ key, label, placeholder, step }) => (
@@ -256,6 +256,7 @@ function ParamsDropdown({
                 />
             </div>
         </div>
+
     );
 }
 
@@ -408,7 +409,7 @@ function ChatPanel({
     const [chatSessions, setChatSessions] = useState<any[]>([]);
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
-
+    const [localInput, setLocalInput] = useState("");
     // Params: nếu có externalParams (compare mode) thì dùng, không thì dùng local
     //setLocalParams chỉ để giữ state của params trong single mode, tránh bị reset khi chuyển qua lại giữa compare và single
     const [localParams] = useState<InferenceParams>(DEFAULT_PARAMS);
@@ -786,72 +787,72 @@ function ChatPanel({
                 {/* Panel header */}
                 <div className="border-b border-slate-200 bg-white px-4 py-3">
                     <div className="flex items-center gap-2">
-                            <select
-                                value={provider}
-                                onChange={(e) => {
-                                    const newProvider = e.target.value;
-                                    setProvider(newProvider);
-                                    setModelLoaded(newProvider !== "local" && newProvider !== "registry");
-                                    setLoadError(null);
-                                    if (newProvider === "registry" && registries.length > 0) {
-                                        handleRegistryChange(registries[0]._id);
-                                    }
-                                }}
-                                className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
-                            >
-                                <option value="local">Manual ID</option>
-                                <option value="registry">Model Registry</option>
-                                <option value="openrouter">OpenRouter</option>
-                            </select>
+                        <select
+                            value={provider}
+                            onChange={(e) => {
+                                const newProvider = e.target.value;
+                                setProvider(newProvider);
+                                setModelLoaded(newProvider !== "local" && newProvider !== "registry");
+                                setLoadError(null);
+                                if (newProvider === "registry" && registries.length > 0) {
+                                    handleRegistryChange(registries[0]._id);
+                                }
+                            }}
+                            className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
+                        >
+                            <option value="local">Manual ID</option>
+                            <option value="registry">Model Registry</option>
+                            <option value="openrouter">OpenRouter</option>
+                        </select>
 
-                            {provider === "registry" ? (
-                                <div className="flex-1 relative">
-                                    <select
-                                        value={selectedRegistryId}
-                                        onChange={(e) => handleRegistryChange(e.target.value)}
-                                        className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
+                        {provider === "registry" ? (
+                            <div className="flex-1 relative">
+                                <select
+                                    value={selectedRegistryId}
+                                    onChange={(e) => handleRegistryChange(e.target.value)}
+                                    className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
                                             focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:opacity-60
                                             ${loadError ? "border-red-200" : "border-slate-200"}`}
-                                        disabled={loading}
-                                    >
-                                        <option value="">Chọn Model Registry...</option>
-                                        {registries.map(r => (
-                                            <option key={r._id} value={r._id}>{r.name}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                            ) : (
-                                <div className="flex-1 relative">
-                                    <input
-                                        type="text"
-                                        className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
+                                    disabled={loading}
+                                >
+                                    <option value="">Chọn Model Registry...</option>
+                                    {registries.map(r => (
+                                        <option key={r._id} value={r._id}>{r.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        ) : (
+                            <div className="flex-1 relative">
+                                <input
+                                    type="text"
+                                    className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
                                             focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
                                             ${loadError ? "border-red-200" : "border-slate-200"}`}
-                                        placeholder={
-                                            provider === "local"
-                                                ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
-                                                : "Model ID (tùy chọn, VD: openai/gpt-4o)"
-                                        }
-                                        value={hfHubId}
-                                        onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
-                                        disabled={loading}
-                                    />
-                                </div>
-                            )}
+                                    placeholder={
+                                        provider === "local"
+                                            ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
+                                            : "Model ID (tùy chọn, VD: openai/gpt-4o)"
+                                    }
+                                    value={hfHubId}
+                                    onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
+                                    disabled={loading}
+                                />
+                            </div>
+                        )}
 
-                            <button
-                                onClick={handleConfirmModel}
-                                disabled={(provider === "local" && !hfHubId.trim()) || (provider === "registry" && !hfHubId.trim()) || loading || ((provider === "local" || provider === "registry") && modelLoaded)}
-                                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
+                        <button
+                            onClick={handleConfirmModel}
+                            disabled={(provider === "local" && !hfHubId.trim()) || (provider === "registry" && !hfHubId.trim()) || loading || ((provider === "local" || provider === "registry") && modelLoaded)}
+                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
                                     ${modelLoaded && (provider === "local" || provider === "registry")
-                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
-                                        : loading
-                                            ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
-                                            : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
-                                    }`}
-                            >
-                                {loading && !modelLoaded ? "Tải..." : modelLoaded && (provider === "local" || provider === "registry") ? "✓ Sẵn sàng" : provider !== "local" && provider !== "registry" ? "Sử dụng API" : "Load"}
-                            </button>
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
+                                    : loading
+                                        ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                                        : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
+                                }`}
+                        >
+                            {loading && !modelLoaded ? "Tải..." : modelLoaded && (provider === "local" || provider === "registry") ? "✓ Sẵn sàng" : provider !== "local" && provider !== "registry" ? "Sử dụng API" : "Load"}
+                        </button>
                         <ModelStatus />
                     </div>
                 </div>
@@ -924,6 +925,44 @@ function ChatPanel({
                         </div>
                     )}
                 </div>
+
+                {/* Local Input Bar for Compare Mode */}
+                {isCompareMode && (
+                    <div className="bg-white border-t border-slate-100 p-3 shrink-0">
+                        <div className={`flex items-end gap-2 bg-slate-50 border rounded-xl px-3 py-1.5 transition-all
+                            ${modelLoaded ? "border-slate-300 focus-within:border-slate-400 focus-within:bg-white" : "border-slate-200 opacity-60"}`}>
+                            <textarea
+                                value={localInput}
+                                onChange={(e) => {
+                                    setLocalInput(e.target.value);
+                                    e.target.style.height = "auto";
+                                    e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                        e.preventDefault();
+                                        if (localInput.trim() && modelLoaded && !loading) {
+                                            sendMessage(localInput);
+                                            setLocalInput("");
+                                        }
+                                    }
+                                }}
+                                placeholder={modelLoaded ? `Chat riêng với Model ${instanceId}...` : "..."}
+                                className="flex-1 bg-transparent outline-none resize-none text-[13px] text-slate-800 placeholder-slate-400 py-1.5"
+                                rows={1}
+                                style={{ minHeight: "32px" }}
+                                disabled={!modelLoaded || loading}
+                            />
+                            <button
+                                onClick={() => { if (localInput.trim() && modelLoaded && !loading) { sendMessage(localInput); setLocalInput(""); } }}
+                                disabled={!localInput.trim() || !modelLoaded || loading}
+                                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 mb-0.5"
+                            >
+                                <Send size={14} />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             <style>{`
@@ -993,84 +1032,94 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                 </div>
             </header>
 
-            {/* Panel */}
-            <div className="flex-1 overflow-hidden">
-                <ChatPanel
-                    instanceId={1}
-                    showSidebar={true}
-                    externalInput={sendTrigger}
-                    isCompareMode={false}
-                    onModelLoadedChange={setPanelModelLoaded}
-                    externalParams={params}
-                    onLog={handleLog}
-                />
-            </div>
+            {/* Main Area */}
+            <div className="flex-1 flex overflow-hidden">
+                {/* Center Content */}
+                <div className="flex-1 flex flex-col min-w-0">
 
-            {/* Unified input bar */}
-            <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0 relative">
-                {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
-                <div className="max-w-[800px] mx-auto">
-                    {!panelModelLoaded && (
-                        <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-2">
-                            <AlertCircle size={13} />
-                            Vui lòng load model trước khi chat.
-                        </div>
-                    )}
+                    {/* Panel */}
+                    <div className="flex-1 overflow-hidden">
+                        <ChatPanel
+                            instanceId={1}
+                            showSidebar={true}
+                            externalInput={sendTrigger}
+                            isCompareMode={false}
+                            onModelLoadedChange={setPanelModelLoaded}
+                            externalParams={params}
+                            onLog={handleLog}
+                        />
+                    </div>
 
-                    {/* Params summary */}
-                    <ParamsSummaryBar
-                        params={params}
-                        onToggleLogs={() => setShowLogs(!showLogs)}
-                        showLogsActive={showLogs}
-                    />
+                    {/* Unified input bar */}
+                    <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0 relative">
+                        {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
+                        <div className="max-w-[800px] mx-auto">
+                            {!panelModelLoaded && (
+                                <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-2">
+                                    <AlertCircle size={13} />
+                                    Vui lòng load model trước khi chat.
+                                </div>
+                            )}
 
-                    <div className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
+                            {/* Params summary */}
+                            <ParamsSummaryBar
+                                params={params}
+                                onToggleLogs={() => setShowLogs(!showLogs)}
+                                showLogsActive={showLogs}
+                            />
+
+                            <div className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
                         ${panelModelLoaded ? "border-slate-300 focus-within:border-slate-500 focus-within:bg-white" : "border-slate-200 opacity-60"}`}>
 
-                        {/* Settings button */}
-                        <div className="relative shrink-0" ref={settingsRef}>
-                            <button
-                                onClick={() => setShowSettings(!showSettings)}
-                                className={`p-2 rounded-xl transition-all border ${showSettings
-                                    ? "bg-slate-800 text-white border-slate-800"
-                                    : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
-                                title="Tham số Inference"
-                            >
-                                <Settings2 size={15} />
-                            </button>
-                            {showSettings && (
-                                <ParamsDropdown
-                                    params={params}
-                                    onChange={setParams}
-                                    onClose={() => setShowSettings(false)}
-                                />
-                            )}
-                        </div>
+                                {/* Settings button */}
+                                <div className="relative shrink-0" ref={settingsRef}>
+                                    <button
+                                        onClick={() => setShowSettings(!showSettings)}
+                                        className={`p-2 rounded-xl transition-all border ${showSettings
+                                            ? "bg-slate-800 text-white border-slate-800"
+                                            : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
+                                        title="Tham số Inference"
+                                    >
+                                        <Settings2 size={15} />
+                                    </button>
+                                    {showSettings && (
+                                        <ParamsDropdown
+                                            params={params}
+                                            onChange={setParams}
+                                            onClose={() => setShowSettings(false)}
+                                        />
+                                    )}
+                                </div>
 
-                        <textarea
-                            value={input}
-                            onChange={(e) => {
-                                setInput(e.target.value);
-                                e.target.style.height = "auto";
-                                e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-                            }}
-                            onKeyDown={handleKeyDown}
-                            placeholder={panelModelLoaded ? "Nhập câu lệnh..." : "Load model để bắt đầu..."}
-                            className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1.5 px-1"
-                            rows={1}
-                            style={{ minHeight: "36px" }}
-                            disabled={!panelModelLoaded}
-                        />
-                        <button
-                            onClick={handleSend}
-                            disabled={!input.trim() || !panelModelLoaded}
-                            className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95"
-                        >
-                            <Send size={15} />
-                        </button>
+                                <textarea
+                                    value={input}
+                                    onChange={(e) => {
+                                        setInput(e.target.value);
+                                        e.target.style.height = "auto";
+                                        e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                                    }}
+                                    onKeyDown={handleKeyDown}
+                                    placeholder={panelModelLoaded ? "Nhập câu lệnh..." : "Load model để bắt đầu..."}
+                                    className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1.5 px-1"
+                                    rows={1}
+                                    style={{ minHeight: "36px" }}
+                                    disabled={!panelModelLoaded}
+                                />
+                                <button
+                                    onClick={handleSend}
+                                    disabled={!input.trim() || !panelModelLoaded}
+                                    className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95"
+                                >
+                                    <Send size={15} />
+                                </button>
+                            </div>
+                            <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng</p>
+                        </div>
                     </div>
-                    <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng</p>
                 </div>
+                {/* Right Sidebar */}
+                <ParamsDropdown params={params} onChange={setParams} onClose={() => { }} />
+
             </div>
         </div>
     );
@@ -1155,100 +1204,110 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                 </div>
             </header>
 
-            {/* Two panels */}
-            <div className="flex-1 flex gap-px overflow-hidden">
-                <div className="flex-1 overflow-hidden bg-white border-r border-slate-200">
-                    <ChatPanel
-                        instanceId={1}
-                        showSidebar={false}
-                        isCompareMode={true}
-                        externalInput={sendTrigger}
-                        onModelLoadedChange={setModel1Loaded}
-                        externalParams={params}
-                        onLog={handleLog}
-                    />
-                </div>
-                <div className="flex-1 overflow-hidden bg-white">
-                    <ChatPanel
-                        instanceId={2}
-                        showSidebar={false}
-                        isCompareMode={true}
-                        externalInput={sendTrigger}
-                        onModelLoadedChange={setModel2Loaded}
-                        externalParams={params}
-                        onLog={handleLog}
-                    />
-                </div>
-            </div>
+            {/* Main Area */}
+            <div className="flex-1 flex overflow-hidden">
+                {/* Center Content */}
+                <div className="flex-1 flex flex-col min-w-0">
 
-            {/* Unified input bar */}
-            <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0 relative">
-                {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
-
-                {!bothLoaded && (
-                    <div className="flex items-center gap-2 text-xs mb-2 text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                        <AlertCircle size={13} />
-                        {!model1Loaded && !model2Loaded
-                            ? "Vui lòng load cả 2 model trước khi chat."
-                            : !model1Loaded ? "Đang chờ Model 1 load xong..."
-                                : "Đang chờ Model 2 load xong..."}
+                    {/* Two panels */}
+                    <div className="flex-1 flex gap-px overflow-hidden">
+                        <div className="flex-1 overflow-hidden bg-white border-r border-slate-200">
+                            <ChatPanel
+                                instanceId={1}
+                                showSidebar={false}
+                                isCompareMode={true}
+                                externalInput={sendTrigger}
+                                onModelLoadedChange={setModel1Loaded}
+                                externalParams={params}
+                                onLog={handleLog}
+                            />
+                        </div>
+                        <div className="flex-1 overflow-hidden bg-white">
+                            <ChatPanel
+                                instanceId={2}
+                                showSidebar={false}
+                                isCompareMode={true}
+                                externalInput={sendTrigger}
+                                onModelLoadedChange={setModel2Loaded}
+                                externalParams={params}
+                                onLog={handleLog}
+                            />
+                        </div>
                     </div>
-                )}
 
-                {/* Params summary — shared cho cả 2 */}
-                <ParamsSummaryBar
-                    params={params}
-                    onToggleLogs={() => setShowLogs(!showLogs)}
-                    showLogsActive={showLogs}
-                />
+                    {/* Unified input bar */}
+                    <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0 relative">
+                        {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
 
-                <div className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all
+                        {!bothLoaded && (
+                            <div className="flex items-center gap-2 text-xs mb-2 text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                                <AlertCircle size={13} />
+                                {!model1Loaded && !model2Loaded
+                                    ? "Vui lòng load cả 2 model trước khi chat."
+                                    : !model1Loaded ? "Đang chờ Model 1 load xong..."
+                                        : "Đang chờ Model 2 load xong..."}
+                            </div>
+                        )}
+
+                        {/* Params summary — shared cho cả 2 */}
+                        <ParamsSummaryBar
+                            params={params}
+                            onToggleLogs={() => setShowLogs(!showLogs)}
+                            showLogsActive={showLogs}
+                        />
+
+                        <div className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all
                     ${bothLoaded ? "border-slate-300 focus-within:border-slate-600 focus-within:bg-white shadow-sm" : "border-slate-200 opacity-50"}`}>
 
-                    {/* Settings button */}
-                    <div className="relative shrink-0" ref={settingsRef}>
-                        <button
-                            onClick={() => setShowSettings(!showSettings)}
-                            className={`p-2 rounded-xl transition-all border ${showSettings
-                                ? "bg-slate-800 text-white border-slate-800"
-                                : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
-                            title="Tham số Inference (áp dụng cho cả 2 model)"
-                        >
-                            <Settings2 size={15} />
-                        </button>
-                        {showSettings && (
-                            <ParamsDropdown
-                                params={params}
-                                onChange={setParams}
-                                onClose={() => setShowSettings(false)}
-                            />
-                        )}
-                    </div>
+                            {/* Settings button */}
+                            <div className="relative shrink-0" ref={settingsRef}>
+                                <button
+                                    onClick={() => setShowSettings(!showSettings)}
+                                    className={`p-2 rounded-xl transition-all border ${showSettings
+                                        ? "bg-slate-800 text-white border-slate-800"
+                                        : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
+                                    title="Tham số Inference (áp dụng cho cả 2 model)"
+                                >
+                                    <Settings2 size={15} />
+                                </button>
+                                {showSettings && (
+                                    <ParamsDropdown
+                                        params={params}
+                                        onChange={setParams}
+                                        onClose={() => setShowSettings(false)}
+                                    />
+                                )}
+                            </div>
 
-                    <textarea
-                        value={input}
-                        onChange={(e) => {
-                            setInput(e.target.value);
-                            e.target.style.height = "auto";
-                            e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-                        }}
-                        onKeyDown={handleKeyDown}
-                        placeholder={bothLoaded ? "Nhập câu hỏi — sẽ gửi đến cả 2 model cùng lúc..." : "Load đủ 2 model để bắt đầu..."}
-                        className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1"
-                        rows={1}
-                        style={{ minHeight: "36px" }}
-                        disabled={!bothLoaded}
-                    />
-                    <button
-                        onClick={handleSend}
-                        disabled={!input.trim() || !bothLoaded}
-                        className="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 flex items-center gap-2"
-                    >
-                        <Send size={15} />
-                        <span className="text-xs font-semibold hidden sm:block">Gửi đến cả 2</span>
-                    </button>
+                            <textarea
+                                value={input}
+                                onChange={(e) => {
+                                    setInput(e.target.value);
+                                    e.target.style.height = "auto";
+                                    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                                }}
+                                onKeyDown={handleKeyDown}
+                                placeholder={bothLoaded ? "Nhập câu hỏi — sẽ gửi đến cả 2 model cùng lúc..." : "Load đủ 2 model để bắt đầu..."}
+                                className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1"
+                                rows={1}
+                                style={{ minHeight: "36px" }}
+                                disabled={!bothLoaded}
+                            />
+                            <button
+                                onClick={handleSend}
+                                disabled={!input.trim() || !bothLoaded}
+                                className="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 flex items-center gap-2"
+                            >
+                                <Send size={15} />
+                                <span className="text-xs font-semibold hidden sm:block">Gửi đến cả 2</span>
+                            </button>
+                        </div>
+                        <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng • Tham số áp dụng cho cả 2 model</p>
+                    </div>
                 </div>
-                <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng • Tham số áp dụng cho cả 2 model</p>
+                {/* Right Sidebar */}
+                <ParamsDropdown params={params} onChange={setParams} onClose={() => { }} />
+
             </div>
         </div>
     );

@@ -11,7 +11,7 @@ type ExportPanelProps = {
   downloadScoreThreshold: number;
   setDownloadScoreThreshold: (value: number) => void;
   handleDownloadByScore: () => void | Promise<void>;
-  setCurrentStep: (step: 12) => void;
+  setCurrentStep: (step: 13) => void;
 };
 
 export function ExportPanel({
@@ -87,7 +87,7 @@ export function ExportPanel({
 
       {conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
 
-      <StepNavigation showBack onBack={() => setCurrentStep(12)} />
+      <StepNavigation showBack onBack={() => setCurrentStep(13)} />
     </div>
   );
 }

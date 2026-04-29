@@ -20,6 +20,22 @@ export class DataPrepVersionController {
     return legacyEvaluationController.updateDatasetVersionSharing(req, res);
   }
 
+  async getAssignments(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getDatasetVersionAssignments(req, res);
+  }
+
+  async assignRange(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.assignDatasetVersionRange(req, res);
+  }
+
+  async clearAssignmentRange(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.clearDatasetVersionAssignmentRange(req, res);
+  }
+
+  async clearUserAssignments(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.clearDatasetVersionUserAssignments(req, res);
+  }
+
   async deleteSample(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.deleteDatasetVersionSample(req, res);
   }

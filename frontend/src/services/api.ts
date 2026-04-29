@@ -105,6 +105,36 @@ export type ShareUser = {
   email: string;
 };
 
+export type DatasetAssignmentSample = {
+  sampleId: string;
+  sampleKey: string;
+  sampleIndex: number;
+  preview: string;
+  assignee: ShareUser | null;
+};
+
+export type DatasetAssignmentSummary = {
+  user: ShareUser;
+  count: number;
+  ranges: string[];
+};
+
+export type DatasetAssignmentsResponse = {
+  datasetVersion: {
+    _id: string;
+    projectName: string;
+    versionName: string;
+    totalSamples: number;
+  };
+  samples: DatasetAssignmentSample[];
+  summary: DatasetAssignmentSummary[];
+  totals: {
+    totalSamples: number;
+    assigned: number;
+    unassigned: number;
+  };
+};
+
 type ClusterResponse = {
   data: any[];
   groups: any[];
@@ -559,7 +589,7 @@ export const apiService = {
       versionName: string;
       ownerId: string;
       ownerName: string;
-      accessType?: 'public' | 'shared';
+      accessType?: 'public' | 'shared' | 'assigned';
       updatedAt: string;
       topLabel: {
         _id: string;
@@ -597,6 +627,35 @@ export const apiService = {
     };
   }> => {
     const response = await api.patch(`/dataprep/versions/${id}/share`, { userId });
+    return response.data;
+  },
+
+  getDatasetVersionAssignments: async (id: string): Promise<DatasetAssignmentsResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments`);
+    return response.data;
+  },
+
+  assignDatasetVersionRange: async (
+    id: string,
+    payload: { assigneeId: string; startIndex: number; count: number }
+  ): Promise<{ message: string; assignedCount: number }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/range`, payload);
+    return response.data;
+  },
+
+  clearDatasetVersionAssignmentRange: async (
+    id: string,
+    payload: { startIndex: number; count: number }
+  ): Promise<{ message: string; deletedCount: number }> => {
+    const response = await api.delete(`/dataprep/versions/${id}/assignments/range`, { data: payload });
+    return response.data;
+  },
+
+  clearDatasetVersionUserAssignments: async (
+    id: string,
+    userId: string
+  ): Promise<{ message: string; deletedCount: number }> => {
+    const response = await api.delete(`/dataprep/versions/${id}/assignments/users/${userId}`);
     return response.data;
   },
 

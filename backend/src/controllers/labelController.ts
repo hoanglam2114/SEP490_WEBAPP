@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { Label } from '../models/Label';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { DatasetVersion } from '../models/DatasetVersion';
+import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
 
 const HARD_LABELS = [
   'REJECT',
@@ -37,6 +38,15 @@ const LABEL_SCOPES = ['sample', 'message'] as const;
 const LABEL_QUERY_SCOPES = ['sample', 'message', 'all'] as const;
 const MESSAGE_ROLES = ['user', 'assistant'] as const;
 
+type SampleAccess = {
+  datasetVersionId: string;
+  ownerId: string;
+  isPublic: boolean;
+  sharedWithUserIds: string[];
+  hasAssignments: boolean;
+  isAssignedToUser: (userId: string) => Promise<boolean>;
+};
+
 function getCurrentUserId(req: Request): string | null {
   const user = (req as any).user;
   return user?.id || user?.userId || user?._id || null;
@@ -66,7 +76,7 @@ function normalizeQueryScope(value: unknown): 'sample' | 'message' | 'all' {
 
 async function getSampleAccessBySampleId(
   sampleId: string
-): Promise<{ ownerId: string; isPublic: boolean; sharedWithUserIds: string[] } | null> {
+): Promise<SampleAccess | null> {
   const sample = await ProcessedDatasetItem.findById(sampleId).select('datasetVersionId').lean();
   if (!sample?.datasetVersionId) {
     return null;
@@ -79,18 +89,27 @@ async function getSampleAccessBySampleId(
     return null;
   }
 
+  const assignmentCount = await DatasetSampleAssignment.countDocuments({ datasetVersionId: sample.datasetVersionId });
+
   return {
+    datasetVersionId: String(sample.datasetVersionId),
     ownerId: String(version.ownerId),
     isPublic: Boolean((version as any).isPublic),
     sharedWithUserIds: Array.isArray((version as any).sharedWithUserIds)
       ? (version as any).sharedWithUserIds.map((id: any) => String(id))
       : [],
+    hasAssignments: assignmentCount > 0,
+    isAssignedToUser: async (userId: string) => Boolean(await DatasetSampleAssignment.exists({
+      datasetVersionId: sample.datasetVersionId,
+      sampleId: new mongoose.Types.ObjectId(sampleId),
+      assigneeId: new mongoose.Types.ObjectId(userId),
+    })),
   };
 }
 
 async function getSampleAccessByLabelId(
   labelId: string
-): Promise<{ ownerId: string; isPublic: boolean; sharedWithUserIds: string[] } | null> {
+): Promise<SampleAccess | null> {
   const label = await Label.findById(labelId).select('sampleId').lean();
   if (!label?.sampleId) {
     return null;
@@ -109,9 +128,15 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
 
   const isOwner = access.ownerId === String(userId);
   const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
+  const hasAssignedAccess = await access.isAssignedToUser(userId);
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic && !hasSharedAccess) {
+    if (!access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
       const error = new Error('Dataset version is not public or shared with this account.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    if (!isOwner && access.hasAssignments && !hasAssignedAccess) {
+      const error = new Error('Sample is not assigned to this account.');
       (error as any).statusCode = 403;
       throw error;
     }
@@ -140,8 +165,14 @@ async function assertLabelReadAccessBySampleId(sampleId: string, userId: string)
 
   const isOwner = access.ownerId === String(userId);
   const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
-  if (!isOwner && !access.isPublic && !hasSharedAccess) {
+  const hasAssignedAccess = await access.isAssignedToUser(userId);
+  if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
     const error = new Error('Forbidden: you do not have access to this sample labels.');
+    (error as any).statusCode = 403;
+    throw error;
+  }
+  if (!isOwner && access.hasAssignments && !hasAssignedAccess) {
+    const error = new Error('Sample is not assigned to this account.');
     (error as any).statusCode = 403;
     throw error;
   }
@@ -157,9 +188,15 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
 
   const isOwner = access.ownerId === String(userId);
   const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
+  const hasAssignedAccess = await access.isAssignedToUser(userId);
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic && !hasSharedAccess) {
+    if (!access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
       const error = new Error('Dataset version is not public or shared with this account.');
+      (error as any).statusCode = 403;
+      throw error;
+    }
+    if (!isOwner && access.hasAssignments && !hasAssignedAccess) {
+      const error = new Error('Sample is not assigned to this account.');
       (error as any).statusCode = 403;
       throw error;
     }

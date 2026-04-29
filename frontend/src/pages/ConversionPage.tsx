@@ -30,6 +30,7 @@ import { EvaluationPanel } from '../features/dataprep/evaluation/EvaluationPanel
 import { RefinementPanel } from '../features/dataprep/evaluation/RefinementPanel';
 import { AutoLabelingPanel } from '../features/dataprep/labeling/AutoLabelingPanel';
 import { LabelingWorkflowPanel } from '../features/dataprep/labeling/LabelingWorkflowPanel';
+import { ShareAssignPanel } from '../features/dataprep/labeling/ShareAssignPanel';
 import { ClusterPanel } from '../features/dataprep/preprocessing/ClusterPanel';
 import { ClassificationPanel } from '../features/dataprep/classification/ClassificationPanel';
 import { SubjectDistributionPanel } from '../features/dataprep/classification/SubjectDistributionPanel';
@@ -45,7 +46,7 @@ import { useAuthStore } from '../store/authStore';
 import { ExportPanel } from '../features/dataprep/export/ExportPanel';
 import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult, QualityBucket, QualityClassificationResult } from '../services/api';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -329,10 +330,10 @@ type MainPipelineStage = {
 const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'upload', label: 'Upload & Convert', steps: [1] },
   { id: 'preprocessing', label: 'Preprocessing', steps: [2, 3, 4] },
-  { id: 'labeling', label: 'Labeling', steps: [5, 6] },
-  { id: 'classification', label: 'Classification', steps: [7, 8, 9] },
-  { id: 'evaluation', label: 'Evaluation', steps: [10, 11] },
-  { id: 'finish', label: 'Finish', steps: [12, 13] },
+  { id: 'labeling', label: 'Labeling', steps: [5, 6, 7] },
+  { id: 'classification', label: 'Classification', steps: [8, 9, 10] },
+  { id: 'evaluation', label: 'Evaluation', steps: [11, 12] },
+  { id: 'finish', label: 'Finish', steps: [13, 14] },
 ];
 
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
@@ -340,14 +341,15 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 3, label: 'Find K', group: 'Preprocessing' },
   { id: 4, label: 'K-means Cluster', group: 'Preprocessing' },
   { id: 5, label: 'Auto Labeling', group: 'Labeling' },
-  { id: 6, label: 'Labeling', group: 'Labeling' },
-  { id: 7, label: 'Classification', group: 'Classification' },
-  { id: 8, label: 'Distribution', group: 'Classification' },
-  { id: 9, label: 'Balance Dataset', group: 'Classification' },
-  { id: 10, label: 'Evaluation', group: 'Evaluation' },
-  { id: 11, label: 'Refine', group: 'Evaluation' },
-  { id: 12, label: 'System Prompt', group: 'Finish' },
-  { id: 13, label: 'Train/Test Export', group: 'Finish' },
+  { id: 6, label: 'Share & Assign', group: 'Labeling' },
+  { id: 7, label: 'Labeling', group: 'Labeling' },
+  { id: 8, label: 'Classification', group: 'Classification' },
+  { id: 9, label: 'Distribution', group: 'Classification' },
+  { id: 10, label: 'Balance Dataset', group: 'Classification' },
+  { id: 11, label: 'Evaluation', group: 'Evaluation' },
+  { id: 12, label: 'Refine', group: 'Evaluation' },
+  { id: 13, label: 'System Prompt', group: 'Finish' },
+  { id: 14, label: 'Train/Test Export', group: 'Finish' },
 ];
 
 // NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
@@ -3403,7 +3405,7 @@ export function ConversionPage() {
     setActiveProjectOwnerId(payload.ownerId ? String(payload.ownerId) : (currentUserId || null));
     updateConversionOptions({ format: normalizedFormat });
     setProjectName(payload.projectName || formatDefaultProjectName());
-    setCurrentStep((payload.startStep && payload.startStep >= 1 && payload.startStep <= 13
+    setCurrentStep((payload.startStep && payload.startStep >= 1 && payload.startStep <= 14
       ? payload.startStep
       : 10) as Step);
     loadHandledRef.current = true;
@@ -3411,7 +3413,7 @@ export function ConversionPage() {
     // Clear consumed router state to avoid accidental re-processing on future renders.
     navigate(location.pathname, { replace: true, state: null });
 
-    toast.success(payload.startStep === 6 ? 'Project loaded. Continue at Labeling.' : 'Project loaded. Continue evaluation.');
+    toast.success(payload.startStep === 7 ? 'Project loaded. Continue at Labeling.' : 'Project loaded. Continue evaluation.');
   }, [currentUserId, location.pathname, location.state, navigate, setProjectName, updateConversionOptions]);
 
   useEffect(() => {
@@ -3428,8 +3430,8 @@ export function ConversionPage() {
       communityLoadedRejectedMode === communityShowRejectedSamples;
 
     if (hasRouteProjectContext) {
-      if (currentStep !== 6) {
-        setCurrentStep(6);
+      if (currentStep !== 7) {
+        setCurrentStep(7);
       }
       loadHandledRef.current = true;
       return;
@@ -3494,7 +3496,7 @@ export function ConversionPage() {
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
         updateConversionOptions({ format: normalizedFormat });
         setProjectName(payload.projectName || formatDefaultProjectName());
-        setCurrentStep(6);
+        setCurrentStep(7);
         loadHandledRef.current = true;
 
         if (resolvedOwnerId && currentUserId && currentUserId === resolvedOwnerId) {
@@ -3576,16 +3578,16 @@ export function ConversionPage() {
   const canMoveFromStep3 = true;
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = autoLabelsSaved;
-  const canMoveFromStep7 = !!currentDatasetVersionId;
   const canMoveFromStep8 = !!currentDatasetVersionId;
-  const canMoveFromStep9 = !!conversionResult;
+  const canMoveFromStep9 = !!currentDatasetVersionId;
   const canMoveFromStep10 = !!conversionResult;
   const canMoveFromStep11 = !!conversionResult;
   const canMoveFromStep12 = !!conversionResult;
+  const canMoveFromStep13 = !!conversionResult;
 
   useEffect(() => {
-    if (isGuestMode && currentStep !== 6) {
-      setCurrentStep(6);
+    if (isGuestMode && currentStep !== 7) {
+      setCurrentStep(7);
     }
   }, [currentStep, isGuestMode]);
 
@@ -3652,7 +3654,7 @@ export function ConversionPage() {
   };
 
   const handleProceedFromSystemPromptStep = async () => {
-    if (!canMoveFromStep12) {
+    if (!canMoveFromStep13) {
       return;
     }
 
@@ -3680,7 +3682,7 @@ export function ConversionPage() {
       }
     }
 
-    setCurrentStep(13);
+    setCurrentStep(14);
   };
 
   const validateRefineScoreThreshold = (value: string): string => {
@@ -3907,7 +3909,7 @@ export function ConversionPage() {
 
   return (
     <div className="space-y-6">
-      <StepperHeader currentStep={currentStep} lockedToStep={isGuestMode ? 6 : null} />
+      <StepperHeader currentStep={currentStep} lockedToStep={isGuestMode ? 7 : null} />
 
       {isGuestMode && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -4041,13 +4043,9 @@ export function ConversionPage() {
       )}
 
       {currentStep === 6 && (
-        <LabelingWorkflowPanel
-          isCommunityRoute={isProjectLabelingRoute}
-          communityCounts={communityCounts}
-          showRejectedSamples={communityShowRejectedSamples}
-          onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
-          canManageVersionVisibility={canManageVersionVisibility}
-          hasCurrentDatasetVersion={Boolean(currentDatasetVersionId)}
+        <ShareAssignPanel
+          versionId={currentDatasetVersionId || ''}
+          canManage={canManageVersionVisibility}
           isCurrentVersionPublic={isCurrentVersionPublic}
           isTogglingVersionPublic={isTogglingVersionPublic}
           onToggleVersionVisibility={handleToggleVersionVisibility}
@@ -4055,6 +4053,17 @@ export function ConversionPage() {
           selectedSharedUserId={selectedSharedUserId}
           isUpdatingVersionSharing={isUpdatingVersionSharing}
           onUpdateVersionSharing={handleUpdateVersionSharing}
+          onBack={() => setCurrentStep(5)}
+          onNext={() => setCurrentStep(7)}
+        />
+      )}
+
+      {currentStep === 7 && (
+        <LabelingWorkflowPanel
+          isCommunityRoute={isProjectLabelingRoute}
+          communityCounts={communityCounts}
+          showRejectedSamples={communityShowRejectedSamples}
+          onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
           labelingPanel={(
             <DataLabelingPanel
               samples={allRows.map((row) => ({
@@ -4071,8 +4080,8 @@ export function ConversionPage() {
                     { role: 'assistant' as const, content: row.assistantText || row.output },
                   ],
               }))}
-              onBack={() => setCurrentStep(isGuestMode ? 6 : 5)}
-              onNext={() => setCurrentStep(7)}
+              onBack={() => setCurrentStep(isGuestMode ? 7 : 6)}
+              onNext={() => setCurrentStep(8)}
               showBackButton={!isGuestMode}
               showNextButton={!isGuestMode}
               nextDisabled={isGuestMode}
@@ -4084,7 +4093,7 @@ export function ConversionPage() {
         />
       )}
 
-      {currentStep === 7 && (
+      {currentStep === 8 && (
         <ClassificationPanel
           versionId={currentDatasetVersionId || ''}
           activeGroup={activeClassificationGroup}
@@ -4113,15 +4122,6 @@ export function ConversionPage() {
               mode={previewMode}
             />
           )}
-          onBack={() => setCurrentStep(6)}
-          onNext={() => setCurrentStep(8)}
-          nextDisabled={!canMoveFromStep7}
-        />
-      )}
-
-      {currentStep === 8 && (
-        <SubjectDistributionPanel
-          versionId={currentDatasetVersionId || ''}
           onBack={() => setCurrentStep(7)}
           onNext={() => setCurrentStep(9)}
           nextDisabled={!canMoveFromStep8}
@@ -4129,10 +4129,8 @@ export function ConversionPage() {
       )}
 
       {currentStep === 9 && (
-        <BalanceDatasetPanel
+        <SubjectDistributionPanel
           versionId={currentDatasetVersionId || ''}
-          alreadyApplied={balanceApplied}
-          onApply={handleApplySubjectBalance}
           onBack={() => setCurrentStep(8)}
           onNext={() => setCurrentStep(10)}
           nextDisabled={!canMoveFromStep9}
@@ -4140,6 +4138,17 @@ export function ConversionPage() {
       )}
 
       {currentStep === 10 && (
+        <BalanceDatasetPanel
+          versionId={currentDatasetVersionId || ''}
+          alreadyApplied={balanceApplied}
+          onApply={handleApplySubjectBalance}
+          onBack={() => setCurrentStep(9)}
+          onNext={() => setCurrentStep(11)}
+          nextDisabled={!canMoveFromStep10}
+        />
+      )}
+
+      {currentStep === 11 && (
         <EvaluationPanel
           table={(
             <ConvertedDatasetTable
@@ -4160,13 +4169,13 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(9)}
-          onNext={() => setCurrentStep(11)}
-          nextDisabled={!canMoveFromStep10}
+          onBack={() => setCurrentStep(10)}
+          onNext={() => setCurrentStep(12)}
+          nextDisabled={!canMoveFromStep11}
         />
       )}
 
-      {currentStep === 11 && (
+      {currentStep === 12 && (
         <RefinementPanel
           table={(
             <ConvertedDatasetTable
@@ -4196,13 +4205,13 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(10)}
-          onNext={() => setCurrentStep(12)}
-          nextDisabled={!canMoveFromStep11}
+          onBack={() => setCurrentStep(11)}
+          onNext={() => setCurrentStep(13)}
+          nextDisabled={!canMoveFromStep12}
         />
       )}
 
-      {currentStep === 12 && (
+      {currentStep === 13 && (
         <SystemPromptStepPanel
           systemPromptText={systemPromptText}
           onSystemPromptTextChange={setSystemPromptText}
@@ -4213,13 +4222,13 @@ export function ConversionPage() {
             setSelectedPromptId(payload.promptId);
             setSelectedSystemPromptVersion(payload.systemPromptVersion);
           }}
-          onBack={() => setCurrentStep(11)}
+          onBack={() => setCurrentStep(12)}
           onNext={handleProceedFromSystemPromptStep}
-          nextDisabled={!canMoveFromStep12}
+          nextDisabled={!canMoveFromStep13}
         />
       )}
 
-      {currentStep === 13 && (
+      {currentStep === 14 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -4249,7 +4258,7 @@ export function ConversionPage() {
         onProviderChange={setEvaluateProvider}
         onClose={() => setIsEvaluateModalOpen(false)}
         onConfirm={() => {
-          const sourceRows = currentStep === 11 ? visibleRowsInRefinement : visibleRowsInEvaluation;
+          const sourceRows = currentStep === 12 ? visibleRowsInRefinement : visibleRowsInEvaluation;
           if (sourceRows.length === 0) {
             toast.error('No visible rows on this page to evaluate.');
             return;

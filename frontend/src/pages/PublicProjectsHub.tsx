@@ -10,7 +10,7 @@ type PublicProject = {
   versionName: string;
   ownerId: string;
   ownerName: string;
-  accessType?: 'public' | 'shared';
+  accessType?: 'public' | 'shared' | 'assigned';
   updatedAt: string;
   topLabel: {
     _id: string;
@@ -81,12 +81,14 @@ export const PublicProjectsHub: React.FC = () => {
                   <h2 className="text-base font-semibold text-slate-900 break-words">{project.projectName}</h2>
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-slate-500">Version: <span className="font-semibold text-slate-700">{project.versionName}</span></p>
-                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${project.accessType === 'shared'
-                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${project.accessType === 'assigned'
+                      ? 'border-violet-200 bg-violet-50 text-violet-700'
+                      : project.accessType === 'shared'
+                        ? 'border-blue-200 bg-blue-50 text-blue-700'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                       }`}
                     >
-                      {project.accessType === 'shared' ? 'Shared' : 'Public'}
+                      {project.accessType === 'assigned' ? 'Assigned' : project.accessType === 'shared' ? 'Shared' : 'Public'}
                     </span>
                   </div>
                   <p className="text-sm text-slate-600">Owner: <span className="font-medium text-slate-800">{project.ownerName}</span></p>
