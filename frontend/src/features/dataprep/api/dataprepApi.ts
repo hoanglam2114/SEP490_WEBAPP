@@ -2,6 +2,7 @@ import { apiService } from '../../../services/api';
 
 export const dataprepApi = {
   createDatasetVersion: apiService.createDatasetVersion,
+  updateDatasetVersionPrepareProgress: apiService.updateDatasetVersionPrepareProgress,
   getDatasetVersionDetail: apiService.getDatasetVersionDetail,
   deleteDatasetVersionItem: apiService.deleteDatasetVersionItem,
   updateDatasetVersionVisibility: apiService.updateDatasetVersionVisibility,

@@ -12,6 +12,7 @@ export interface IDatasetVersion extends Document {
   versionName: string;
   operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
   operationParams?: Record<string, unknown>;
+  prepareResumeStep?: number;
   promptId?: mongoose.Types.ObjectId;
   promptContentSnapshot?: string;
   similarityThreshold: number;
@@ -37,6 +38,7 @@ const DatasetVersionSchema = new Schema<IDatasetVersion>(
       default: 'legacy',
     },
     operationParams: { type: Schema.Types.Mixed },
+    prepareResumeStep: { type: Number, min: 1, max: 14, default: 5 },
     promptId: { type: mongoose.Schema.Types.ObjectId, ref: 'PromptLibraryItem' },
     promptContentSnapshot: { type: String },
     similarityThreshold: { type: Number, required: true, min: 0, max: 1 },

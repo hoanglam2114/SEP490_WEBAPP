@@ -11,7 +11,7 @@ type ExportPanelProps = {
   downloadScoreThreshold: number;
   setDownloadScoreThreshold: (value: number) => void;
   handleDownloadByScore: () => void | Promise<void>;
-  setCurrentStep: (step: 13) => void;
+  onBack: () => void;
 };
 
 export function ExportPanel({
@@ -22,7 +22,7 @@ export function ExportPanel({
   downloadScoreThreshold,
   setDownloadScoreThreshold,
   handleDownloadByScore,
-  setCurrentStep,
+  onBack,
 }: ExportPanelProps) {
   return (
     <div className="space-y-5">
@@ -87,7 +87,7 @@ export function ExportPanel({
 
       {conversionResult && <HuggingFaceUpload conversionResult={conversionResult} />}
 
-      <StepNavigation showBack onBack={() => setCurrentStep(13)} />
+      <StepNavigation showBack onBack={onBack} />
     </div>
   );
 }

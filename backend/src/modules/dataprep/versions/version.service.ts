@@ -13,6 +13,7 @@ export class VersionService {
     createdFromVersionId?: string;
     operationType: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
     operationParams?: Record<string, unknown>;
+    prepareResumeStep?: number;
     similarityThreshold: number;
     format?: 'openai' | 'alpaca';
     data: any[];
@@ -28,6 +29,7 @@ export class VersionService {
       createdFromVersionId,
       operationType,
       operationParams,
+      prepareResumeStep,
       similarityThreshold,
       format,
       data,
@@ -72,6 +74,9 @@ export class VersionService {
       versionName,
       operationType,
       operationParams,
+      prepareResumeStep: Number.isInteger(Number(prepareResumeStep))
+        ? Math.min(14, Math.max(1, Number(prepareResumeStep)))
+        : 5,
       similarityThreshold,
       totalSamples: data.length,
       promptId: promptId ? new mongoose.Types.ObjectId(promptId) : undefined,

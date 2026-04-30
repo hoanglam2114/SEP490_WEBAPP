@@ -336,6 +336,23 @@ const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'finish', label: 'Finish', steps: [13, 14] },
 ];
 
+const PREPARE_STAGE_RESUME_STEPS: Record<'labeling' | 'classification' | 'evaluation' | 'finish', Step> = {
+  labeling: 5,
+  classification: 8,
+  evaluation: 11,
+  finish: 13,
+};
+
+function getBackStep(step: Step): Step {
+  if (step === 1) {
+    return 1;
+  }
+  if (step === 5) {
+    return 2;
+  }
+  return (step - 1) as Step;
+}
+
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 2, label: 'Clean', group: 'Preprocessing' },
   { id: 3, label: 'Find K', group: 'Preprocessing' },
@@ -449,7 +466,7 @@ function parseThinkContent(content: string): { thinkText: string; assistantText:
   };
 }
 
-function normalizeOpenAIConversations(rawData: any[]): Array<{ conversation_id: string; messages: Array<{ role: string; content: string }> }> {
+function normalizeOpenAIConversations(rawData: any[]): Array<{ conversation_id: string; messages: Array<{ role: string; content: string }>; cluster?: number }> {
   if (rawData.every((item) => Array.isArray(item?.messages))) {
     return rawData.map((item, index) => ({
       conversation_id: String(item?.conversation_id || `conv-${index + 1}`),
@@ -457,6 +474,7 @@ function normalizeOpenAIConversations(rawData: any[]): Array<{ conversation_id: 
         role: String(msg?.role || ''),
         content: String(msg?.content || ''),
       })),
+      ...(item?.cluster !== undefined ? { cluster: Number(item.cluster) } : {}),
     }));
   }
 
@@ -467,12 +485,16 @@ function normalizeOpenAIConversations(rawData: any[]): Array<{ conversation_id: 
   }
 
   const grouped = new Map<string, any[]>();
+  const clusterByConversation = new Map<string, number>();
   rawData.forEach((item) => {
     const key = String(item.conversation_id);
     if (!grouped.has(key)) {
       grouped.set(key, []);
     }
     grouped.get(key)!.push(item);
+    if (item?.cluster !== undefined && Number.isFinite(Number(item.cluster))) {
+      clusterByConversation.set(key, Number(item.cluster));
+    }
   });
 
   return Array.from(grouped.entries()).map(([conversationId, messages]) => {
@@ -488,6 +510,7 @@ function normalizeOpenAIConversations(rawData: any[]): Array<{ conversation_id: 
         role: String(msg.role || ''),
         content: String(msg.content || ''),
       })),
+      ...(clusterByConversation.has(conversationId) ? { cluster: clusterByConversation.get(conversationId) } : {}),
     };
   });
 }
@@ -560,6 +583,72 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
       groupId: (item as any).cluster,
     };
   });
+}
+
+function buildClusterStateFromData(
+  data: any[],
+  mode: PreviewMode,
+  removeThinkTags: boolean
+): { rowClusterMap: Record<string, number>; clusterGroups: ClusterGroup[] } {
+  const rows = buildDisplayRows(data, mode, removeThinkTags);
+  const rowClusterMap: Record<string, number> = {};
+  const counts = new Map<number, number>();
+
+  rows.forEach((row) => {
+    const groupId = Number(row.groupId);
+    if (!Number.isFinite(groupId)) {
+      return;
+    }
+    rowClusterMap[row.id] = groupId;
+    counts.set(groupId, (counts.get(groupId) || 0) + 1);
+  });
+
+  const clusterGroups = Array.from(counts.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([groupId, count]) => ({
+      groupId,
+      count,
+      label: `Cluster ${groupId}`,
+    }));
+
+  return { rowClusterMap, clusterGroups };
+}
+
+function buildClusterGroupsFromOperationParams(operationParams: Record<string, any> | null | undefined): ClusterGroup[] {
+  const rawClusters = Array.isArray(operationParams?.clusters) ? operationParams.clusters : [];
+  return rawClusters
+    .map((group: any) => {
+      const groupId = Number(group?.groupId);
+      const count = Number(group?.count);
+      if (!Number.isFinite(groupId) || !Number.isFinite(count)) {
+        return null;
+      }
+
+      return {
+        groupId,
+        count,
+        label: String(group?.label || `Cluster ${groupId}`),
+        avgSimilarity: Number.isFinite(Number(group?.avgSimilarity)) ? Number(group.avgSimilarity) : null,
+      } as ClusterGroup;
+    })
+    .filter((group): group is ClusterGroup => Boolean(group));
+}
+
+function serializeVersionItemsForDisplay(
+  items: Array<{ sampleKey: string; data: Record<string, any> }>,
+  mode: PreviewMode
+): any[] {
+  if (mode === 'openai') {
+    return items.map((item) => ({
+      conversation_id: item.sampleKey,
+      ...(item.data || {}),
+    }));
+  }
+
+  return items.map((item) => ({
+    id: item.sampleKey,
+    ...(item.data || {}),
+  }));
 }
 
 function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; lockedToStep?: Step | null }) {
@@ -2173,6 +2262,64 @@ export function ConversionPage() {
     }
   };
 
+  const hydrateClusterStateFromVersion = async (versionId: string): Promise<boolean> => {
+    const detail = await dataprepApi.getDatasetVersionDetail(
+      versionId,
+      false,
+      isProjectLabelingRoute
+    );
+    const versionData = serializeVersionItemsForDisplay(detail.items, previewMode);
+    const clusterState = buildClusterStateFromData(
+      versionData,
+      previewMode,
+      conversionOptions.removeThinkTags ?? true
+    );
+    const metadataGroups = buildClusterGroupsFromOperationParams(detail?.datasetVersion?.operationParams);
+    const nextGroups = metadataGroups.length ? metadataGroups : clusterState.clusterGroups;
+
+    setSampleIdMap((prev) => ({
+      ...prev,
+      ...Object.fromEntries(detail.items.map((item) => [item.sampleKey, item.sampleId])),
+    }));
+
+    if (Object.keys(clusterState.rowClusterMap).length) {
+      setRowClusterMap((prev) => ({ ...prev, ...clusterState.rowClusterMap }));
+    }
+
+    if (nextGroups.length) {
+      setClusterGroups(nextGroups);
+      return true;
+    }
+
+    return false;
+  };
+
+  useEffect(() => {
+    if (currentStep !== 5 || !currentDatasetVersionId || clusterGroups.length > 0) {
+      return;
+    }
+
+    let disposed = false;
+    const hydrate = async () => {
+      try {
+        const hasClusters = await hydrateClusterStateFromVersion(currentDatasetVersionId);
+        if (!disposed && !hasClusters) {
+          toast.error('No clusters were found in this dataset version. Please return to K-means Cluster and run clustering again.');
+        }
+      } catch (error: any) {
+        if (!disposed) {
+          toast.error(error?.response?.data?.error || error?.message || 'Failed to load saved clusters.');
+        }
+      }
+    };
+
+    hydrate();
+
+    return () => {
+      disposed = true;
+    };
+  }, [clusterGroups.length, conversionOptions.removeThinkTags, currentDatasetVersionId, currentStep, isProjectLabelingRoute, previewMode]);
+
   const allRows = useMemo(
     () => buildDisplayRows(conversionResult?.data || [], previewMode, conversionOptions.removeThinkTags ?? true),
     [conversionResult?.data, conversionOptions.removeThinkTags, previewMode]
@@ -2257,6 +2404,8 @@ export function ConversionPage() {
     projectId?: string;
     parentVersionId?: string;
     operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+    operationParams?: Record<string, any>;
+    prepareResumeStep?: Step;
   } | null => {
     if (!conversionResult) {
       return null;
@@ -2303,6 +2452,20 @@ export function ConversionPage() {
       projectId: routeProjectId || undefined,
       parentVersionId: currentDatasetVersionId || undefined,
       operationType,
+      operationParams: {
+        stage: currentStep <= 4 ? 'preprocessing' : undefined,
+        clusters: clusterGroups.map((group) => ({
+          groupId: group.groupId,
+          count: group.count,
+          label: group.label,
+          avgSimilarity: group.avgSimilarity ?? null,
+        })),
+        clusterK,
+        dbscanEps,
+        dbscanMinSamples,
+        filterThreshold,
+      },
+      prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.labeling,
     };
   };
 
@@ -2321,6 +2484,10 @@ export function ConversionPage() {
         false,
         isProjectLabelingRoute
       );
+      const restoredGroups = buildClusterGroupsFromOperationParams(detail?.datasetVersion?.operationParams);
+      if (restoredGroups.length) {
+        setClusterGroups(restoredGroups);
+      }
       detail.items.forEach((item) => {
         nextMap[item.sampleKey] = item.sampleId;
       });
@@ -2533,10 +2700,17 @@ export function ConversionPage() {
       if (!payload || !payload.data.length) {
         throw new Error('No converted rows available to version.');
       }
+      if (currentStep === 4 && !payload.data.some((item) => Number.isFinite(Number(item?.data?.cluster)))) {
+        throw new Error('Cluster assignments were not saved on rows. Please run K-means clustering again before continuing.');
+      }
 
       return dataprepApi.createDatasetVersion(payload);
     },
     onSuccess: (response) => {
+      const metadataGroups = buildClusterGroupsFromOperationParams(response?.datasetVersion?.operationParams as any);
+      if (metadataGroups.length) {
+        setClusterGroups(metadataGroups);
+      }
       setActiveProjectOwnerId(currentUserId || null);
       setCurrentDatasetVersionId(response.datasetVersion._id);
       setIsCurrentVersionPublic(Boolean(response?.datasetVersion?.isPublic));
@@ -2831,6 +3005,9 @@ export function ConversionPage() {
           ...prev,
           ...Object.fromEntries(historyEntries),
         }));
+        setCurrentDatasetVersionId(null);
+        setDatasetVersionPromptId('');
+        setSampleIdMap({});
       }
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
@@ -3031,6 +3208,10 @@ export function ConversionPage() {
         acc[item.sampleKey] = item.sampleId;
         return acc;
       }, {});
+      const restoredGroups = buildClusterGroupsFromOperationParams(detail?.datasetVersion?.operationParams);
+      if (restoredGroups.length) {
+        setClusterGroups(restoredGroups);
+      }
 
       setSampleIdMap((prev) => ({ ...prev, ...nextMap }));
 
@@ -3066,6 +3247,8 @@ export function ConversionPage() {
             projectId: payload.projectId,
             parentVersionId: payload.parentVersionId,
             operationType: payload.operationType,
+            operationParams: payload.operationParams,
+            prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.finish,
           });
           setCurrentDatasetVersionId(created.datasetVersion._id);
           setSampleIdMap(created.sampleIdMap || {});
@@ -3384,6 +3567,11 @@ export function ConversionPage() {
         totalTokensEstimate: 0,
       },
     };
+    const restoredClusterState = buildClusterStateFromData(
+      safeData,
+      normalizedFormat,
+      conversionOptions.removeThinkTags ?? true
+    );
 
     setConversionResult(restoredResult);
     setOriginalConvertedResult(restoredResult);
@@ -3394,8 +3582,8 @@ export function ConversionPage() {
     setSystemPromptText('');
     setCurrentDatasetVersionId(payload.datasetVersionId || null);
     setSampleIdMap(payload.sampleIdMap || {});
-    setClusterGroups([]);
-    setRowClusterMap({});
+    setClusterGroups(restoredClusterState.clusterGroups);
+    setRowClusterMap(restoredClusterState.rowClusterMap);
     setSelectedClusterIds([]);
     setAutoLabelSuggestions([]);
     setAutoLabelsSaved(false);
@@ -3413,8 +3601,8 @@ export function ConversionPage() {
     // Clear consumed router state to avoid accidental re-processing on future renders.
     navigate(location.pathname, { replace: true, state: null });
 
-    toast.success(payload.startStep === 7 ? 'Project loaded. Continue at Labeling.' : 'Project loaded. Continue evaluation.');
-  }, [currentUserId, location.pathname, location.state, navigate, setProjectName, updateConversionOptions]);
+    toast.success(`Project loaded. Continue prepare at step ${payload.startStep || 10}.`);
+  }, [conversionOptions.removeThinkTags, currentUserId, location.pathname, location.state, navigate, setProjectName, updateConversionOptions]);
 
   useEffect(() => {
     if (!isProjectLabelingRoute || !routeProjectId) {
@@ -3585,6 +3773,38 @@ export function ConversionPage() {
   const canMoveFromStep12 = !!conversionResult;
   const canMoveFromStep13 = !!conversionResult;
 
+  const persistPrepareProgress = async (prepareResumeStep: Step): Promise<boolean> => {
+    try {
+      if (!currentDatasetVersionId) {
+        const payload = buildDatasetVersionPayload();
+        if (!payload || !payload.data.length) {
+          return true;
+        }
+        const created = await dataprepApi.createDatasetVersion({
+          ...payload,
+          prepareResumeStep,
+        });
+        setCurrentDatasetVersionId(created.datasetVersion._id);
+        setSampleIdMap(created.sampleIdMap || {});
+        setDatasetVersionPromptId('');
+        return true;
+      }
+
+      await dataprepApi.updateDatasetVersionPrepareProgress(currentDatasetVersionId, prepareResumeStep);
+      return true;
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to save prepare progress.');
+      return false;
+    }
+  };
+
+  const continuePrepareAtStageStart = async (prepareResumeStep: Step) => {
+    const saved = await persistPrepareProgress(prepareResumeStep);
+    if (saved) {
+      setCurrentStep(prepareResumeStep);
+    }
+  };
+
   useEffect(() => {
     if (isGuestMode && currentStep !== 7) {
       setCurrentStep(7);
@@ -3670,6 +3890,11 @@ export function ConversionPage() {
             data: payload.data,
             promptId: selectedPromptId,
             promptContentSnapshot: effectivePromptContent || undefined,
+            projectId: payload.projectId,
+            parentVersionId: payload.parentVersionId,
+            operationType: payload.operationType,
+            operationParams: payload.operationParams,
+            prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.finish,
           });
 
           setCurrentDatasetVersionId(created.datasetVersion._id);
@@ -3966,7 +4191,7 @@ export function ConversionPage() {
               </button>
             </div>
           </div>
-          <StepNavigation showBack showNext onBack={() => setCurrentStep(1)} onNext={() => setCurrentStep(3)} nextDisabled={!canMoveFromStep2} />
+          <StepNavigation showBack showNext onBack={() => setCurrentStep(getBackStep(2))} onNext={() => setCurrentStep(3)} nextDisabled={!canMoveFromStep2} />
         </div>
       )}
 
@@ -3982,7 +4207,7 @@ export function ConversionPage() {
           isVisualizing={isVisualizing}
           hasData={Boolean(conversionResult?.data?.length)}
           onVisualize={handleVisualize}
-          onBack={() => setCurrentStep(2)}
+          onBack={() => setCurrentStep(getBackStep(3))}
           onNext={() => setCurrentStep(4)}
           nextDisabled={!canMoveFromStep3}
         />
@@ -4013,7 +4238,7 @@ export function ConversionPage() {
           onDeduplicate={() => deduplicateMutation.mutate()}
           onResetFiltering={handleResetFiltering}
           onOpenCompareOverlay={handleOpenCompareOverlay}
-          onBack={() => setCurrentStep(3)}
+          onBack={() => setCurrentStep(getBackStep(4))}
           onNext={handleProceedFromClusterStep}
           hasConversionResult={Boolean(conversionResult)}
           isClustering={clusterMutation.isPending}
@@ -4033,7 +4258,7 @@ export function ConversionPage() {
           onChangeLabel={handleChangeAutoLabelSuggestion}
           onLabelWithAI={() => setIsAutoLabelModalOpen(true)}
           onSave={() => autoLabelSaveMutation.mutate()}
-          onBack={() => setCurrentStep(4)}
+          onBack={() => setCurrentStep(getBackStep(5))}
           onNext={() => setCurrentStep(6)}
           isGenerating={autoLabelPreviewMutation.isPending}
           isSaving={autoLabelSaveMutation.isPending}
@@ -4053,7 +4278,7 @@ export function ConversionPage() {
           selectedSharedUserId={selectedSharedUserId}
           isUpdatingVersionSharing={isUpdatingVersionSharing}
           onUpdateVersionSharing={handleUpdateVersionSharing}
-          onBack={() => setCurrentStep(5)}
+          onBack={() => setCurrentStep(getBackStep(6))}
           onNext={() => setCurrentStep(7)}
         />
       )}
@@ -4080,8 +4305,8 @@ export function ConversionPage() {
                     { role: 'assistant' as const, content: row.assistantText || row.output },
                   ],
               }))}
-              onBack={() => setCurrentStep(isGuestMode ? 7 : 6)}
-              onNext={() => setCurrentStep(8)}
+              onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
+              onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
               showBackButton={!isGuestMode}
               showNextButton={!isGuestMode}
               nextDisabled={isGuestMode}
@@ -4122,7 +4347,7 @@ export function ConversionPage() {
               mode={previewMode}
             />
           )}
-          onBack={() => setCurrentStep(7)}
+          onBack={() => setCurrentStep(getBackStep(8))}
           onNext={() => setCurrentStep(9)}
           nextDisabled={!canMoveFromStep8}
         />
@@ -4131,7 +4356,7 @@ export function ConversionPage() {
       {currentStep === 9 && (
         <SubjectDistributionPanel
           versionId={currentDatasetVersionId || ''}
-          onBack={() => setCurrentStep(8)}
+          onBack={() => setCurrentStep(getBackStep(9))}
           onNext={() => setCurrentStep(10)}
           nextDisabled={!canMoveFromStep9}
         />
@@ -4142,8 +4367,8 @@ export function ConversionPage() {
           versionId={currentDatasetVersionId || ''}
           alreadyApplied={balanceApplied}
           onApply={handleApplySubjectBalance}
-          onBack={() => setCurrentStep(9)}
-          onNext={() => setCurrentStep(11)}
+          onBack={() => setCurrentStep(getBackStep(10))}
+          onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation)}
           nextDisabled={!canMoveFromStep10}
         />
       )}
@@ -4169,7 +4394,7 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(10)}
+          onBack={() => setCurrentStep(getBackStep(11))}
           onNext={() => setCurrentStep(12)}
           nextDisabled={!canMoveFromStep11}
         />
@@ -4205,8 +4430,8 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(11)}
-          onNext={() => setCurrentStep(13)}
+          onBack={() => setCurrentStep(getBackStep(12))}
+          onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.finish)}
           nextDisabled={!canMoveFromStep12}
         />
       )}
@@ -4222,7 +4447,7 @@ export function ConversionPage() {
             setSelectedPromptId(payload.promptId);
             setSelectedSystemPromptVersion(payload.systemPromptVersion);
           }}
-          onBack={() => setCurrentStep(12)}
+          onBack={() => setCurrentStep(getBackStep(13))}
           onNext={handleProceedFromSystemPromptStep}
           nextDisabled={!canMoveFromStep13}
         />
@@ -4247,7 +4472,7 @@ export function ConversionPage() {
             downloadScoreThreshold={downloadScoreThreshold}
             setDownloadScoreThreshold={setDownloadScoreThreshold}
             handleDownloadByScore={handleDownloadByScore}
-            setCurrentStep={setCurrentStep}
+            onBack={() => setCurrentStep(getBackStep(14))}
           />
         </div>
       )}

@@ -323,6 +323,10 @@ export class EvaluationController {
         | 'refine_approved'
         | 'manual_edit'
         | 'legacy';
+      const requestedPrepareResumeStep = Number(req.body?.prepareResumeStep);
+      const prepareResumeStep = Number.isInteger(requestedPrepareResumeStep)
+        ? Math.min(14, Math.max(1, requestedPrepareResumeStep))
+        : 5;
       const normalizedSourceType = req.body?.sourceType === 'lesson' ? 'lesson' : 'chat';
 
       const existingProject = requestedProjectId
@@ -361,6 +365,7 @@ export class EvaluationController {
         versionName,
         operationType: requestedOperationType,
         operationParams: req.body?.operationParams,
+        prepareResumeStep,
         similarityThreshold: threshold,
         totalSamples: data.length,
         promptId: normalizedPromptId,
@@ -658,6 +663,7 @@ export class EvaluationController {
         const summary = {
           _id: String(version._id),
           versionName: version.versionName,
+          prepareResumeStep: Number((version as any).prepareResumeStep || 5),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,
@@ -1029,6 +1035,8 @@ export class EvaluationController {
           isPublic: Boolean((version as any).isPublic),
           sharedWithUsers: await buildSharedUserDtos(version),
           operationType: version.operationType || 'legacy',
+          operationParams: version.operationParams || {},
+          prepareResumeStep: Number((version as any).prepareResumeStep || 5),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,
@@ -1039,6 +1047,63 @@ export class EvaluationController {
       console.error('Get dataset version detail error:', error);
       res.status(500).json({
         error: 'Lấy chi tiết dataset version thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async updateDatasetVersionPrepareProgress(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const prepareResumeStep = Number(req.body?.prepareResumeStep);
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      if (!Number.isInteger(prepareResumeStep) || prepareResumeStep < 1 || prepareResumeStep > 14) {
+        res.status(400).json({ error: 'prepareResumeStep phải là số nguyên từ 1 đến 14.' });
+        return;
+      }
+
+      const updated = await DatasetVersion.findOneAndUpdate(
+        { _id: id, ownerId },
+        { $set: { prepareResumeStep } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      if (updated.projectId) {
+        await DataPrepProject.updateOne(
+          { _id: updated.projectId, ownerId },
+          { $set: { latestVersionId: updated._id } }
+        );
+      }
+
+      res.json({
+        message: 'Đã cập nhật tiến độ prepare.',
+        datasetVersion: {
+          _id: String(updated._id),
+          projectName: updated.projectName,
+          versionName: updated.versionName,
+          prepareResumeStep: Number((updated as any).prepareResumeStep || prepareResumeStep),
+        },
+      });
+    } catch (error: any) {
+      console.error('Update dataset version prepare progress error:', error);
+      res.status(500).json({
+        error: 'Cập nhật tiến độ prepare thất bại',
         details: error.message,
       });
     }

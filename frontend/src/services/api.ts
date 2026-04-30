@@ -59,6 +59,8 @@ type DatasetVersionDetailResponse = {
     isPublic?: boolean;
     sharedWithUsers?: ShareUser[];
     operationType?: string;
+    operationParams?: Record<string, any>;
+    prepareResumeStep?: number;
     similarityThreshold: number;
     totalSamples: number;
     createdAt: string;
@@ -536,6 +538,7 @@ export const apiService = {
     parentVersionId?: string;
     operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
     operationParams?: Record<string, any>;
+    prepareResumeStep?: number;
     similarityThreshold: number;
     format: 'openai' | 'alpaca';
     data: Array<Record<string, any>>;
@@ -552,6 +555,8 @@ export const apiService = {
       versionName: string;
       isPublic?: boolean;
       operationType?: string;
+      operationParams?: Record<string, any>;
+      prepareResumeStep?: number;
       similarityThreshold: number;
       totalSamples: number;
       createdAt: string;
@@ -564,6 +569,19 @@ export const apiService = {
     sampleIdMap: Record<string, string>;
   }> => {
     const response = await api.post('/dataprep/versions', payload);
+    return response.data;
+  },
+
+  updateDatasetVersionPrepareProgress: async (id: string, prepareResumeStep: number): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      projectName: string;
+      versionName: string;
+      prepareResumeStep: number;
+    };
+  }> => {
+    const response = await api.patch(`/dataprep/versions/${id}/prepare-progress`, { prepareResumeStep });
     return response.data;
   },
 
@@ -796,6 +814,7 @@ export const apiService = {
         similarityThreshold: number;
         totalSamples: number;
         createdAt: string;
+        prepareResumeStep?: number;
         evaluatedCount: number;
         avgOverall: number | null;
       }>;
