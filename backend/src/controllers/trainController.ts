@@ -11,22 +11,27 @@ import { TrainingHistory } from '../models/TrainingHistory';
 import path from 'path';
 import { isZipFile, extractForTraining, cleanupTempDir, DatasetMetadata } from '../services/zipService';
 import { getAuthUserId } from '../utils/auth';
+import { configService } from '../services/configService';
 dotenv.config();
 
-/**
- * GPU Service URLs — set GPU_SERVICE_URL in backend/.env (comma-separated for multiple workers)
- */
-const GPU_SERVICE_URLS = (process.env.GPU_SERVICE_URL || 'http://localhost:5000').split(',').map(url => url.trim());
-
 class WorkerManager {
-  private workers: { url: string; activeJobs: number }[];
+  private workers: { url: string; activeJobs: number }[] = [];
 
-  constructor(urls: string[]) {
-    this.workers = urls.map(url => ({ url, activeJobs: 0 }));
+  constructor() {}
+
+  // Sync workers array with current config
+  private syncWorkers() {
+    const currentUrls = configService.getGpuUrls();
+    // Keep active jobs for existing urls, add new ones, remove missing ones
+    this.workers = currentUrls.map(url => {
+      const existing = this.workers.find(w => w.url === url);
+      return existing || { url, activeJobs: 0 };
+    });
   }
 
   // Pick the worker with the fewest active jobs
   getNextWorker(): string {
+    this.syncWorkers();
     if (this.workers.length === 0) return 'http://localhost:5000';
     
     // Sort by active jobs and pick the first one
@@ -35,21 +40,24 @@ class WorkerManager {
   }
 
   incrementJobs(url: string) {
+    this.syncWorkers();
     const worker = this.workers.find(w => w.url === url);
     if (worker) worker.activeJobs++;
   }
 
   decrementJobs(url: string) {
+    this.syncWorkers();
     const worker = this.workers.find(w => w.url === url);
     if (worker && worker.activeJobs > 0) worker.activeJobs--;
   }
 
   getUrls() {
+    this.syncWorkers();
     return this.workers.map(w => w.url);
   }
 }
 
-const workerManager = new WorkerManager(GPU_SERVICE_URLS);
+const workerManager = new WorkerManager();
 
 const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '';
 const GOOGLE_DRIVE_CREDENTIALS = process.env.GOOGLE_DRIVE_CREDENTIALS || '';

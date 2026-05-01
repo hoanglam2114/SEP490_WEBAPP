@@ -47,6 +47,7 @@ import {
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/authMiddleware';
 import labelRoutes from './labelRoutes';
 import dataprepRoutes from './dataprepRoutes';
+import { getGpuConfig, updateGpuConfig } from '../controllers/configController';
 
 
 const router = express.Router();
@@ -138,6 +139,10 @@ router.post('/cluster/filter', clusterFilter);
 router.post('/cluster/remove-noise', removeNoise);
 router.post('/cluster/deduplicate', deduplicate);
 router.delete('/cluster/cache', deleteClusterCache);
+
+// Config Routes
+router.get('/config/gpu-url', getGpuConfig);
+router.post('/config/gpu-url', updateGpuConfig);
 
 // Training Routes
 router.post('/train/start', upload.single('dataset_file'), startTraining);

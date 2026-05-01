@@ -7,17 +7,9 @@ import { ChatHistory } from '../models/ChatHistory';
 import { OpenRouterProvider } from '../services/providers/OpenRouterProvider';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
 import { getAuthUserId } from '../utils/auth';
+import { configService } from '../services/configService';
 
-const rawGpuUrl = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
-// Split by comma and take the first one, or handle based on instanceId
-const gpuServiceUrls = rawGpuUrl.split(',').map(url => url.trim().replace(/\/$/, ''));
-
-const getGpuUrl = (instanceId?: number) => {
-  if (instanceId && instanceId > 0 && instanceId <= gpuServiceUrls.length) {
-    return gpuServiceUrls[instanceId - 1];
-  }
-  return gpuServiceUrls[0];
-};
+const getGpuUrl = (instanceId?: number) => configService.getGpuUrl(instanceId);
 
 type GpuHistoryMessage = {
   role: 'user' | 'assistant';

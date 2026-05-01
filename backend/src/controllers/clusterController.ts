@@ -1,10 +1,11 @@
 import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { GpuClient } from '../modules/dataprep/gpu/gpuClient';
+import { configService } from '../services/configService';
 dotenv.config();
 
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
-const gpuClient = new GpuClient(GPU_SERVICE_URL);
+const getGpuUrl = () => configService.getGpuUrl();
+const getGpuClient = () => new GpuClient(getGpuUrl());
 
 /**
  * POST /api/cluster
@@ -56,9 +57,9 @@ export const clusterData = async (req: Request, res: Response) => {
 
     // Existing logic for OpenAI format (calling external service)
     const { k, eps, min_samples } = req.body;
-    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${GPU_SERVICE_URL}/api/cluster`);
+    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${getGpuUrl()}/api/cluster`);
 
-    const gpuResponse = await gpuClient.cluster({ data, k, eps, min_samples });
+    const gpuResponse = await getGpuClient().cluster({ data, k, eps, min_samples });
     console.log(`[Backend] Cluster response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`);
 
     return res.status(gpuResponse.status).json(gpuResponse.data);
@@ -86,9 +87,9 @@ export const clusterFilter = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing or empty data array' });
     }
 
-    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/filter`);
+    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${getGpuUrl()}/api/cluster/filter`);
 
-    const gpuResponse = await gpuClient.filter({ data, threshold });
+    const gpuResponse = await getGpuClient().filter({ data, threshold });
     console.log(`[Backend] Filter response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`);
 
     return res.status(gpuResponse.status).json(gpuResponse.data);
@@ -108,9 +109,9 @@ export const clusterFilter = async (req: Request, res: Response) => {
  */
 export const removeNoise = async (_req: Request, res: Response) => {
   try {
-    console.log(`[Backend] Removing noise via GPU service cache → ${GPU_SERVICE_URL}/api/cluster/remove-noise`);
+    console.log(`[Backend] Removing noise via GPU service cache → ${getGpuUrl()}/api/cluster/remove-noise`);
 
-    const gpuResponse = await gpuClient.removeNoise();
+    const gpuResponse = await getGpuClient().removeNoise();
     return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] removeNoise error:', err);
@@ -127,9 +128,9 @@ export const removeNoise = async (_req: Request, res: Response) => {
 export const deduplicate = async (req: Request, res: Response) => {
   try {
     const { threshold } = req.body;
-    console.log(`[Backend] Deduplicating via GPU service cache with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/deduplicate`);
+    console.log(`[Backend] Deduplicating via GPU service cache with threshold ${threshold ?? 0.9} → ${getGpuUrl()}/api/cluster/deduplicate`);
 
-    const gpuResponse = await gpuClient.deduplicate({ threshold });
+    const gpuResponse = await getGpuClient().deduplicate({ threshold });
     return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] deduplicate error:', err);
@@ -147,9 +148,9 @@ export const deduplicate = async (req: Request, res: Response) => {
  */
 export const deleteClusterCache = async (_req: Request, res: Response) => {
   try {
-    console.log(`[Backend] Clearing Cluster Cache → ${GPU_SERVICE_URL}/api/cluster/cache`);
+    console.log(`[Backend] Clearing Cluster Cache → ${getGpuUrl()}/api/cluster/cache`);
 
-    const gpuResponse = await gpuClient.clearCache();
+    const gpuResponse = await getGpuClient().clearCache();
     console.log(`[Backend] Cache Clear response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data)}`);
 
     return res.status(gpuResponse.status).json(gpuResponse.data);
@@ -182,10 +183,10 @@ export const clusterVisualize = async (req: Request, res: Response) => {
     }
 
     console.log(
-      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${GPU_SERVICE_URL}/api/cluster/visualize`
+      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${getGpuUrl()}/api/cluster/visualize`
     );
 
-    const gpuResponse = await gpuClient.visualize({ data, max_k, eps, min_samples });
+    const gpuResponse = await getGpuClient().visualize({ data, max_k, eps, min_samples });
     console.log(
       `[Backend] Visualize response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`
     );

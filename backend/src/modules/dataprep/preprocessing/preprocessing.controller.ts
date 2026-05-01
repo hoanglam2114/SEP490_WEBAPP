@@ -4,10 +4,10 @@ import { DataPrepPreprocessingService } from './preprocessing.service';
 import { versionService } from '../versions/version.service';
 import { getAuthUserId } from '../../../utils/auth';
 import dotenv from 'dotenv';
+import { configService } from '../../../services/configService';
 
 dotenv.config();
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
-const gpuClient = new GpuClient(GPU_SERVICE_URL);
+const getGpuClient = () => new GpuClient(configService.getGpuUrl());
 const preprocessingService = new DataPrepPreprocessingService();
 
 export class DataPrepPreprocessingController {
@@ -41,7 +41,7 @@ export class DataPrepPreprocessingController {
   async visualize(req: Request, res: Response): Promise<void> {
     try {
       await this.hydrateAndGetVersion(req, true);
-      const gpuResponse = await gpuClient.visualize(req.body);
+      const gpuResponse = await getGpuClient().visualize(req.body);
       res.status(gpuResponse.status).json(gpuResponse.data);
     } catch (error: any) {
       this.handleError(res, error);
@@ -51,7 +51,7 @@ export class DataPrepPreprocessingController {
   async cluster(req: Request, res: Response): Promise<void> {
     try {
       const version = await this.hydrateAndGetVersion(req);
-      const gpuResponse = await gpuClient.cluster(req.body);
+      const gpuResponse = await getGpuClient().cluster(req.body);
 
       if (gpuResponse.status === 200 && version) {
         const result = await versionService.createVersion({
@@ -78,7 +78,7 @@ export class DataPrepPreprocessingController {
   async filter(req: Request, res: Response): Promise<void> {
     try {
       const version = await this.hydrateAndGetVersion(req);
-      const gpuResponse = await gpuClient.filter(req.body);
+      const gpuResponse = await getGpuClient().filter(req.body);
 
       if (gpuResponse.status === 200 && version) {
         const result = await versionService.createVersion({
@@ -105,12 +105,12 @@ export class DataPrepPreprocessingController {
   async removeNoise(req: Request, res: Response): Promise<void> {
     try {
       const version = await this.hydrateAndGetVersion(req);
-      const cacheWarmupResponse = await gpuClient.cluster(req.body);
+      const cacheWarmupResponse = await getGpuClient().cluster(req.body);
       if (cacheWarmupResponse.status < 200 || cacheWarmupResponse.status >= 300) {
         res.status(cacheWarmupResponse.status).json(cacheWarmupResponse.data);
         return;
       }
-      const gpuResponse = await gpuClient.removeNoise();
+      const gpuResponse = await getGpuClient().removeNoise();
 
       if (gpuResponse.status === 200 && version) {
         const result = await versionService.createVersion({
@@ -137,12 +137,12 @@ export class DataPrepPreprocessingController {
   async deduplicate(req: Request, res: Response): Promise<void> {
     try {
       const version = await this.hydrateAndGetVersion(req);
-      const cacheWarmupResponse = await gpuClient.cluster(req.body);
+      const cacheWarmupResponse = await getGpuClient().cluster(req.body);
       if (cacheWarmupResponse.status < 200 || cacheWarmupResponse.status >= 300) {
         res.status(cacheWarmupResponse.status).json(cacheWarmupResponse.data);
         return;
       }
-      const gpuResponse = await gpuClient.deduplicate(req.body);
+      const gpuResponse = await getGpuClient().deduplicate(req.body);
 
       if (gpuResponse.status === 200 && version) {
         const result = await versionService.createVersion({
@@ -168,7 +168,7 @@ export class DataPrepPreprocessingController {
 
   async clearCache(_req: Request, res: Response): Promise<void> {
     try {
-      const gpuResponse = await gpuClient.clearCache();
+      const gpuResponse = await getGpuClient().clearCache();
       res.status(gpuResponse.status).json(gpuResponse.data);
     } catch (error: any) {
       this.handleError(res, error);
