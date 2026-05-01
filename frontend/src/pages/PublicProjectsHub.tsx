@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, ThumbsUp } from 'lucide-react';
 import { apiService } from '../services/api';
+import { useAuthStore } from '../store/authStore';
 
 type PublicProject = {
   id: string;
@@ -10,7 +11,7 @@ type PublicProject = {
   versionName: string;
   ownerId: string;
   ownerName: string;
-  accessType?: 'public' | 'shared' | 'assigned';
+  accessType?: 'public' | 'shared' | 'assigned' | 'owned';
   updatedAt: string;
   topLabel: {
     _id: string;
@@ -29,13 +30,38 @@ function formatDateTime(value?: string): string {
 
 export const PublicProjectsHub: React.FC = () => {
   const navigate = useNavigate();
+  const user = useAuthStore((state) => state.user);
+  const token = useAuthStore((state) => state.token);
+  const [activeTab, setActiveTab] = useState<'accessible' | 'owned'>('accessible');
+  const currentUserId = String(user?.id || '');
 
   const hubQuery = useQuery<{ projects: PublicProject[] }>({
-    queryKey: ['public-projects-hub'],
+    queryKey: ['public-projects-hub', currentUserId],
     queryFn: () => apiService.getPublicProjectsHub(),
+    enabled: Boolean(currentUserId && token),
   });
 
   const projects = hubQuery.data?.projects || [];
+  const accessibleProjects = projects.filter((project) => project.accessType !== 'owned');
+  const ownedProjects = projects.filter((project) => project.accessType === 'owned');
+  const visibleProjects = activeTab === 'owned' ? ownedProjects : accessibleProjects;
+  const emptyMessage = activeTab === 'owned'
+    ? 'No assigned or shared datasets owned by you.'
+    : 'No public, shared, or assigned projects found.';
+
+  const accessBadgeClass = (accessType?: PublicProject['accessType']) => {
+    if (accessType === 'assigned') return 'border-violet-200 bg-violet-50 text-violet-700';
+    if (accessType === 'shared') return 'border-blue-200 bg-blue-50 text-blue-700';
+    if (accessType === 'owned') return 'border-amber-200 bg-amber-50 text-amber-700';
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  };
+
+  const accessBadgeLabel = (accessType?: PublicProject['accessType']) => {
+    if (accessType === 'assigned') return 'Assigned';
+    if (accessType === 'shared') return 'Shared';
+    if (accessType === 'owned') return 'Owned';
+    return 'Public';
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -65,30 +91,66 @@ export const PublicProjectsHub: React.FC = () => {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-6">
+        <div className="mb-5 inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setActiveTab('accessible')}
+            className={`rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
+              activeTab === 'accessible'
+                ? 'bg-slate-900 text-white'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            Shared / Assigned
+            <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+              activeTab === 'accessible' ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
+            }`}
+            >
+              {accessibleProjects.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('owned')}
+            className={`rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
+              activeTab === 'owned'
+                ? 'bg-slate-900 text-white'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            My Assignments
+            <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
+              activeTab === 'owned' ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
+            }`}
+            >
+              {ownedProjects.length}
+            </span>
+          </button>
+        </div>
+
         {hubQuery.isLoading && (
           <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">Loading projects...</div>
         )}
 
-        {!hubQuery.isLoading && projects.length === 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">No public or shared projects found.</div>
+        {!token && (
+          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">Sign in to view Community Hub projects.</div>
         )}
 
-        {!hubQuery.isLoading && projects.length > 0 && (
+        {token && !hubQuery.isLoading && visibleProjects.length === 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-slate-500">{emptyMessage}</div>
+        )}
+
+        {token && !hubQuery.isLoading && visibleProjects.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {projects.map((project) => (
+            {visibleProjects.map((project) => (
               <article key={project.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="space-y-2">
                   <h2 className="text-base font-semibold text-slate-900 break-words">{project.projectName}</h2>
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-slate-500">Version: <span className="font-semibold text-slate-700">{project.versionName}</span></p>
-                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${project.accessType === 'assigned'
-                      ? 'border-violet-200 bg-violet-50 text-violet-700'
-                      : project.accessType === 'shared'
-                        ? 'border-blue-200 bg-blue-50 text-blue-700'
-                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                      }`}
+                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${accessBadgeClass(project.accessType)}`}
                     >
-                      {project.accessType === 'assigned' ? 'Assigned' : project.accessType === 'shared' ? 'Shared' : 'Public'}
+                      {accessBadgeLabel(project.accessType)}
                     </span>
                   </div>
                   <p className="text-sm text-slate-600">Owner: <span className="font-medium text-slate-800">{project.ownerName}</span></p>
@@ -112,7 +174,9 @@ export const PublicProjectsHub: React.FC = () => {
 
                 <div className="mt-4">
                   <button
-                    onClick={() => navigate(`/project/${project.id}/labeling`)}
+                    onClick={() => navigate(`/project/${project.id}/labeling`, {
+                      state: project.accessType === 'owned' ? { communityHubMode: 'owned' } : undefined,
+                    })}
                     className="w-full rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold px-3 py-2"
                   >
                     Open

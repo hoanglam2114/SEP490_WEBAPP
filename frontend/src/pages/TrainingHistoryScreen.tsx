@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
+import { getAuthToken } from '../services/authSession';
 import {
   LineChart,
   Line,
@@ -84,7 +85,7 @@ function formatDate(dateStr: string): string {
 }
 
 const getAuthHeaders = (): Record<string, string> => {
-  const token = localStorage.getItem('token');
+  const token = getAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 

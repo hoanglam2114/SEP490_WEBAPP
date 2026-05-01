@@ -10,6 +10,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { useTrainingStore } from "../hooks/useTrainingStore";
+import { getAuthToken } from "../services/authSession";
 
 const DATASET_SOURCES = [
   { value: "local", label: "Local Upload" },
@@ -174,8 +175,6 @@ interface SystemResources {
   vram_total_mb: number;
   gpu_util: number;
 }
-
-const getAuthToken = () => localStorage.getItem("token");
 
 const getAuthHeaders = (): Record<string, string> => {
   const token = getAuthToken();

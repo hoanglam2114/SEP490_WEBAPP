@@ -36,6 +36,11 @@ const VALID_ACTIONS: Record<string, ReadonlySet<string>> = {
   NEXT_SECTION: new Set(['TRANSITIONING', 'NAVIGATING']),
   WAIT_READY: new Set(['WAITING']),
 };
+const HARMFUL_ACTIONS: Record<string, ReadonlySet<string>> = {
+  INCORRECT: new Set(['PRAISING']),
+  REQUEST_HINT: new Set(['LOGIC_BREAKDOWN']),
+};
+const HARMFUL_ACTION_PENALTY = -2;
 const USER_INTENT_SET = new Set<string>(INTENTS);
 const ASSISTANT_ACTION_SET = new Set<string>(
   Array.from(new Set(Object.values(VALID_ACTIONS).flatMap((actions) => Array.from(actions))))
@@ -171,13 +176,17 @@ function incrementWrongPair(map: Map<string, QualityWrongPair>, intent: string, 
 }
 
 function resolveBucket(score: number): QualityBucket {
-  if (score >= 0.8) {
+  if (score >= 0.7) {
     return 'Gold';
   }
   if (score >= 0.5) {
     return 'Rewrite';
   }
   return 'Reject';
+}
+
+function sigmoid(value: number): number {
+  return 1 / (1 + Math.exp(-value));
 }
 
 export class QualityService {
@@ -247,12 +256,16 @@ export class QualityService {
           if (intentIndex === undefined || !validActions) continue;
 
           const matchedActions = assistantLabels.filter((action) => validActions.has(action));
+          const harmfulActions = assistantLabels.filter((action) => HARMFUL_ACTIONS[userLabel]?.has(action));
           const isCorrect = matchedActions.length > 0;
           const isCriticalFailure = !isCorrect && CRITICAL_INTENTS.has(userLabel as any);
-          const value = isCorrect ? 1 : -1;
+          const value = (isCorrect ? 1 : -1) + (harmfulActions.length * HARMFUL_ACTION_PENALTY);
 
           if (!isCorrect) {
             incrementWrongPair(wrongPairMap, userLabel, assistantLabels, isCriticalFailure);
+          }
+          if (harmfulActions.length) {
+            incrementWrongPair(wrongPairMap, userLabel, harmfulActions.map((action) => `HARMFUL:${action}`), isCriticalFailure);
           }
 
           vector[intentIndex] += value;
@@ -268,7 +281,8 @@ export class QualityService {
         continue;
       }
 
-      const score = vector.reduce((sum, value) => sum + value, 0) / scorableTurns;
+      const rawAverage = vector.reduce((sum, value) => sum + value, 0) / scorableTurns;
+      const score = sigmoid(rawAverage);
       const bucket = resolveBucket(score);
       const iar = vector.map((value, index) => (
         intentCounts[index] > 0 ? value / intentCounts[index] : null

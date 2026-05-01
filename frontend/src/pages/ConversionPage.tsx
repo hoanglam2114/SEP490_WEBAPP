@@ -2191,9 +2191,11 @@ export function ConversionPage() {
 
   const previewMode: PreviewMode = conversionOptions.format === 'openai' ? 'openai' : 'alpaca';
   const isProjectLabelingRoute = /^\/project\/[^/]+\/labeling$/i.test(location.pathname);
+  const openedFromOwnedCommunityHub = (location.state as any)?.communityHubMode === 'owned';
   const isOwnerInCommunityHub = Boolean(
     isProjectLabelingRoute && activeProjectOwnerId && currentUserId && currentUserId === String(activeProjectOwnerId)
   );
+  const isOwnerManagedCommunityRoute = Boolean(isOwnerInCommunityHub && openedFromOwnedCommunityHub);
   const canManageVersionVisibility = Boolean(
     currentDatasetVersionId && activeProjectOwnerId && currentUserId && currentUserId === String(activeProjectOwnerId)
   );
@@ -3611,14 +3613,16 @@ export function ConversionPage() {
 
     const hasRouteProjectContext =
       currentDatasetVersionId === routeProjectId &&
-      Array.isArray(conversionResult?.data) &&
-      conversionResult.data.length > 0 &&
-      Object.keys(sampleIdMap || {}).length > 0 &&
+      Boolean(conversionResult) &&
       Boolean(activeProjectOwnerId) &&
       communityLoadedRejectedMode === communityShowRejectedSamples;
 
     if (hasRouteProjectContext) {
-      if (currentStep !== 7) {
+      if (isOwnerManagedCommunityRoute) {
+        if (![5, 6, 7].includes(currentStep)) {
+          setCurrentStep(6);
+        }
+      } else if (currentStep !== 7) {
         setCurrentStep(7);
       }
       loadHandledRef.current = true;
@@ -3629,7 +3633,11 @@ export function ConversionPage() {
 
     const loadPublicProject = async () => {
       try {
-        const response = await dataprepApi.getPublicProjectLabeling(routeProjectId, communityShowRejectedSamples);
+        const response = await dataprepApi.getPublicProjectLabeling(
+          routeProjectId,
+          communityShowRejectedSamples,
+          openedFromOwnedCommunityHub
+        );
         if (disposed) {
           return;
         }
@@ -3684,10 +3692,15 @@ export function ConversionPage() {
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
         updateConversionOptions({ format: normalizedFormat });
         setProjectName(payload.projectName || formatDefaultProjectName());
-        setCurrentStep(7);
+        const shouldOpenOwnerManagement = Boolean(
+          openedFromOwnedCommunityHub && resolvedOwnerId && currentUserId && currentUserId === resolvedOwnerId
+        );
+        setCurrentStep(shouldOpenOwnerManagement ? 6 : 7);
         loadHandledRef.current = true;
 
-        if (resolvedOwnerId && currentUserId && currentUserId === resolvedOwnerId) {
+        if (shouldOpenOwnerManagement) {
+          toast.success('Opened project in Share & Assign step as project owner.');
+        } else if (resolvedOwnerId && currentUserId && currentUserId === resolvedOwnerId) {
           toast.success('Opened project in Data Labeling step as project owner.');
         } else {
           toast.success('Opened project in Data Labeling step. Guest mode is enforced for non-owners.');
@@ -3715,6 +3728,8 @@ export function ConversionPage() {
     currentStep,
     currentUserId,
     location.pathname,
+    openedFromOwnedCommunityHub,
+    isOwnerManagedCommunityRoute,
     navigate,
     routeProjectId,
     sampleIdMap,
@@ -4278,7 +4293,7 @@ export function ConversionPage() {
           selectedSharedUserId={selectedSharedUserId}
           isUpdatingVersionSharing={isUpdatingVersionSharing}
           onUpdateVersionSharing={handleUpdateVersionSharing}
-          onBack={() => setCurrentStep(getBackStep(6))}
+          onBack={() => setCurrentStep(5)}
           onNext={() => setCurrentStep(7)}
         />
       )}
@@ -4308,11 +4323,13 @@ export function ConversionPage() {
               onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
               onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
               showBackButton={!isGuestMode}
-              showNextButton={!isGuestMode}
-              nextDisabled={isGuestMode}
+              showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
+              nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
               fromCommunityHub={isProjectLabelingRoute}
-              lockInteractions={isOwnerInCommunityHub}
-              lockReason={isOwnerInCommunityHub ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
+              datasetVersionId={currentDatasetVersionId || undefined}
+              assignmentSubmissionEnabled={isGuestMode}
+              lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
+              lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
             />
           )}
         />

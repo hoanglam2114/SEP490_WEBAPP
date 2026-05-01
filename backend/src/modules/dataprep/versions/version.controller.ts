@@ -40,6 +40,18 @@ export class DataPrepVersionController {
     return legacyEvaluationController.clearDatasetVersionUserAssignments(req, res);
   }
 
+  async getMyAssignmentStatus(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getMyAssignmentSubmissionStatus(req, res);
+  }
+
+  async submitMyAssignment(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.submitMyAssignment(req, res);
+  }
+
+  async approveUserAssignment(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.approveUserAssignmentSubmission(req, res);
+  }
+
   async deleteSample(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.deleteDatasetVersionSample(req, res);
   }

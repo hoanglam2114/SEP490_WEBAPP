@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 
 import { AutoTrainScreen } from '../pages/AutoTrainScreen';
@@ -21,16 +21,7 @@ import { EvaluationHistory } from '../pages/EvaluationHistory';
 import { ModelRegistryPage } from '../pages/ModelRegistryPage';
 import { ModelVersionsPage } from '../pages/ModelVersionsPage';
 import { PublicProjectsHub } from '../pages/PublicProjectsHub';
-
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+import { queryClient } from './queryClient';
 
 export default function AppRouter() {
   return (

@@ -8,6 +8,7 @@ import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { User } from '../models/User';
 import { Label } from '../models/Label';
 import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
+import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmission';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
@@ -140,6 +141,109 @@ async function getAssignedSampleIdsForUser(
 
 function filterItemsByAssignedSampleIds<T extends { _id: unknown }>(items: T[], sampleIds: Set<string>): T[] {
   return items.filter((item) => sampleIds.has(String(item._id)));
+}
+
+function getLogicalMessagesForAssignment(sample: any): Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }> {
+  if (Array.isArray(sample?.data?.messages)) {
+    return sample.data.messages.map((message: any, index: number) => ({
+      messageIndex: index,
+      role: message?.role === 'assistant' ? 'assistant' : 'user',
+      content: String(message?.content || ''),
+    }));
+  }
+
+  return [
+    {
+      messageIndex: 0,
+      role: 'user' as const,
+      content: [sample?.data?.instruction, sample?.data?.input].map((part) => String(part || '').trim()).filter(Boolean).join('\n\n'),
+    },
+    {
+      messageIndex: 1,
+      role: 'assistant' as const,
+      content: String(sample?.data?.output || ''),
+    },
+  ];
+}
+
+async function calculateAssignmentProgress(datasetVersionId: mongoose.Types.ObjectId, assigneeId: string) {
+  const assigneeObjectId = new mongoose.Types.ObjectId(assigneeId);
+  const assignments = await DatasetSampleAssignment.find({ datasetVersionId, assigneeId: assigneeObjectId })
+    .sort({ sampleIndex: 1 })
+    .lean();
+
+  const sampleIds = assignments.map((assignment: any) => assignment.sampleId);
+  const samples = sampleIds.length
+    ? await ProcessedDatasetItem.find({ _id: { $in: sampleIds } }).lean()
+    : [];
+  const sampleMap = new Map(samples.map((sample: any) => [String(sample._id), sample]));
+
+  const labels = sampleIds.length
+    ? await Label.find({
+        sampleId: { $in: sampleIds },
+        targetScope: 'message',
+        $or: [
+          { createdBy: assigneeObjectId },
+          { upvotes: assigneeObjectId },
+          { downvotes: assigneeObjectId },
+        ],
+      })
+        .select('sampleId messageIndex')
+        .lean()
+    : [];
+
+  const completed = new Set(
+    labels
+      .filter((label: any) => Number.isInteger(label.messageIndex))
+      .map((label: any) => `${String(label.sampleId)}:${Number(label.messageIndex)}`)
+  );
+
+  let requiredMessages = 0;
+  let completedMessages = 0;
+  const missing: Array<{ sampleId: string; sampleIndex: number; sampleKey: string; messageIndex: number; role: string }> = [];
+
+  assignments.forEach((assignment: any) => {
+    const sample = sampleMap.get(String(assignment.sampleId));
+    if (!sample) {
+      return;
+    }
+
+    getLogicalMessagesForAssignment(sample).forEach((message) => {
+      requiredMessages += 1;
+      const key = `${String(sample._id)}:${message.messageIndex}`;
+      if (completed.has(key)) {
+        completedMessages += 1;
+        return;
+      }
+
+      missing.push({
+        sampleId: String(sample._id),
+        sampleIndex: Number(assignment.sampleIndex),
+        sampleKey: String(sample.sampleId || ''),
+        messageIndex: message.messageIndex,
+        role: message.role,
+      });
+    });
+  });
+
+  return {
+    assignedSamples: assignments.length,
+    requiredMessages,
+    completedMessages,
+    missingMessages: missing,
+    percent: requiredMessages > 0 ? Math.round((completedMessages / requiredMessages) * 100) : 0,
+    isComplete: requiredMessages > 0 && completedMessages === requiredMessages,
+  };
+}
+
+function formatSubmission(submission: any, progress: any) {
+  return {
+    status: submission?.status || 'draft',
+    submittedAt: submission?.submittedAt || null,
+    approvedAt: submission?.approvedAt || null,
+    approvedBy: submission?.approvedBy ? String(submission.approvedBy) : null,
+    progress,
+  };
 }
 
 function buildAverageResults(entries: any[]): EvaluationScorePayload {
@@ -721,11 +825,26 @@ export class EvaluationController {
       ).map((id) => new mongoose.Types.ObjectId(id));
       const assignedVersionIdSet = new Set(assignedVersionIds.map(String));
 
+      const ownedAssignmentRows = await DatasetSampleAssignment.find({ assignedBy: viewerObjectId })
+        .select('datasetVersionId')
+        .lean();
+      const ownedAssignedVersionIds = Array.from(
+        new Set(ownedAssignmentRows.map((row: any) => String(row.datasetVersionId)).filter(Boolean))
+      ).map((id) => new mongoose.Types.ObjectId(id));
+      const ownedAssignedVersionIdSet = new Set(ownedAssignedVersionIds.map(String));
+
       const versionRows = await DatasetVersion.find({
         $or: [
           { isPublic: true },
           { sharedWithUserIds: viewerObjectId },
           ...(assignedVersionIds.length ? [{ _id: { $in: assignedVersionIds } }] : []),
+          {
+            ownerId: viewerObjectId,
+            $or: [
+              { sharedWithUserIds: { $exists: true, $ne: [] } },
+              ...(ownedAssignedVersionIds.length ? [{ _id: { $in: ownedAssignedVersionIds } }] : []),
+            ],
+          },
         ],
       })
         .sort({ createdAt: -1 })
@@ -806,7 +925,12 @@ export class EvaluationController {
             ownerId,
             ownerName: ownerNameMap.get(ownerId) || 'Unknown',
             updatedAt: row.createdAt,
-            accessType: Boolean(row.isPublic)
+            accessType: ownerId === String(viewerId) && (
+              ownedAssignedVersionIdSet.has(datasetVersionId)
+              || (Array.isArray(row.sharedWithUserIds) && row.sharedWithUserIds.length > 0)
+            )
+              ? 'owned'
+              : Boolean(row.isPublic)
               ? 'public'
               : assignedVersionIdSet.has(datasetVersionId)
                 ? 'assigned'
@@ -856,6 +980,7 @@ export class EvaluationController {
       }
 
       const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
+      const ownerUnassignedOnly = String(req.query.ownerUnassignedOnly || '').toLowerCase() === 'true';
 
       const items = await ProcessedDatasetItem.find({ datasetVersionId: datasetVersion._id })
         .sort({ createdAt: 1 })
@@ -864,6 +989,13 @@ export class EvaluationController {
       let filteredItems: typeof items = !isOwner && assignedAccess.hasAssignments
         ? filterItemsByAssignedSampleIds(items as any[], assignedAccess.sampleIds)
         : items;
+      if (isOwner && ownerUnassignedOnly) {
+        const assignedSamples = await DatasetSampleAssignment.find({ datasetVersionId: datasetVersion._id })
+          .select('sampleId')
+          .lean();
+        const assignedSampleIds = new Set(assignedSamples.map((item: any) => String(item.sampleId)));
+        filteredItems = (filteredItems as any[]).filter((item) => !assignedSampleIds.has(String(item._id)));
+      }
       let rejectedSamples = 0;
 
       if (filteredItems.length > 0) {
@@ -1257,6 +1389,19 @@ export class EvaluationController {
         ? await User.find({ _id: { $in: assigneeIds } }).select('_id name email').lean()
         : [];
       const userMap = new Map(users.map((user: any) => [String(user._id), user]));
+      const submissions = assigneeIds.length
+        ? await DatasetAssignmentSubmission.find({
+            datasetVersionId: version._id,
+            assigneeId: { $in: assigneeIds.map((userId) => new mongoose.Types.ObjectId(userId)) },
+          }).lean()
+        : [];
+      const submissionMap = new Map(submissions.map((submission: any) => [String(submission.assigneeId), submission]));
+      const progressMap = new Map<string, any>();
+      await Promise.all(
+        assigneeIds.map(async (userId) => {
+          progressMap.set(userId, await calculateAssignmentProgress(version._id, userId));
+        })
+      );
       const assignmentBySampleId = new Map(assignments.map((item: any) => [String(item.sampleId), item]));
       const summaryMap = new Map<string, { user: { id: string; name: string; email: string }; count: number; ranges: string[]; indices: number[] }>();
 
@@ -1300,6 +1445,7 @@ export class EvaluationController {
           user: item.user,
           count: item.count,
           ranges,
+          submission: formatSubmission(submissionMap.get(item.user.id), progressMap.get(item.user.id)),
         };
       });
 
@@ -1425,6 +1571,10 @@ export class EvaluationController {
         sampleId: { $in: selectedSampleIds },
         assigneeId: new mongoose.Types.ObjectId(assigneeId),
       });
+      await DatasetAssignmentSubmission.deleteOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      });
 
       await DatasetSampleAssignment.insertMany(
         selectedSamples.map((sample: any, offset) => ({
@@ -1486,6 +1636,7 @@ export class EvaluationController {
         datasetVersionId: version._id,
         sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
       });
+      await DatasetAssignmentSubmission.deleteMany({ datasetVersionId: version._id });
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment.`,
@@ -1524,6 +1675,10 @@ export class EvaluationController {
         datasetVersionId: version._id,
         assigneeId: new mongoose.Types.ObjectId(userId),
       });
+      await DatasetAssignmentSubmission.deleteOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      });
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment của user.`,
@@ -1533,6 +1688,180 @@ export class EvaluationController {
       console.error('Clear dataset version user assignments error:', error);
       res.status(500).json({
         error: 'Xóa assignment của user thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async getMyAssignmentSubmissionStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const assigneeId = getAuthUserId(req);
+      if (!assigneeId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findById(id).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, assigneeId);
+      if (progress.assignedSamples === 0) {
+        res.status(404).json({ error: 'Bạn chưa được phân công mẫu nào trong version này.' });
+        return;
+      }
+
+      const submission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      }).lean();
+
+      res.json(formatSubmission(submission, progress));
+    } catch (error: any) {
+      console.error('Get my assignment submission status error:', error);
+      res.status(500).json({
+        error: 'Lấy trạng thái nộp kết quả thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async submitMyAssignment(req: Request, res: Response): Promise<void> {
+    try {
+      const assigneeId = getAuthUserId(req);
+      if (!assigneeId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findById(id).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, assigneeId);
+      if (progress.assignedSamples === 0) {
+        res.status(404).json({ error: 'Bạn chưa được phân công mẫu nào trong version này.' });
+        return;
+      }
+
+      if (!progress.isComplete) {
+        res.status(409).json({
+          error: 'Bạn cần gán nhãn đầy đủ mọi message trước khi nộp kết quả.',
+          progress,
+        });
+        return;
+      }
+
+      const existing = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      }).lean();
+
+      if (existing?.status === 'approved') {
+        res.status(409).json({ error: 'Kết quả này đã được owner approve.', submission: formatSubmission(existing, progress) });
+        return;
+      }
+
+      const submittedAt = existing?.submittedAt || new Date();
+      const submission = await DatasetAssignmentSubmission.findOneAndUpdate(
+        {
+          datasetVersionId: version._id,
+          assigneeId: new mongoose.Types.ObjectId(assigneeId),
+        },
+        {
+          $set: {
+            status: 'submitted',
+            submittedAt,
+            progressSnapshot: progress,
+          },
+        },
+        { new: true, upsert: true }
+      ).lean();
+
+      res.json({
+        message: 'Đã nộp kết quả gán nhãn.',
+        ...formatSubmission(submission, progress),
+      });
+    } catch (error: any) {
+      console.error('Submit my assignment error:', error);
+      res.status(500).json({
+        error: 'Nộp kết quả gán nhãn thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async approveUserAssignmentSubmission(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, userId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc userId không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const submission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      }).lean();
+
+      if (!submission || submission.status !== 'submitted') {
+        res.status(409).json({ error: 'User này chưa nộp kết quả để approve.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, userId);
+      const updated = await DatasetAssignmentSubmission.findOneAndUpdate(
+        {
+          datasetVersionId: version._id,
+          assigneeId: new mongoose.Types.ObjectId(userId),
+        },
+        {
+          $set: {
+            status: 'approved',
+            approvedAt: new Date(),
+            approvedBy: new mongoose.Types.ObjectId(ownerId),
+            progressSnapshot: progress,
+          },
+        },
+        { new: true }
+      ).lean();
+
+      res.json({
+        message: 'Đã approve kết quả gán nhãn.',
+        ...formatSubmission(updated, progress),
+      });
+    } catch (error: any) {
+      console.error('Approve user assignment submission error:', error);
+      res.status(500).json({
+        error: 'Approve kết quả gán nhãn thất bại',
         details: error.message,
       });
     }

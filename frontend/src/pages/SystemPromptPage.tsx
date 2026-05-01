@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { getAuthToken } from '../services/authSession';
 
 type PromptVersionItem = {
   _id: string;
@@ -32,7 +33,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
   projectName = '',
 }) => {
   const getAuthHeaders = (includeJsonContentType = false): Record<string, string> => {
-    const token = localStorage.getItem('token');
+    const token = getAuthToken();
     const headers: Record<string, string> = {};
     if (includeJsonContentType) {
       headers['Content-Type'] = 'application/json';

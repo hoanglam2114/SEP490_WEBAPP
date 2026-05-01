@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, Loader2, Trash2, Users } from 'lucide-react';
+import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Trash2, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
 import type { DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
@@ -94,6 +94,17 @@ export function ShareAssignPanel({
     },
     onError: (error: any) => {
       toast.error(error?.response?.data?.error || error?.message || 'Clear user assignments failed.');
+    },
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (userId: string) => dataprepApi.approveAssignmentSubmission(versionId, userId),
+    onSuccess: (payload) => {
+      toast.success(payload.message || 'Approved assignment submission.');
+      invalidateAssignments();
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error?.message || 'Approve submission failed.');
     },
   });
 
@@ -259,6 +270,33 @@ export function ShareAssignPanel({
                     </button>
                   </div>
                   <p className="mt-1 text-[11px] font-medium text-slate-600">{item.count} samples: {item.ranges.join(', ') || '-'}</p>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${item.submission?.status === 'approved'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : item.submission?.status === 'submitted'
+                        ? 'border-blue-200 bg-blue-50 text-blue-700'
+                        : 'border-slate-200 bg-slate-50 text-slate-600'
+                      }`}
+                    >
+                      {item.submission?.status || 'draft'} · {item.submission?.progress?.completedMessages || 0}/{item.submission?.progress?.requiredMessages || 0}
+                    </span>
+                    {item.submission?.status === 'submitted' && (
+                      <button
+                        type="button"
+                        onClick={() => approveMutation.mutate(item.user.id)}
+                        disabled={approveMutation.isPending}
+                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                      >
+                        {approveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
+                        Approve
+                      </button>
+                    )}
+                  </div>
+                  {item.submission?.submittedAt && (
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      Submitted: {new Date(item.submission.submittedAt).toLocaleString()}
+                    </p>
+                  )}
                 </div>
               ))}
               {!summary.length && <p className="text-xs text-slate-500">No assignments yet.</p>}

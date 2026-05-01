@@ -4,6 +4,7 @@ import { Label } from '../models/Label';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { DatasetVersion } from '../models/DatasetVersion';
 import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
+import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmission';
 
 const HARD_LABELS = [
   'REJECT',
@@ -45,6 +46,7 @@ type SampleAccess = {
   sharedWithUserIds: string[];
   hasAssignments: boolean;
   isAssignedToUser: (userId: string) => Promise<boolean>;
+  isAssignedSample: () => Promise<boolean>;
 };
 
 function getCurrentUserId(req: Request): string | null {
@@ -104,6 +106,10 @@ async function getSampleAccessBySampleId(
       sampleId: new mongoose.Types.ObjectId(sampleId),
       assigneeId: new mongoose.Types.ObjectId(userId),
     })),
+    isAssignedSample: async () => Boolean(await DatasetSampleAssignment.exists({
+      datasetVersionId: sample.datasetVersionId,
+      sampleId: new mongoose.Types.ObjectId(sampleId),
+    })),
   };
 }
 
@@ -129,8 +135,15 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
   const isOwner = access.ownerId === String(userId);
   const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   const hasAssignedAccess = await access.isAssignedToUser(userId);
+  const lockedSubmission = !isOwner && hasAssignedAccess
+    ? await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: new mongoose.Types.ObjectId(access.datasetVersionId),
+        assigneeId: new mongoose.Types.ObjectId(userId),
+        status: { $in: ['submitted', 'approved'] },
+      }).select('status').lean()
+    : null;
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
+    if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
       const error = new Error('Dataset version is not public or shared with this account.');
       (error as any).statusCode = 403;
       throw error;
@@ -140,10 +153,18 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
       (error as any).statusCode = 403;
       throw error;
     }
-    if (isOwner) {
-      const error = new Error('Owner cannot add/vote labels from Community Hub route.');
+    if (lockedSubmission) {
+      const error = new Error(`Assignment submission is ${lockedSubmission.status}; labels are locked.`);
       (error as any).statusCode = 403;
       throw error;
+    }
+    if (isOwner) {
+      if (access.hasAssignments && await access.isAssignedSample()) {
+        const error = new Error('This sample is assigned to a collaborator; owner can label only unassigned samples from Community Hub.');
+        (error as any).statusCode = 403;
+        throw error;
+      }
+      return;
     }
     return;
   }
@@ -189,8 +210,15 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
   const isOwner = access.ownerId === String(userId);
   const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   const hasAssignedAccess = await access.isAssignedToUser(userId);
+  const lockedSubmission = !isOwner && hasAssignedAccess
+    ? await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: new mongoose.Types.ObjectId(access.datasetVersionId),
+        assigneeId: new mongoose.Types.ObjectId(userId),
+        status: { $in: ['submitted', 'approved'] },
+      }).select('status').lean()
+    : null;
   if (isCommunityHubRequest(req)) {
-    if (!access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
+    if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
       const error = new Error('Dataset version is not public or shared with this account.');
       (error as any).statusCode = 403;
       throw error;
@@ -200,10 +228,18 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
       (error as any).statusCode = 403;
       throw error;
     }
-    if (isOwner) {
-      const error = new Error('Owner cannot vote labels from Community Hub route.');
+    if (lockedSubmission) {
+      const error = new Error(`Assignment submission is ${lockedSubmission.status}; labels are locked.`);
       (error as any).statusCode = 403;
       throw error;
+    }
+    if (isOwner) {
+      if (access.hasAssignments && await access.isAssignedSample()) {
+        const error = new Error('This sample is assigned to a collaborator; owner can vote only on unassigned samples from Community Hub.');
+        (error as any).statusCode = 403;
+        throw error;
+      }
+      return;
     }
     return;
   }

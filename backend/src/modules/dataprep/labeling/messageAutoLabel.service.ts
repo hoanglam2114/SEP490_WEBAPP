@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { Label } from '../../../models/Label';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
+import { DatasetSampleAssignment } from '../../../models/DatasetSampleAssignment';
+import { DatasetAssignmentSubmission } from '../../../models/DatasetAssignmentSubmission';
 import { ILlmProvider } from '../../../services/providers/ILlmProvider';
 
 export const USER_MESSAGE_LABELS = [
@@ -234,7 +236,7 @@ function parseSuggestions(rawText: string, messages: MessageAutoLabelInput[]): M
 export class MessageAutoLabelingService {
   constructor(private readonly provider: ILlmProvider) {}
 
-  async assertOwnerAccess(sampleId: string, ownerId: string) {
+  async assertAutoLabelAccess(sampleId: string, userId: string, options: { restrictOwnerToUnassigned?: boolean } = {}) {
     if (!mongoose.Types.ObjectId.isValid(sampleId)) {
       throw Object.assign(new Error('Invalid sampleId.'), { statusCode: 400 });
     }
@@ -244,18 +246,62 @@ export class MessageAutoLabelingService {
       throw Object.assign(new Error('Sample not found.'), { statusCode: 404 });
     }
 
-    const version = await DatasetVersion.findOne({
-      _id: sample.datasetVersionId,
-      ownerId: new mongoose.Types.ObjectId(ownerId),
-    }).select('_id').lean();
+    const version = await DatasetVersion.findById(sample.datasetVersionId)
+      .select('_id ownerId sharedWithUserIds')
+      .lean();
 
     if (!version) {
-      throw Object.assign(new Error('Forbidden: only the dataset owner can auto-label messages.'), { statusCode: 403 });
+      throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
+    }
+
+    const userOid = new mongoose.Types.ObjectId(userId);
+    const isOwner = String(version.ownerId) === String(userId);
+    const hasSharedAccess = Array.isArray((version as any).sharedWithUserIds)
+      && (version as any).sharedWithUserIds.some((id: any) => String(id) === String(userId));
+    const assignmentCount = await DatasetSampleAssignment.countDocuments({ datasetVersionId: version._id });
+    const assignedSample = !isOwner && assignmentCount > 0
+      ? await DatasetSampleAssignment.findOne({
+        datasetVersionId: version._id,
+        sampleId: new mongoose.Types.ObjectId(sampleId),
+        assigneeId: userOid,
+      }).select('_id').lean()
+      : null;
+    const hasAssignedAccess = Boolean(assignedSample);
+
+    if (!isOwner && !hasSharedAccess && !hasAssignedAccess) {
+      throw Object.assign(new Error('Forbidden: only the dataset owner or collaborator can auto-label messages.'), { statusCode: 403 });
+    }
+
+    if (isOwner && options.restrictOwnerToUnassigned && assignmentCount > 0) {
+      const assignedSampleForOwner = await DatasetSampleAssignment.exists({
+        datasetVersionId: version._id,
+        sampleId: new mongoose.Types.ObjectId(sampleId),
+      });
+
+      if (assignedSampleForOwner) {
+        throw Object.assign(new Error('This sample is assigned to a collaborator; owner can auto-label only unassigned samples from Community Hub.'), { statusCode: 403 });
+      }
+    }
+
+    if (!isOwner && assignmentCount > 0) {
+      if (!assignedSample) {
+        throw Object.assign(new Error('Sample is not assigned to this account.'), { statusCode: 403 });
+      }
+
+      const lockedSubmission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: userOid,
+        status: { $in: ['submitted', 'approved'] },
+      }).select('status').lean();
+
+      if (lockedSubmission) {
+        throw Object.assign(new Error(`Assignment submission is ${lockedSubmission.status}; labels are locked.`), { statusCode: 403 });
+      }
     }
   }
 
-  async preview(sampleId: string, ownerId: string, messages: MessageAutoLabelInput[]): Promise<MessageAutoLabelSuggestion[]> {
-    await this.assertOwnerAccess(sampleId, ownerId);
+  async preview(sampleId: string, userId: string, messages: MessageAutoLabelInput[], options: { restrictOwnerToUnassigned?: boolean } = {}): Promise<MessageAutoLabelSuggestion[]> {
+    await this.assertAutoLabelAccess(sampleId, userId, options);
     const normalizedMessages = normalizeMessages(messages);
     if (!normalizedMessages.length) {
       throw Object.assign(new Error('messages is required.'), { statusCode: 400 });
@@ -265,8 +311,8 @@ export class MessageAutoLabelingService {
     return parseSuggestions(rawText, normalizedMessages);
   }
 
-  async save(sampleId: string, ownerId: string, suggestions: MessageAutoLabelSaveSuggestion[], messages: MessageAutoLabelInput[]) {
-    await this.assertOwnerAccess(sampleId, ownerId);
+  async save(sampleId: string, userId: string, suggestions: MessageAutoLabelSaveSuggestion[], messages: MessageAutoLabelInput[], options: { restrictOwnerToUnassigned?: boolean } = {}) {
+    await this.assertAutoLabelAccess(sampleId, userId, options);
     const normalizedMessages = normalizeMessages(messages);
     const messageByIndex = new Map(normalizedMessages.map((message) => [message.messageIndex, message]));
 
@@ -275,7 +321,7 @@ export class MessageAutoLabelingService {
     }
 
     const sampleOid = new mongoose.Types.ObjectId(sampleId);
-    const userOid = new mongoose.Types.ObjectId(ownerId);
+    const userOid = new mongoose.Types.ObjectId(userId);
     const docs: any[] = [];
 
     for (const suggestion of suggestions) {

@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuthStore } from '../store/authStore';
 import toast from 'react-hot-toast';
+import { clearUserScopedQueryCache } from '../services/queryClient';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -16,6 +17,7 @@ export const LoginPage: React.FC = () => {
     try {
       setLoading(true);
       const res = await axios.post('/api/auth/login', { email, password });
+      clearUserScopedQueryCache();
       setAuth(res.data.user, res.data.token);
       toast.success('Login successful!');
       navigate('/');

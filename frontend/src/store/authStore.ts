@@ -1,4 +1,11 @@
 import { create } from 'zustand';
+import {
+  clearAuthSession,
+  getAuthToken,
+  getAuthUser,
+  setAuthSession,
+  type AuthSessionUser,
+} from '../services/authSession';
 
 interface User {
   id: string;
@@ -11,23 +18,39 @@ interface AuthState {
   token: string | null;
   setAuth: (user: User, token: string) => void;
   logout: () => void;
+  hydrateFromStorage: () => void;
 }
 
-// Load initial state from localStorage if available
-const storedToken = localStorage.getItem('token');
-const storedUser = localStorage.getItem('user');
+function normalizeUser(user: AuthSessionUser | null): User | null {
+  if (!user) {
+    return null;
+  }
+  const id = String(user.id || user._id || user.userId || '');
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    name: String(user.name || ''),
+    email: String(user.email || ''),
+  };
+}
 
 export const useAuthStore = create<AuthState>((set) => ({
-  user: storedUser ? JSON.parse(storedUser) : null,
-  token: storedToken ? storedToken : null,
+  user: normalizeUser(getAuthUser()),
+  token: getAuthToken(),
   setAuth: (user, token) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(user));
+    setAuthSession(user, token);
     set({ user, token });
   },
   logout: () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearAuthSession();
     set({ user: null, token: null });
+  },
+  hydrateFromStorage: () => {
+    set({
+      user: normalizeUser(getAuthUser()),
+      token: getAuthToken(),
+    });
   },
 }));

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import {
   ThumbsUp,
   ThumbsDown,
@@ -31,6 +33,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { dataprepApi } from '../api/dataprepApi';
+import { getAuthUserId } from '../../../services/authSession';
 
 type VoteType = 'up' | 'down';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
@@ -80,6 +83,8 @@ type DataLabelingStepProps = {
   showNextButton?: boolean;
   nextDisabled?: boolean;
   fromCommunityHub?: boolean;
+  datasetVersionId?: string;
+  assignmentSubmissionEnabled?: boolean;
   lockInteractions?: boolean;
   lockReason?: string;
 };
@@ -154,17 +159,11 @@ const HARD_LABEL_CHIPS: Record<string, HardLabelChip> = {
   WAITING: { short: 'WAIT', icon: PauseCircle, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100' },
 };
 
-function getCurrentUserId(): string {
-  try {
-    const rawUser = localStorage.getItem('user');
-    if (!rawUser) {
-      return '';
-    }
-    const parsed = JSON.parse(rawUser);
-    return String(parsed?.id || parsed?._id || parsed?.userId || '');
-  } catch {
-    return '';
-  }
+function getErrorMessage(error: any, fallback: string): string {
+  return error?.response?.data?.error
+    || error?.response?.data?.details
+    || error?.message
+    || fallback;
 }
 
 function normalizeLabel(label: any): LabelItem {
@@ -259,14 +258,18 @@ export function DataLabelingPanel({
   showNextButton = true,
   nextDisabled = false,
   fromCommunityHub = false,
+  datasetVersionId,
+  assignmentSubmissionEnabled = false,
   lockInteractions = false,
   lockReason,
 }: DataLabelingStepProps) {
-  const currentUserId = useMemo(() => getCurrentUserId(), []);
+  const queryClient = useQueryClient();
+  const currentUserId = useMemo(() => getAuthUserId(), []);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedMessageIndex, setSelectedMessageIndex] = useState<number | null>(null);
   const [labels, setLabels] = useState<LabelItem[]>([]);
   const [messageLabelCounts, setMessageLabelCounts] = useState<Record<number, number>>({});
+  const [messageLabelNames, setMessageLabelNames] = useState<Record<number, string[]>>({});
   const [softLabelInput, setSoftLabelInput] = useState('');
   const [isLoadingLabels, setIsLoadingLabels] = useState(false);
   const [isSavingLabel, setIsSavingLabel] = useState(false);
@@ -275,6 +278,24 @@ export function DataLabelingPanel({
   const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<Record<number, MessageAutoLabelSuggestion>>({});
   const [error, setError] = useState('');
+
+  const assignmentStatusQuery = useQuery({
+    queryKey: ['my-assignment-submission-status', datasetVersionId],
+    queryFn: () => dataprepApi.getMyAssignmentSubmissionStatus(datasetVersionId || ''),
+    enabled: Boolean(datasetVersionId && assignmentSubmissionEnabled),
+  });
+
+  const submitAssignmentMutation = useMutation({
+    mutationFn: () => dataprepApi.submitMyAssignment(datasetVersionId || ''),
+    onSuccess: (payload) => {
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
+      toast.success(payload?.message || 'Assignment submitted.');
+    },
+    onError: (err: any) => {
+      setError(getErrorMessage(err, 'Submit assignment failed'));
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
+    },
+  });
 
   const currentSample = samples[currentIndex] || null;
   const selectedMessage = selectedMessageIndex !== null ? currentSample?.messages[selectedMessageIndex] : null;
@@ -301,6 +322,20 @@ export function DataLabelingPanel({
   const autoLabelSuggestionCount = Object.keys(autoLabelSuggestions).length;
   const autoLabelSuggestedLabelCount = Object.values(autoLabelSuggestions)
     .reduce((sum, suggestion) => sum + suggestionLabels(suggestion).length, 0);
+  const assignmentStatus = assignmentStatusQuery.data;
+  const assignmentIsLocked = assignmentStatus?.status === 'submitted' || assignmentStatus?.status === 'approved';
+  const effectiveLockInteractions = lockInteractions || assignmentIsLocked;
+  const effectiveLockReason = assignmentIsLocked
+    ? `Assignment is ${assignmentStatus?.status}; labels are locked.`
+    : lockReason;
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    toast.error(error);
+    setError('');
+  }, [error]);
 
   const scoreColorClass = (score: number): string => {
     if (score > 0) return 'text-emerald-700 font-semibold';
@@ -312,15 +347,22 @@ export function DataLabelingPanel({
     try {
       const payload = await dataprepApi.getSampleLabels(sampleId, { scope: 'all' });
       const counts: Record<number, number> = {};
+      const names: Record<number, string[]> = {};
       (Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : [])
         .filter((label) => label.targetScope === 'message' && Number.isInteger(label.messageIndex))
         .forEach((label) => {
           const index = Number(label.messageIndex);
           counts[index] = (counts[index] || 0) + 1;
+          const current = names[index] || [];
+          if (!current.includes(label.name)) {
+            names[index] = [...current, label.name];
+          }
         });
       setMessageLabelCounts(counts);
+      setMessageLabelNames(names);
     } catch {
       setMessageLabelCounts({});
+      setMessageLabelNames({});
     }
   };
 
@@ -335,7 +377,7 @@ export function DataLabelingPanel({
       setLabels(Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : []);
     } catch (err: any) {
       setLabels([]);
-      setError(err?.message || 'Failed to fetch labels');
+      setError(getErrorMessage(err, 'Failed to fetch labels'));
     } finally {
       setIsLoadingLabels(false);
     }
@@ -350,6 +392,7 @@ export function DataLabelingPanel({
     if (!currentSample.sampleId) {
       setLabels([]);
       setMessageLabelCounts({});
+      setMessageLabelNames({});
       setError('This sample has no persisted sampleId yet. Proceed through Step 4 (Clustering) to create a dataset version first.');
       return;
     }
@@ -423,17 +466,23 @@ export function DataLabelingPanel({
       if (created) {
         setLabels((prev) => [created, ...prev]);
         if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
+          const labelIndex = Number(created.messageIndex);
           setMessageLabelCounts((prev) => ({
             ...prev,
-            [Number(created.messageIndex)]: (prev[Number(created.messageIndex)] || 0) + 1,
+            [labelIndex]: (prev[labelIndex] || 0) + 1,
+          }));
+          setMessageLabelNames((prev) => ({
+            ...prev,
+            [labelIndex]: Array.from(new Set([...(prev[labelIndex] || []), created.name])),
           }));
         }
       } else {
         await fetchLabels(currentSample.sampleId);
         await fetchMessageLabelCounts(currentSample.sampleId);
       }
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
-      setError(err?.message || 'Failed to add label');
+      setError(getErrorMessage(err, 'Failed to add label'));
     } finally {
       setIsSavingLabel(false);
     }
@@ -477,9 +526,10 @@ export function DataLabelingPanel({
             : item
         )
       );
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
       setLabels(previousLabels);
-      setError(err?.message || 'Failed to vote label');
+      setError(getErrorMessage(err, 'Failed to vote label'));
     }
   };
 
@@ -519,16 +569,22 @@ export function DataLabelingPanel({
 
       setLabels((prev) => [created, ...prev]);
       if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
+        const labelIndex = Number(created.messageIndex);
         setMessageLabelCounts((prev) => ({
           ...prev,
-          [Number(created.messageIndex)]: (prev[Number(created.messageIndex)] || 0) + 1,
+          [labelIndex]: (prev[labelIndex] || 0) + 1,
+        }));
+        setMessageLabelNames((prev) => ({
+          ...prev,
+          [labelIndex]: Array.from(new Set([...(prev[labelIndex] || []), created.name])),
         }));
       }
       if (fromCommunityHub) {
         await handleVote(created._id, 'up');
       }
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
-      setError(err?.message || 'Failed to vote hard label');
+      setError(getErrorMessage(err, 'Failed to vote hard label'));
     } finally {
       setIsSavingLabel(false);
     }
@@ -551,7 +607,7 @@ export function DataLabelingPanel({
       const payload = await dataprepApi.previewMessageAutoLabels(currentSample.sampleId, {
         provider: autoLabelProvider,
         messages: currentMessagesPayload,
-      });
+      }, fromCommunityHub);
       const nextSuggestions = (payload?.suggestions || []).reduce<Record<number, MessageAutoLabelSuggestion>>((acc, suggestion) => {
         if (Number.isInteger(suggestion.messageIndex)) {
           acc[Number(suggestion.messageIndex)] = suggestion;
@@ -560,7 +616,7 @@ export function DataLabelingPanel({
       }, {});
       setAutoLabelSuggestions(nextSuggestions);
     } catch (err: any) {
-      setError(err?.response?.data?.error || err?.message || 'Message auto-labeling failed');
+      setError(getErrorMessage(err, 'Message auto-labeling failed'));
     } finally {
       setIsAutoLabelingMessages(false);
     }
@@ -585,15 +641,16 @@ export function DataLabelingPanel({
       const result = await dataprepApi.saveMessageAutoLabels(currentSample.sampleId, {
         suggestions,
         messages: currentMessagesPayload,
-      });
+      }, fromCommunityHub);
       await fetchLabels(currentSample.sampleId, selectedTargetIndex);
       await fetchMessageLabelCounts(currentSample.sampleId);
       setAutoLabelSuggestions({});
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
       if (result.insertedCount === 0) {
-        setError('AI labels were already saved for these messages.');
+        toast('AI labels were already saved for these messages.');
       }
     } catch (err: any) {
-      setError(err?.response?.data?.error || err?.message || 'Save AI labels failed');
+      setError(getErrorMessage(err, 'Save AI labels failed'));
     } finally {
       setIsSavingAutoLabels(false);
     }
@@ -642,6 +699,11 @@ export function DataLabelingPanel({
               const labelCount = messageLabelCounts[index] || 0;
               const aiSuggestion = autoLabelSuggestions[index];
               const aiLabels = suggestionLabels(aiSuggestion);
+              const savedLabels = messageLabelNames[index] || [];
+              const visibleMessageLabels = aiLabels.length > 0 ? aiLabels : savedLabels;
+              const visibleMessageLabelTitle = aiLabels.length > 0
+                ? `AI: ${aiLabels.join(', ')}${Number.isFinite(aiSuggestion?.confidence) ? ` (${Math.round((aiSuggestion?.confidence || 0) * 100)}%)` : ''}`
+                : `Saved labels: ${savedLabels.join(', ')}`;
 
               return (
               <div
@@ -669,12 +731,12 @@ export function DataLabelingPanel({
                       {labelCount}
                     </span>
                   )}
-                  {aiSuggestion && aiLabels.length > 0 && (
+                  {visibleMessageLabels.length > 0 && (
                     <span
                       className={`absolute -bottom-2 ${message.role === 'user' ? '-right-2' : '-left-2'} flex max-w-[260px] flex-wrap items-center justify-end gap-1`}
-                      title={`AI: ${aiLabels.join(', ')}${Number.isFinite(aiSuggestion.confidence) ? ` (${Math.round((aiSuggestion.confidence || 0) * 100)}%)` : ''}`}
+                      title={visibleMessageLabelTitle}
                     >
-                      {aiLabels.slice(0, 4).map((label) => {
+                      {visibleMessageLabels.slice(0, 4).map((label) => {
                         const aiChip = HARD_LABEL_CHIPS[label] || DEFAULT_HARD_LABEL_CHIP;
                         const AiIcon = aiChip.icon;
                         return (
@@ -687,9 +749,9 @@ export function DataLabelingPanel({
                           </span>
                         );
                       })}
-                      {aiLabels.length > 4 && (
+                      {visibleMessageLabels.length > 4 && (
                         <span className="inline-flex rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-bold text-gray-600 shadow-sm">
-                          +{aiLabels.length - 4}
+                          +{visibleMessageLabels.length - 4}
                         </span>
                       )}
                     </span>
@@ -770,7 +832,7 @@ export function DataLabelingPanel({
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
                       type="button"
-                      disabled={lockInteractions}
+                      disabled={effectiveLockInteractions}
                       onClick={() => handleVote(label._id, 'up')}
                       title="Upvote"
                       className={`rounded-lg p-1.5 transition-all ${
@@ -787,7 +849,7 @@ export function DataLabelingPanel({
                     {true && (
                       <button
                         type="button"
-                        disabled={lockInteractions}
+                        disabled={effectiveLockInteractions}
                         onClick={() => handleVote(label._id, 'down')}
                         title="Downvote"
                         className={`rounded-lg p-1.5 transition-all ${
@@ -816,7 +878,7 @@ export function DataLabelingPanel({
               <select
                 value={autoLabelProvider}
                 onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || lockInteractions}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions}
                 className="ml-auto rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Choose AI provider for message auto-labeling"
               >
@@ -827,7 +889,7 @@ export function DataLabelingPanel({
               <button
                 type="button"
                 onClick={handleAutoLabelMessages}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || !currentSample?.sampleId || lockInteractions}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || !currentSample?.sampleId || effectiveLockInteractions}
                 className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Use AI to suggest hard labels for every message in this conversation"
               >
@@ -846,7 +908,7 @@ export function DataLabelingPanel({
                     <button
                       type="button"
                       onClick={handleSaveAutoLabels}
-                      disabled={isSavingAutoLabels || lockInteractions}
+                      disabled={isSavingAutoLabels || effectiveLockInteractions}
                       className="inline-flex items-center gap-1.5 rounded-full bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-gray-300"
                     >
                       {isSavingAutoLabels ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
@@ -875,7 +937,7 @@ export function DataLabelingPanel({
                     <button
                       key={hardLabel}
                       type="button"
-                      disabled={isSavingLabel || !currentSample?.sampleId || lockInteractions}
+                      disabled={isSavingLabel || !currentSample?.sampleId || effectiveLockInteractions}
                       onClick={() => handleHardLabelVote(hardLabel)}
                       title={hardLabel}
                       aria-label={`Add hard label ${hardLabel}`}
@@ -905,7 +967,7 @@ export function DataLabelingPanel({
                     onChange={(event) => setSoftLabelInput(event.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && softLabelInput.trim() && currentSample?.sampleId && !isSavingLabel) {
-                        if (lockInteractions) {
+                        if (effectiveLockInteractions) {
                           return;
                         }
                         addLabel(softLabelInput.trim().toLowerCase(), 'soft');
@@ -916,7 +978,7 @@ export function DataLabelingPanel({
                   />
                   <button
                     type="button"
-                    disabled={isSavingLabel || !softLabelInput.trim() || !currentSample?.sampleId || lockInteractions}
+                    disabled={isSavingLabel || !softLabelInput.trim() || !currentSample?.sampleId || effectiveLockInteractions}
                     onClick={() => addLabel(softLabelInput.trim().toLowerCase(), 'soft')}
                     className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 transition-colors flex-shrink-0"
                   >
@@ -966,18 +1028,39 @@ export function DataLabelingPanel({
         </div>
       </div>
 
-      {/* Error Banner */}
-      {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-          <span>{error}</span>
+      {assignmentSubmissionEnabled && assignmentStatus && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-blue-950">Submit Assignment</p>
+              <p className="text-xs text-blue-700">
+                Progress: {assignmentStatus.progress.completedMessages} / {assignmentStatus.progress.requiredMessages} messages ({assignmentStatus.progress.percent}%)
+                {' '}· Status: {assignmentStatus.status}
+              </p>
+              {!assignmentStatus.progress.isComplete && assignmentStatus.progress.missingMessages.length > 0 && (
+                <p className="mt-1 text-xs text-blue-600">
+                  Missing: #{assignmentStatus.progress.missingMessages[0].sampleIndex} message {assignmentStatus.progress.missingMessages[0].messageIndex + 1}
+                  {assignmentStatus.progress.missingMessages.length > 1 ? ` (+${assignmentStatus.progress.missingMessages.length - 1} more)` : ''}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => submitAssignmentMutation.mutate()}
+              disabled={!assignmentStatus.progress.isComplete || assignmentIsLocked || submitAssignmentMutation.isPending}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+            >
+              {submitAssignmentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Submit Result
+            </button>
+          </div>
         </div>
       )}
 
-      {lockInteractions && lockReason && (
+      {effectiveLockInteractions && effectiveLockReason && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-          <span>{lockReason}</span>
+          <span>{effectiveLockReason}</span>
         </div>
       )}
 

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
+import { clearUserScopedQueryCache } from '../services/queryClient';
 
 const tools = [
   {
@@ -138,6 +139,7 @@ export const HomePage: React.FC = () => {
                 <button
                   onClick={() => {
                     logout();
+                    clearUserScopedQueryCache();
                     navigate('/login');
                   }}
                   className="text-sm font-medium text-red-600 hover:text-red-800"

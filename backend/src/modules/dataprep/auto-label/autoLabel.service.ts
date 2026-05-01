@@ -146,15 +146,29 @@ function parseSuggestions(rawText: string, clusters: ClusterPayload[]): AutoLabe
 export class AutoLabelingService {
   constructor(private readonly provider: ILlmProvider) { }
 
-  async loadClusters(versionId: string, ownerId: string): Promise<ClusterPayload[]> {
+  async loadAuthorizedVersion(versionId: string, userId: string) {
     if (!mongoose.Types.ObjectId.isValid(versionId)) {
       throw Object.assign(new Error('Invalid dataset version id.'), { statusCode: 400 });
     }
 
-    const version = await DatasetVersion.findOne({ _id: versionId, ownerId }).lean();
+    const version = await DatasetVersion.findById(versionId).lean();
     if (!version) {
       throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
     }
+
+    const isOwner = String(version.ownerId) === String(userId);
+    const hasSharedAccess = Array.isArray((version as any).sharedWithUserIds)
+      && (version as any).sharedWithUserIds.some((id: any) => String(id) === String(userId));
+
+    if (!isOwner && !hasSharedAccess) {
+      throw Object.assign(new Error('Forbidden: only the dataset owner or collaborator can auto-label this version.'), { statusCode: 403 });
+    }
+
+    return version;
+  }
+
+  async loadClusters(versionId: string, userId: string): Promise<ClusterPayload[]> {
+    const version = await this.loadAuthorizedVersion(versionId, userId);
 
     const items = await ProcessedDatasetItem.find({ datasetVersionId: version._id }).sort({ createdAt: 1 }).lean();
     const grouped = new Map<number, ClusterSample[]>();
@@ -180,18 +194,18 @@ export class AutoLabelingService {
       }));
   }
 
-  async preview(versionId: string, ownerId: string): Promise<AutoLabelSuggestion[]> {
-    const clusters = await this.loadClusters(versionId, ownerId);
+  async preview(versionId: string, userId: string): Promise<AutoLabelSuggestion[]> {
+    const clusters = await this.loadClusters(versionId, userId);
     const rawText = await this.provider.generateContent(buildPrompt(clusters));
     return parseSuggestions(rawText, clusters);
   }
 
-  async save(versionId: string, ownerId: string, labels: Array<{ clusterId: number; label: string }>) {
+  async save(versionId: string, userId: string, labels: Array<{ clusterId: number; label: string }>) {
     if (!Array.isArray(labels) || labels.length === 0) {
       throw Object.assign(new Error('labels is required.'), { statusCode: 400 });
     }
 
-    const clusters = await this.loadClusters(versionId, ownerId);
+    const clusters = await this.loadClusters(versionId, userId);
     const validClusterIds = new Set(clusters.map((cluster) => cluster.clusterId));
     const requestedLabels = labels.map((item) => ({
       clusterId: Number(item.clusterId),
@@ -203,13 +217,10 @@ export class AutoLabelingService {
       throw Object.assign(new Error('Invalid cluster label payload.'), { statusCode: 400 });
     }
 
-    const version = await DatasetVersion.findOne({ _id: versionId, ownerId }).lean();
-    if (!version) {
-      throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
-    }
+    const version = await this.loadAuthorizedVersion(versionId, userId);
 
     const subjectNames = [...SUBJECT_LABELS];
-    const userOid = new mongoose.Types.ObjectId(ownerId);
+    const userOid = new mongoose.Types.ObjectId(userId);
     let insertedCount = 0;
 
     for (const item of requestedLabels) {

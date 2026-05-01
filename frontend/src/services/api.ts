@@ -9,6 +9,7 @@ import {
 } from '../types';
 
 import axios from 'axios';
+import { getAuthToken } from './authSession';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
@@ -18,10 +19,6 @@ const api = axios.create({
     'Content-Type': 'application/json',
   }
 });
-
-const getAuthToken = (): string | null => {
-  return localStorage.getItem('token');
-};
 
 const buildAuthHeaders = (): Record<string, string> => {
   const token = getAuthToken();
@@ -119,6 +116,30 @@ export type DatasetAssignmentSummary = {
   user: ShareUser;
   count: number;
   ranges: string[];
+  submission?: AssignmentSubmissionStatus;
+};
+
+export type AssignmentSubmissionProgress = {
+  assignedSamples: number;
+  requiredMessages: number;
+  completedMessages: number;
+  missingMessages: Array<{
+    sampleId: string;
+    sampleIndex: number;
+    sampleKey: string;
+    messageIndex: number;
+    role: string;
+  }>;
+  percent: number;
+  isComplete: boolean;
+};
+
+export type AssignmentSubmissionStatus = {
+  status: 'draft' | 'submitted' | 'approved';
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
+  progress: AssignmentSubmissionProgress;
 };
 
 export type DatasetAssignmentsResponse = {
@@ -607,7 +628,7 @@ export const apiService = {
       versionName: string;
       ownerId: string;
       ownerName: string;
-      accessType?: 'public' | 'shared' | 'assigned';
+      accessType?: 'public' | 'shared' | 'assigned' | 'owned';
       updatedAt: string;
       topLabel: {
         _id: string;
@@ -650,6 +671,24 @@ export const apiService = {
 
   getDatasetVersionAssignments: async (id: string): Promise<DatasetAssignmentsResponse> => {
     const response = await api.get(`/dataprep/versions/${id}/assignments`);
+    return response.data;
+  },
+
+  getMyAssignmentSubmissionStatus: async (id: string): Promise<AssignmentSubmissionStatus> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/me/status`);
+    return response.data;
+  },
+
+  submitMyAssignment: async (id: string): Promise<AssignmentSubmissionStatus & { message: string }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/me/submit`);
+    return response.data;
+  },
+
+  approveAssignmentSubmission: async (
+    id: string,
+    userId: string
+  ): Promise<AssignmentSubmissionStatus & { message: string }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/users/${userId}/approve`);
     return response.data;
   },
 
@@ -719,7 +758,8 @@ export const apiService = {
     payload: {
       provider?: 'gemini' | 'openai' | 'deepseek';
       messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
-    }
+    },
+    fromCommunityHub = false
   ): Promise<{
     suggestions: Array<{
       messageIndex: number;
@@ -729,7 +769,9 @@ export const apiService = {
       is_correct_logic?: boolean;
     }>;
   }> => {
-    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/preview`, payload);
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/preview`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
     return response.data;
   },
 
@@ -744,9 +786,12 @@ export const apiService = {
         is_correct_logic?: boolean;
       }>;
       messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
-    }
+    },
+    fromCommunityHub = false
   ): Promise<{ message: string; insertedCount: number }> => {
-    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/save`, payload);
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/save`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
     return response.data;
   },
 
@@ -766,7 +811,7 @@ export const apiService = {
     return response.data;
   },
 
-  getPublicProjectLabeling: async (id: string, showRejected = false): Promise<{
+  getPublicProjectLabeling: async (id: string, showRejected = false, ownerUnassignedOnly = false): Promise<{
     project: {
       id: string;
       projectName: string;
@@ -792,6 +837,7 @@ export const apiService = {
     const response = await api.get(`/community/public-projects/${id}/labeling`, {
       params: {
         ...(showRejected ? { showRejected: 'true' } : {}),
+        ...(ownerUnassignedOnly ? { ownerUnassignedOnly: 'true' } : {}),
       },
     });
     return response.data;

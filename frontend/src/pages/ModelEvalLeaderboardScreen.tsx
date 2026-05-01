@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuthToken } from "../services/authSession";
 
 const FLAG_META: Record<
   string,
@@ -170,7 +171,7 @@ export const ModelEvalLeaderboardScreen: React.FC = () => {
 
     const loadLeaderboard = async () => {
       try {
-        const token = localStorage.getItem("token");
+        const token = getAuthToken();
         const response = await fetch("/api/model-eval/leaderboard", {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           signal: controller.signal,
