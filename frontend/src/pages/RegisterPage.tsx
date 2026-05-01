@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuthStore } from '../store/authStore';
 import toast from 'react-hot-toast';
+import { clearUserScopedQueryCache } from '../services/queryClient';
 
 export const RegisterPage: React.FC = () => {
   const [name, setName] = useState('');
@@ -17,6 +18,7 @@ export const RegisterPage: React.FC = () => {
     try {
       setLoading(true);
       const res = await axios.post('/api/auth/register', { name, email, password });
+      clearUserScopedQueryCache();
       setAuth(res.data.user, res.data.token);
       toast.success('Registration successful!');
       navigate('/');

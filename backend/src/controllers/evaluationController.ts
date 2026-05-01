@@ -2,17 +2,19 @@ import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { EvaluationSample, EvaluationService, RefinementSample } from '../services/evaluationService';
 import { EvaluationHistory } from '../models/EvaluationHistory';
+import { DataPrepProject } from '../models/DataPrepProject';
 import { DatasetVersion } from '../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { User } from '../models/User';
 import { Label } from '../models/Label';
+import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
+import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmission';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 import { getAuthUserId } from '../utils/auth';
 import { getHardRejectedSampleIds } from '../utils/labelFilters';
-
-type EvalFormat = 'openai' | 'alpaca';
+import { EvalFormat, inferFormatFromRow, resolveSampleKey, normalizeEvaluationData } from '../utils/evalUtils';
 
 type EvaluationScorePayload = {
   accuracy?: number | null;
@@ -69,65 +71,6 @@ function normalizeProjectName(input?: string): string {
   return value;
 }
 
-function inferFormatFromRow(row: Record<string, any>): EvalFormat {
-  if (Array.isArray(row?.messages)) {
-    return 'openai';
-  }
-  return 'alpaca';
-}
-
-function resolveSampleKey(row: Record<string, any>, index: number): string {
-  const keyCandidates = [row?.sourceKey, row?.sampleId, row?.blockId, row?.id, row?.conversation_id, row?.uuid];
-  for (const candidate of keyCandidates) {
-    if (candidate !== undefined && candidate !== null && String(candidate).trim() !== '') {
-      return String(candidate).trim();
-    }
-  }
-  return `sample-${index + 1}`;
-}
-
-function normalizeEvaluationData(format: EvalFormat, rawData: Record<string, any>): Record<string, any> | null {
-  if (!rawData || typeof rawData !== 'object') {
-    return null;
-  }
-
-  if (format === 'openai') {
-    const rawMessages = Array.isArray(rawData.messages) ? rawData.messages : [];
-
-    let messages = rawMessages
-      .map((message) => ({
-        role: String(message?.role || '').trim(),
-        content: String(message?.content || '').trim(),
-      }))
-      .filter((message) => !!message.role && !!message.content);
-
-    if (!messages.length) {
-      const legacyUser = String(rawData.userText ?? rawData.instruction ?? '').trim();
-      const legacyAssistant = String(rawData.assistantText ?? rawData.output ?? '').trim();
-      messages = [
-        legacyUser ? { role: 'user', content: legacyUser } : null,
-        legacyAssistant ? { role: 'assistant', content: legacyAssistant } : null,
-      ].filter(Boolean) as Array<{ role: string; content: string }>;
-    }
-
-    if (!messages.length) {
-      return null;
-    }
-
-    return { messages };
-  }
-
-  const instruction = String(rawData.instruction ?? rawData.userText ?? '').trim();
-  const input = String(rawData.input ?? '').trim();
-  const output = String(rawData.output ?? rawData.assistantText ?? '').trim();
-
-  if (!instruction || !output) {
-    return null;
-  }
-
-  return { instruction, input, output };
-}
-
 function buildEvaluationSummary(results: any) {
   const overall = Number(results?.overall);
   return Number.isFinite(overall) ? overall : null;
@@ -143,6 +86,164 @@ function getLatestEvaluationEntry(entries: any[]): any | null {
     return null;
   }
   return [...entries].sort((a, b) => getEvaluationTimestamp(a) - getEvaluationTimestamp(b))[entries.length - 1] || null;
+}
+
+function getSharedUserIds(version: any): string[] {
+  return Array.isArray(version?.sharedWithUserIds)
+    ? version.sharedWithUserIds.map((id: any) => String(id)).filter(Boolean)
+    : [];
+}
+
+function isVersionSharedWithUser(version: any, userId: string): boolean {
+  return getSharedUserIds(version).includes(String(userId));
+}
+
+async function buildSharedUserDtos(version: any): Promise<Array<{ id: string; name: string; email: string }>> {
+  const sharedUserIds = getSharedUserIds(version);
+  if (!sharedUserIds.length) {
+    return [];
+  }
+
+  const users = await User.find({ _id: { $in: sharedUserIds } })
+    .select('_id name email')
+    .lean();
+
+  const byId = new Map(users.map((user: any) => [String(user._id), user]));
+  return sharedUserIds
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((user: any) => ({
+      id: String(user._id),
+      name: String(user.name || ''),
+      email: String(user.email || ''),
+    }));
+}
+
+async function getAssignedSampleIdsForUser(
+  datasetVersionId: mongoose.Types.ObjectId,
+  userId: string
+): Promise<{ hasAssignments: boolean; sampleIds: Set<string> }> {
+  const [assignmentCount, assignments] = await Promise.all([
+    DatasetSampleAssignment.countDocuments({ datasetVersionId }),
+    DatasetSampleAssignment.find({
+      datasetVersionId,
+      assigneeId: new mongoose.Types.ObjectId(userId),
+    })
+      .select('sampleId')
+      .lean(),
+  ]);
+
+  return {
+    hasAssignments: assignmentCount > 0,
+    sampleIds: new Set(assignments.map((item: any) => String(item.sampleId))),
+  };
+}
+
+function filterItemsByAssignedSampleIds<T extends { _id: unknown }>(items: T[], sampleIds: Set<string>): T[] {
+  return items.filter((item) => sampleIds.has(String(item._id)));
+}
+
+function getLogicalMessagesForAssignment(sample: any): Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }> {
+  if (Array.isArray(sample?.data?.messages)) {
+    return sample.data.messages.map((message: any, index: number) => ({
+      messageIndex: index,
+      role: message?.role === 'assistant' ? 'assistant' : 'user',
+      content: String(message?.content || ''),
+    }));
+  }
+
+  return [
+    {
+      messageIndex: 0,
+      role: 'user' as const,
+      content: [sample?.data?.instruction, sample?.data?.input].map((part) => String(part || '').trim()).filter(Boolean).join('\n\n'),
+    },
+    {
+      messageIndex: 1,
+      role: 'assistant' as const,
+      content: String(sample?.data?.output || ''),
+    },
+  ];
+}
+
+async function calculateAssignmentProgress(datasetVersionId: mongoose.Types.ObjectId, assigneeId: string) {
+  const assigneeObjectId = new mongoose.Types.ObjectId(assigneeId);
+  const assignments = await DatasetSampleAssignment.find({ datasetVersionId, assigneeId: assigneeObjectId })
+    .sort({ sampleIndex: 1 })
+    .lean();
+
+  const sampleIds = assignments.map((assignment: any) => assignment.sampleId);
+  const samples = sampleIds.length
+    ? await ProcessedDatasetItem.find({ _id: { $in: sampleIds } }).lean()
+    : [];
+  const sampleMap = new Map(samples.map((sample: any) => [String(sample._id), sample]));
+
+  const labels = sampleIds.length
+    ? await Label.find({
+        sampleId: { $in: sampleIds },
+        targetScope: 'message',
+        $or: [
+          { createdBy: assigneeObjectId },
+          { upvotes: assigneeObjectId },
+          { downvotes: assigneeObjectId },
+        ],
+      })
+        .select('sampleId messageIndex')
+        .lean()
+    : [];
+
+  const completed = new Set(
+    labels
+      .filter((label: any) => Number.isInteger(label.messageIndex))
+      .map((label: any) => `${String(label.sampleId)}:${Number(label.messageIndex)}`)
+  );
+
+  let requiredMessages = 0;
+  let completedMessages = 0;
+  const missing: Array<{ sampleId: string; sampleIndex: number; sampleKey: string; messageIndex: number; role: string }> = [];
+
+  assignments.forEach((assignment: any) => {
+    const sample = sampleMap.get(String(assignment.sampleId));
+    if (!sample) {
+      return;
+    }
+
+    getLogicalMessagesForAssignment(sample).forEach((message) => {
+      requiredMessages += 1;
+      const key = `${String(sample._id)}:${message.messageIndex}`;
+      if (completed.has(key)) {
+        completedMessages += 1;
+        return;
+      }
+
+      missing.push({
+        sampleId: String(sample._id),
+        sampleIndex: Number(assignment.sampleIndex),
+        sampleKey: String(sample.sampleId || ''),
+        messageIndex: message.messageIndex,
+        role: message.role,
+      });
+    });
+  });
+
+  return {
+    assignedSamples: assignments.length,
+    requiredMessages,
+    completedMessages,
+    missingMessages: missing,
+    percent: requiredMessages > 0 ? Math.round((completedMessages / requiredMessages) * 100) : 0,
+    isComplete: requiredMessages > 0 && completedMessages === requiredMessages,
+  };
+}
+
+function formatSubmission(submission: any, progress: any) {
+  return {
+    status: submission?.status || 'draft',
+    submittedAt: submission?.submittedAt || null,
+    approvedAt: submission?.approvedAt || null,
+    approvedBy: submission?.approvedBy ? String(submission.approvedBy) : null,
+    progress,
+  };
 }
 
 function buildAverageResults(entries: any[]): EvaluationScorePayload {
@@ -286,6 +387,11 @@ export class EvaluationController {
       }
 
       const { projectName, similarityThreshold, format, data, promptId, promptContentSnapshot } = req.body as {
+        projectId?: string;
+        parentVersionId?: string;
+        operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+        operationParams?: Record<string, unknown>;
+        sourceType?: 'chat' | 'lesson';
         projectName?: string;
         similarityThreshold?: number;
         format?: string;
@@ -306,9 +412,46 @@ export class EvaluationController {
       const threshold = Number.isFinite(Number(similarityThreshold))
         ? Math.min(1, Math.max(0, Number(similarityThreshold)))
         : 0.9;
+      const requestedProjectId =
+        typeof req.body?.projectId === 'string' && mongoose.Types.ObjectId.isValid(req.body.projectId)
+          ? new mongoose.Types.ObjectId(req.body.projectId)
+          : undefined;
+      const requestedParentVersionId =
+        typeof req.body?.parentVersionId === 'string' && mongoose.Types.ObjectId.isValid(req.body.parentVersionId)
+          ? new mongoose.Types.ObjectId(req.body.parentVersionId)
+          : undefined;
+      const requestedOperationType = (req.body?.operationType || 'legacy') as
+        | 'upload'
+        | 'clean'
+        | 'cluster'
+        | 'refine_approved'
+        | 'manual_edit'
+        | 'legacy';
+      const requestedPrepareResumeStep = Number(req.body?.prepareResumeStep);
+      const prepareResumeStep = Number.isInteger(requestedPrepareResumeStep)
+        ? Math.min(14, Math.max(1, requestedPrepareResumeStep))
+        : 5;
+      const normalizedSourceType = req.body?.sourceType === 'lesson' ? 'lesson' : 'chat';
 
-      const versionCount = await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
-      const versionName = `Version ${versionCount + 1}`;
+      const existingProject = requestedProjectId
+        ? await DataPrepProject.findOne({ _id: requestedProjectId, ownerId }).lean()
+        : await DataPrepProject.findOne({ ownerId, name: normalizedProjectName, isArchived: { $ne: true } })
+            .sort({ createdAt: -1 })
+            .lean();
+
+      const project = existingProject
+        ? existingProject
+        : await DataPrepProject.create({
+            ownerId,
+            name: normalizedProjectName,
+            sourceType: normalizedSourceType,
+          });
+
+      const versionCount = project?._id
+        ? await DatasetVersion.countDocuments({ projectId: project._id })
+        : await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
+      const nextVersionNo = versionCount + 1;
+      const versionName = `Version ${nextVersionNo}`;
 
       const normalizedPromptId =
         typeof promptId === 'string' && mongoose.Types.ObjectId.isValid(promptId)
@@ -317,14 +460,40 @@ export class EvaluationController {
       const normalizedPromptSnapshot = String(promptContentSnapshot || '').trim();
 
       const datasetVersion = await DatasetVersion.create({
+        projectId: project._id,
         ownerId,
         projectName: normalizedProjectName,
+        parentVersionId: requestedParentVersionId,
+        createdFromVersionId: requestedParentVersionId,
+        versionNo: nextVersionNo,
         versionName,
+        operationType: requestedOperationType,
+        operationParams: req.body?.operationParams,
+        prepareResumeStep,
         similarityThreshold: threshold,
         totalSamples: data.length,
         promptId: normalizedPromptId,
         promptContentSnapshot: normalizedPromptSnapshot || undefined,
       });
+
+      await DataPrepProject.updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            latestVersionId: datasetVersion._id,
+          },
+          $setOnInsert: {
+            rootVersionId: datasetVersion._id,
+          },
+        }
+      );
+
+      if (!project.rootVersionId) {
+        await DataPrepProject.updateOne(
+          { _id: project._id, rootVersionId: { $exists: false } },
+          { $set: { rootVersionId: datasetVersion._id } }
+        );
+      }
 
       const operations = data
         .map((row, index) => {
@@ -375,6 +544,11 @@ export class EvaluationController {
 
       res.status(201).json({
         message: 'Đã tạo dataset version thành công.',
+        project: {
+          _id: String(project._id),
+          name: project.name,
+          sourceType: project.sourceType,
+        },
         datasetVersion,
         sampleIdMap,
       });
@@ -593,6 +767,7 @@ export class EvaluationController {
         const summary = {
           _id: String(version._id),
           versionName: version.versionName,
+          prepareResumeStep: Number((version as any).prepareResumeStep || 5),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,
@@ -633,9 +808,45 @@ export class EvaluationController {
     }
   }
 
-  async getPublicProjectsHub(_req: Request, res: Response): Promise<void> {
+  async getPublicProjectsHub(req: Request, res: Response): Promise<void> {
     try {
-      const versionRows = await DatasetVersion.find({ isPublic: true })
+      const viewerId = getAuthUserId(req);
+      if (!viewerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const viewerObjectId = new mongoose.Types.ObjectId(viewerId);
+      const assignedVersionRows = await DatasetSampleAssignment.find({ assigneeId: viewerObjectId })
+        .select('datasetVersionId')
+        .lean();
+      const assignedVersionIds = Array.from(
+        new Set(assignedVersionRows.map((row: any) => String(row.datasetVersionId)).filter(Boolean))
+      ).map((id) => new mongoose.Types.ObjectId(id));
+      const assignedVersionIdSet = new Set(assignedVersionIds.map(String));
+
+      const ownedAssignmentRows = await DatasetSampleAssignment.find({ assignedBy: viewerObjectId })
+        .select('datasetVersionId')
+        .lean();
+      const ownedAssignedVersionIds = Array.from(
+        new Set(ownedAssignmentRows.map((row: any) => String(row.datasetVersionId)).filter(Boolean))
+      ).map((id) => new mongoose.Types.ObjectId(id));
+      const ownedAssignedVersionIdSet = new Set(ownedAssignedVersionIds.map(String));
+
+      const versionRows = await DatasetVersion.find({
+        $or: [
+          { isPublic: true },
+          { sharedWithUserIds: viewerObjectId },
+          ...(assignedVersionIds.length ? [{ _id: { $in: assignedVersionIds } }] : []),
+          {
+            ownerId: viewerObjectId,
+            $or: [
+              { sharedWithUserIds: { $exists: true, $ne: [] } },
+              ...(ownedAssignedVersionIds.length ? [{ _id: { $in: ownedAssignedVersionIds } }] : []),
+            ],
+          },
+        ],
+      })
         .sort({ createdAt: -1 })
         .lean();
 
@@ -678,6 +889,11 @@ export class EvaluationController {
             {
               $match: {
                 'version._id': new mongoose.Types.ObjectId(datasetVersionId),
+                $or: [
+                  { targetScope: 'sample' },
+                  { targetScope: { $exists: false } },
+                  { targetScope: null },
+                ],
               },
             },
             {
@@ -709,6 +925,16 @@ export class EvaluationController {
             ownerId,
             ownerName: ownerNameMap.get(ownerId) || 'Unknown',
             updatedAt: row.createdAt,
+            accessType: ownerId === String(viewerId) && (
+              ownedAssignedVersionIdSet.has(datasetVersionId)
+              || (Array.isArray(row.sharedWithUserIds) && row.sharedWithUserIds.length > 0)
+            )
+              ? 'owned'
+              : Boolean(row.isPublic)
+              ? 'public'
+              : assignedVersionIdSet.has(datasetVersionId)
+                ? 'assigned'
+                : 'shared',
             topLabel,
           };
         })
@@ -738,27 +964,47 @@ export class EvaluationController {
         return;
       }
 
-      if (!datasetVersion.isPublic) {
-        res.status(403).json({ error: 'Project này chưa được public.' });
+      const viewerId = getAuthUserId(req);
+      if (!viewerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const isOwner = String(datasetVersion.ownerId) === String(viewerId);
+      const hasSharedAccess = isVersionSharedWithUser(datasetVersion, viewerId);
+      const assignedAccess = await getAssignedSampleIdsForUser(datasetVersion._id, viewerId);
+      const hasAssignedAccess = assignedAccess.sampleIds.size > 0;
+      if (!datasetVersion.isPublic && !hasSharedAccess && !hasAssignedAccess && !isOwner) {
+        res.status(403).json({ error: 'Bạn chưa được cấp quyền truy cập project này.' });
         return;
       }
 
       const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
+      const ownerUnassignedOnly = String(req.query.ownerUnassignedOnly || '').toLowerCase() === 'true';
 
       const items = await ProcessedDatasetItem.find({ datasetVersionId: datasetVersion._id })
         .sort({ createdAt: 1 })
         .lean();
 
-      let filteredItems: typeof items = items;
+      let filteredItems: typeof items = !isOwner && assignedAccess.hasAssignments
+        ? filterItemsByAssignedSampleIds(items as any[], assignedAccess.sampleIds)
+        : items;
+      if (isOwner && ownerUnassignedOnly) {
+        const assignedSamples = await DatasetSampleAssignment.find({ datasetVersionId: datasetVersion._id })
+          .select('sampleId')
+          .lean();
+        const assignedSampleIds = new Set(assignedSamples.map((item: any) => String(item.sampleId)));
+        filteredItems = (filteredItems as any[]).filter((item) => !assignedSampleIds.has(String(item._id)));
+      }
       let rejectedSamples = 0;
 
-      if (items.length > 0) {
-        const scopedIds = (items as any[]).map((item) => new mongoose.Types.ObjectId(String(item._id)));
+      if (filteredItems.length > 0) {
+        const scopedIds = (filteredItems as any[]).map((item) => new mongoose.Types.ObjectId(String(item._id)));
         const rejectedIds = await getHardRejectedSampleIds(scopedIds);
         rejectedSamples = rejectedIds.size;
 
         if (rejectedIds.size > 0) {
-          filteredItems = (items as any[]).filter((item) => {
+          filteredItems = (filteredItems as any[]).filter((item) => {
             const isRejected = rejectedIds.has(String(item._id));
             return showRejected ? isRejected : !isRejected;
           });
@@ -801,7 +1047,7 @@ export class EvaluationController {
           datasetVersionId: String(datasetVersion._id),
           sampleIdMap,
           ownerId: String(datasetVersion.ownerId),
-          startStep: 5,
+          startStep: 7,
           totalSamples: items.length,
           visibleSamples: filteredItems.length,
           rejectedSamples,
@@ -839,9 +1085,11 @@ export class EvaluationController {
 
       const isOwner = String((version as any).ownerId) === String(viewerId);
       const isPublicVersion = Boolean((version as any).isPublic);
-      const isCommunityAccess = String(req.query.community || req.query.fromCommunityHub || '').toLowerCase() === 'true';
+      const hasSharedAccess = isVersionSharedWithUser(version, viewerId);
+      const assignedAccess = await getAssignedSampleIdsForUser(version._id, viewerId);
+      const hasAssignedAccess = assignedAccess.sampleIds.size > 0;
 
-      if (!isOwner && !isPublicVersion && !isCommunityAccess) {
+      if (!isOwner && !isPublicVersion && !hasSharedAccess && !hasAssignedAccess) {
         res.status(403).json({ error: 'Forbidden: you do not have access to this dataset version.' });
         return;
       }
@@ -863,16 +1111,18 @@ export class EvaluationController {
       // showRejected=true  → show ONLY samples with hard REJECT >= 3 upvotes
       // showRejected=false → exclude those samples (default)
       const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
-      let filteredItems: typeof itemsWithEvaluations = itemsWithEvaluations;
+      let filteredItems: typeof itemsWithEvaluations = !isOwner && assignedAccess.hasAssignments
+        ? filterItemsByAssignedSampleIds(itemsWithEvaluations as any[], assignedAccess.sampleIds)
+        : itemsWithEvaluations;
 
-      if (itemsWithEvaluations.length > 0) {
-        const scopedIds = (itemsWithEvaluations as any[]).map(
+      if (filteredItems.length > 0) {
+        const scopedIds = (filteredItems as any[]).map(
           (item) => new mongoose.Types.ObjectId(String(item._id))
         );
         const rejectedIds = await getHardRejectedSampleIds(scopedIds);
 
         if (rejectedIds.size > 0) {
-          filteredItems = (itemsWithEvaluations as any[]).filter((item) => {
+          filteredItems = (filteredItems as any[]).filter((item) => {
             const isRejected = rejectedIds.has(String(item._id));
             return showRejected ? isRejected : !isRejected;
           });
@@ -909,9 +1159,16 @@ export class EvaluationController {
       res.json({
         datasetVersion: {
           _id: String(version._id),
+          projectId: version.projectId ? String(version.projectId) : null,
+          parentVersionId: version.parentVersionId ? String(version.parentVersionId) : null,
+          versionNo: version.versionNo ?? null,
           projectName: version.projectName,
           versionName: version.versionName,
           isPublic: Boolean((version as any).isPublic),
+          sharedWithUsers: await buildSharedUserDtos(version),
+          operationType: version.operationType || 'legacy',
+          operationParams: version.operationParams || {},
+          prepareResumeStep: Number((version as any).prepareResumeStep || 5),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,
@@ -922,6 +1179,63 @@ export class EvaluationController {
       console.error('Get dataset version detail error:', error);
       res.status(500).json({
         error: 'Lấy chi tiết dataset version thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async updateDatasetVersionPrepareProgress(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const prepareResumeStep = Number(req.body?.prepareResumeStep);
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      if (!Number.isInteger(prepareResumeStep) || prepareResumeStep < 1 || prepareResumeStep > 14) {
+        res.status(400).json({ error: 'prepareResumeStep phải là số nguyên từ 1 đến 14.' });
+        return;
+      }
+
+      const updated = await DatasetVersion.findOneAndUpdate(
+        { _id: id, ownerId },
+        { $set: { prepareResumeStep } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      if (updated.projectId) {
+        await DataPrepProject.updateOne(
+          { _id: updated.projectId, ownerId },
+          { $set: { latestVersionId: updated._id } }
+        );
+      }
+
+      res.json({
+        message: 'Đã cập nhật tiến độ prepare.',
+        datasetVersion: {
+          _id: String(updated._id),
+          projectName: updated.projectName,
+          versionName: updated.versionName,
+          prepareResumeStep: Number((updated as any).prepareResumeStep || prepareResumeStep),
+        },
+      });
+    } catch (error: any) {
+      console.error('Update dataset version prepare progress error:', error);
+      res.status(500).json({
+        error: 'Cập nhật tiến độ prepare thất bại',
         details: error.message,
       });
     }
@@ -977,6 +1291,582 @@ export class EvaluationController {
     }
   }
 
+  async updateDatasetVersionSharing(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const rawUserId = req.body?.userId;
+      const userId = rawUserId ? String(rawUserId) : '';
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'userId không hợp lệ.' });
+        return;
+      }
+
+      if (userId && userId === String(ownerId)) {
+        res.status(400).json({ error: 'Owner đã có quyền trên dataset version này.' });
+        return;
+      }
+
+      if (userId) {
+        const targetUser = await User.findById(userId).select('_id').lean();
+        if (!targetUser) {
+          res.status(404).json({ error: 'Không tìm thấy tài khoản được chọn.' });
+          return;
+        }
+      }
+
+      const sharedWithUserIds = userId ? [new mongoose.Types.ObjectId(userId)] : [];
+      const updated = await DatasetVersion.findOneAndUpdate(
+        { _id: id, ownerId },
+        { $set: { sharedWithUserIds } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      res.json({
+        message: userId ? 'Đã cấp quyền cho tài khoản được chọn.' : 'Đã xóa quyền chia sẻ riêng.',
+        datasetVersion: {
+          _id: String(updated._id),
+          isPublic: Boolean((updated as any).isPublic),
+          projectName: updated.projectName,
+          versionName: updated.versionName,
+          sharedWithUsers: await buildSharedUserDtos(updated),
+        },
+      });
+    } catch (error: any) {
+      console.error('Update dataset version sharing error:', error);
+      res.status(500).json({
+        error: 'Cập nhật quyền chia sẻ thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async getDatasetVersionAssignments(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const samples = await ProcessedDatasetItem.find({ datasetVersionId: version._id })
+        .sort({ createdAt: 1 })
+        .lean();
+      const assignments = await DatasetSampleAssignment.find({ datasetVersionId: version._id })
+        .sort({ sampleIndex: 1 })
+        .lean();
+
+      const assigneeIds = Array.from(new Set(assignments.map((item: any) => String(item.assigneeId)).filter(Boolean)));
+      const users = assigneeIds.length
+        ? await User.find({ _id: { $in: assigneeIds } }).select('_id name email').lean()
+        : [];
+      const userMap = new Map(users.map((user: any) => [String(user._id), user]));
+      const submissions = assigneeIds.length
+        ? await DatasetAssignmentSubmission.find({
+            datasetVersionId: version._id,
+            assigneeId: { $in: assigneeIds.map((userId) => new mongoose.Types.ObjectId(userId)) },
+          }).lean()
+        : [];
+      const submissionMap = new Map(submissions.map((submission: any) => [String(submission.assigneeId), submission]));
+      const progressMap = new Map<string, any>();
+      await Promise.all(
+        assigneeIds.map(async (userId) => {
+          progressMap.set(userId, await calculateAssignmentProgress(version._id, userId));
+        })
+      );
+      const assignmentBySampleId = new Map(assignments.map((item: any) => [String(item.sampleId), item]));
+      const summaryMap = new Map<string, { user: { id: string; name: string; email: string }; count: number; ranges: string[]; indices: number[] }>();
+
+      assignments.forEach((assignment: any) => {
+        const userId = String(assignment.assigneeId);
+        const user = userMap.get(userId);
+        if (!user) {
+          return;
+        }
+        if (!summaryMap.has(userId)) {
+          summaryMap.set(userId, {
+            user: { id: userId, name: String(user.name || ''), email: String(user.email || '') },
+            count: 0,
+            ranges: [],
+            indices: [],
+          });
+        }
+        const summary = summaryMap.get(userId)!;
+        summary.count += 1;
+        summary.indices.push(Number(assignment.sampleIndex));
+      });
+
+      const summary = Array.from(summaryMap.values()).map((item) => {
+        const sorted = item.indices.sort((a, b) => a - b);
+        const ranges: string[] = [];
+        let start = sorted[0];
+        let prev = sorted[0];
+        for (let i = 1; i <= sorted.length; i += 1) {
+          const current = sorted[i];
+          if (current === prev + 1) {
+            prev = current;
+            continue;
+          }
+          if (Number.isFinite(start)) {
+            ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+          }
+          start = current;
+          prev = current;
+        }
+        return {
+          user: item.user,
+          count: item.count,
+          ranges,
+          submission: formatSubmission(submissionMap.get(item.user.id), progressMap.get(item.user.id)),
+        };
+      });
+
+      const sampleRows = samples.map((sample: any, index) => {
+        const assignment = assignmentBySampleId.get(String(sample._id));
+        const user = assignment ? userMap.get(String(assignment.assigneeId)) : null;
+        const rawPreview = Array.isArray(sample.data?.messages)
+          ? sample.data.messages.map((msg: any) => String(msg?.content || '')).join(' ')
+          : [sample.data?.instruction, sample.data?.input, sample.data?.output].map((part) => String(part || '')).join(' ');
+        return {
+          sampleId: String(sample._id),
+          sampleKey: String(sample.sampleId),
+          sampleIndex: index + 1,
+          preview: rawPreview.trim().slice(0, 180),
+          assignee: user
+            ? { id: String(user._id), name: String(user.name || ''), email: String(user.email || '') }
+            : null,
+        };
+      });
+
+      res.json({
+        datasetVersion: {
+          _id: String(version._id),
+          projectName: version.projectName,
+          versionName: version.versionName,
+          totalSamples: samples.length,
+        },
+        samples: sampleRows,
+        summary,
+        totals: {
+          totalSamples: samples.length,
+          assigned: assignments.length,
+          unassigned: Math.max(0, samples.length - assignments.length),
+        },
+      });
+    } catch (error: any) {
+      console.error('Get dataset version assignments error:', error);
+      res.status(500).json({
+        error: 'Lấy danh sách phân quyền thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async assignDatasetVersionRange(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const assigneeId = String(req.body?.assigneeId || '');
+      const startIndex = Number(req.body?.startIndex);
+      const count = Number(req.body?.count);
+
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(assigneeId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc assigneeId không hợp lệ.' });
+        return;
+      }
+      if (!Number.isInteger(startIndex) || startIndex < 1 || !Number.isInteger(count) || count < 1) {
+        res.status(400).json({ error: 'startIndex và count phải là số nguyên dương.' });
+        return;
+      }
+      if (assigneeId === String(ownerId)) {
+        res.status(400).json({ error: 'Owner không cần được gán mẫu.' });
+        return;
+      }
+
+      const [version, assignee] = await Promise.all([
+        DatasetVersion.findOne({ _id: id, ownerId }).lean(),
+        User.findById(assigneeId).select('_id').lean(),
+      ]);
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+      if (!assignee) {
+        res.status(404).json({ error: 'Không tìm thấy tài khoản được gán.' });
+        return;
+      }
+
+      const endIndex = startIndex + count - 1;
+      const samples = await ProcessedDatasetItem.find({ datasetVersionId: version._id })
+        .sort({ createdAt: 1 })
+        .lean();
+      if (startIndex > samples.length || endIndex > samples.length) {
+        res.status(400).json({ error: `Range vượt quá tổng số mẫu (${samples.length}).` });
+        return;
+      }
+
+      const selectedSamples = samples.slice(startIndex - 1, endIndex);
+      const selectedSampleIds = selectedSamples.map((sample: any) => sample._id);
+      const conflicts = await DatasetSampleAssignment.find({
+        sampleId: { $in: selectedSampleIds },
+        assigneeId: { $ne: new mongoose.Types.ObjectId(assigneeId) },
+      }).lean();
+
+      if (conflicts.length > 0) {
+        const users = await User.find({ _id: { $in: conflicts.map((item: any) => item.assigneeId) } })
+          .select('_id name email')
+          .lean();
+        const userMap = new Map(users.map((user: any) => [String(user._id), user]));
+        res.status(409).json({
+          error: 'Range này đã có mẫu được gán cho user khác.',
+          conflicts: conflicts.map((item: any) => {
+            const user = userMap.get(String(item.assigneeId));
+            return {
+              sampleIndex: Number(item.sampleIndex),
+              sampleId: String(item.sampleId),
+              assignee: user
+                ? { id: String(user._id), name: String(user.name || ''), email: String(user.email || '') }
+                : null,
+            };
+          }),
+        });
+        return;
+      }
+
+      await DatasetSampleAssignment.deleteMany({
+        datasetVersionId: version._id,
+        sampleId: { $in: selectedSampleIds },
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      });
+      await DatasetAssignmentSubmission.deleteOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      });
+
+      await DatasetSampleAssignment.insertMany(
+        selectedSamples.map((sample: any, offset) => ({
+          datasetVersionId: version._id,
+          sampleId: sample._id,
+          assigneeId: new mongoose.Types.ObjectId(assigneeId),
+          assignedBy: new mongoose.Types.ObjectId(ownerId),
+          sampleIndex: startIndex + offset,
+        })),
+        { ordered: false }
+      );
+
+      await DatasetVersion.updateOne(
+        { _id: version._id, ownerId },
+        { $addToSet: { sharedWithUserIds: new mongoose.Types.ObjectId(assigneeId) } }
+      );
+
+      res.status(201).json({
+        message: `Đã gán ${selectedSamples.length} mẫu.`,
+        assignedCount: selectedSamples.length,
+      });
+    } catch (error: any) {
+      console.error('Assign dataset version range error:', error);
+      res.status(500).json({
+        error: 'Gán range mẫu thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async clearDatasetVersionAssignmentRange(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const startIndex = Number(req.body?.startIndex);
+      const count = Number(req.body?.count);
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+      if (!Number.isInteger(startIndex) || startIndex < 1 || !Number.isInteger(count) || count < 1) {
+        res.status(400).json({ error: 'startIndex và count phải là số nguyên dương.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const result = await DatasetSampleAssignment.deleteMany({
+        datasetVersionId: version._id,
+        sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
+      });
+      await DatasetAssignmentSubmission.deleteMany({ datasetVersionId: version._id });
+
+      res.json({
+        message: `Đã xóa ${result.deletedCount || 0} assignment.`,
+        deletedCount: result.deletedCount || 0,
+      });
+    } catch (error: any) {
+      console.error('Clear dataset version assignment range error:', error);
+      res.status(500).json({
+        error: 'Xóa assignment theo range thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async clearDatasetVersionUserAssignments(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, userId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc userId không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const result = await DatasetSampleAssignment.deleteMany({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      });
+      await DatasetAssignmentSubmission.deleteOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      });
+
+      res.json({
+        message: `Đã xóa ${result.deletedCount || 0} assignment của user.`,
+        deletedCount: result.deletedCount || 0,
+      });
+    } catch (error: any) {
+      console.error('Clear dataset version user assignments error:', error);
+      res.status(500).json({
+        error: 'Xóa assignment của user thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async getMyAssignmentSubmissionStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const assigneeId = getAuthUserId(req);
+      if (!assigneeId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findById(id).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, assigneeId);
+      if (progress.assignedSamples === 0) {
+        res.status(404).json({ error: 'Bạn chưa được phân công mẫu nào trong version này.' });
+        return;
+      }
+
+      const submission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      }).lean();
+
+      res.json(formatSubmission(submission, progress));
+    } catch (error: any) {
+      console.error('Get my assignment submission status error:', error);
+      res.status(500).json({
+        error: 'Lấy trạng thái nộp kết quả thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async submitMyAssignment(req: Request, res: Response): Promise<void> {
+    try {
+      const assigneeId = getAuthUserId(req);
+      if (!assigneeId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        res.status(400).json({ error: 'Dataset version id không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findById(id).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, assigneeId);
+      if (progress.assignedSamples === 0) {
+        res.status(404).json({ error: 'Bạn chưa được phân công mẫu nào trong version này.' });
+        return;
+      }
+
+      if (!progress.isComplete) {
+        res.status(409).json({
+          error: 'Bạn cần gán nhãn đầy đủ mọi message trước khi nộp kết quả.',
+          progress,
+        });
+        return;
+      }
+
+      const existing = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      }).lean();
+
+      if (existing?.status === 'approved') {
+        res.status(409).json({ error: 'Kết quả này đã được owner approve.', submission: formatSubmission(existing, progress) });
+        return;
+      }
+
+      const submittedAt = existing?.submittedAt || new Date();
+      const submission = await DatasetAssignmentSubmission.findOneAndUpdate(
+        {
+          datasetVersionId: version._id,
+          assigneeId: new mongoose.Types.ObjectId(assigneeId),
+        },
+        {
+          $set: {
+            status: 'submitted',
+            submittedAt,
+            progressSnapshot: progress,
+          },
+        },
+        { new: true, upsert: true }
+      ).lean();
+
+      res.json({
+        message: 'Đã nộp kết quả gán nhãn.',
+        ...formatSubmission(submission, progress),
+      });
+    } catch (error: any) {
+      console.error('Submit my assignment error:', error);
+      res.status(500).json({
+        error: 'Nộp kết quả gán nhãn thất bại',
+        details: error.message,
+      });
+    }
+  }
+
+  async approveUserAssignmentSubmission(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, userId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc userId không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const submission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      }).lean();
+
+      if (!submission || submission.status !== 'submitted') {
+        res.status(409).json({ error: 'User này chưa nộp kết quả để approve.' });
+        return;
+      }
+
+      const progress = await calculateAssignmentProgress(version._id, userId);
+      const updated = await DatasetAssignmentSubmission.findOneAndUpdate(
+        {
+          datasetVersionId: version._id,
+          assigneeId: new mongoose.Types.ObjectId(userId),
+        },
+        {
+          $set: {
+            status: 'approved',
+            approvedAt: new Date(),
+            approvedBy: new mongoose.Types.ObjectId(ownerId),
+            progressSnapshot: progress,
+          },
+        },
+        { new: true }
+      ).lean();
+
+      res.json({
+        message: 'Đã approve kết quả gán nhãn.',
+        ...formatSubmission(updated, progress),
+      });
+    } catch (error: any) {
+      console.error('Approve user assignment submission error:', error);
+      res.status(500).json({
+        error: 'Approve kết quả gán nhãn thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async deleteDatasetVersionSample(req: Request, res: Response): Promise<void> {
     try {
       const ownerId = getAuthUserId(req);
@@ -1006,6 +1896,7 @@ export class EvaluationController {
       await Promise.all([
         ProcessedDatasetItem.deleteOne({ _id: item._id }),
         EvaluationHistory.deleteMany({ sampleId: item._id, ownerId }),
+        DatasetSampleAssignment.deleteMany({ sampleId: item._id }),
       ]);
 
       await DatasetVersion.updateOne(

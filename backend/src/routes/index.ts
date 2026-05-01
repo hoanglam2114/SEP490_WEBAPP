@@ -44,8 +44,10 @@ import {
   getGpuStatusEndpoint,
   reviewConversation
 } from '../controllers/evalModelController';
-import { authMiddleware } from '../middleware/authMiddleware';
+import { authMiddleware, optionalAuthMiddleware } from '../middleware/authMiddleware';
 import labelRoutes from './labelRoutes';
+import dataprepRoutes from './dataprepRoutes';
+import { getGpuConfig, updateGpuConfig } from '../controllers/configController';
 
 
 const router = express.Router();
@@ -79,7 +81,7 @@ const upload = multer({
 });
 
 router.use('/auth', authRoutes);
-router.use(authMiddleware);
+router.use(optionalAuthMiddleware);
 // Conversion Routes
 router.post('/upload', upload.single('file'), (req, res) => controller.uploadFile(req, res));
 router.post('/convert', (req, res) => controller.convertData(req, res));
@@ -113,14 +115,22 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
 router.post('/evaluate/refine', (req, res) => evalController.refine(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
-router.get('/evaluate/history', (req, res) => evalController.getEvaluationHistory(req, res));
-router.patch('/evaluate/history/:id', (req, res) => evalController.updateEvaluationHistory(req, res));
+router.get('/evaluate/history', authMiddleware, (req, res) => evalController.getEvaluationHistory(req, res));
+router.patch('/evaluate/history/:id', authMiddleware, (req, res) => evalController.updateEvaluationHistory(req, res));
 router.post('/dataset-versions/create', (req, res) => evalController.createDatasetVersion(req, res));
 router.get('/dataset-versions/:id', (req, res) => evalController.getDatasetVersionDetail(req, res));
 router.patch('/dataset-versions/:id/visibility', (req, res) => evalController.updateDatasetVersionVisibility(req, res));
+router.patch('/dataset-versions/:id/share', (req, res) => evalController.updateDatasetVersionSharing(req, res));
+router.get('/dataset-versions/:id/assignments', (req, res) => evalController.getDatasetVersionAssignments(req, res));
+router.get('/dataset-versions/:id/assignments/me/status', (req, res) => evalController.getMyAssignmentSubmissionStatus(req, res));
+router.post('/dataset-versions/:id/assignments/me/submit', (req, res) => evalController.submitMyAssignment(req, res));
+router.post('/dataset-versions/:id/assignments/range', (req, res) => evalController.assignDatasetVersionRange(req, res));
+router.post('/dataset-versions/:id/assignments/users/:userId/approve', (req, res) => evalController.approveUserAssignmentSubmission(req, res));
+router.delete('/dataset-versions/:id/assignments/range', (req, res) => evalController.clearDatasetVersionAssignmentRange(req, res));
+router.delete('/dataset-versions/:id/assignments/users/:userId', (req, res) => evalController.clearDatasetVersionUserAssignments(req, res));
 router.delete('/dataset-versions/items/:sampleId', (req, res) => evalController.deleteDatasetVersionSample(req, res));
-router.get('/community/public-projects', (req, res) => evalController.getPublicProjectsHub(req, res));
-router.get('/community/public-projects/:id/labeling', (req, res) => evalController.getPublicProjectLabeling(req, res));
+router.get('/community/public-projects', authMiddleware, (req, res) => evalController.getPublicProjectsHub(req, res));
+router.get('/community/public-projects/:id/labeling', authMiddleware, (req, res) => evalController.getPublicProjectLabeling(req, res));
 
 // Clustering Route (proxy to Python K-means on Colab via GPU_SERVICE_URL)
 router.post('/cluster/visualize', clusterVisualize);
@@ -129,6 +139,10 @@ router.post('/cluster/filter', clusterFilter);
 router.post('/cluster/remove-noise', removeNoise);
 router.post('/cluster/deduplicate', deduplicate);
 router.delete('/cluster/cache', deleteClusterCache);
+
+// Config Routes
+router.get('/config/gpu-url', getGpuConfig);
+router.post('/config/gpu-url', updateGpuConfig);
 
 // Training Routes
 router.post('/train/start', upload.single('dataset_file'), startTraining);
@@ -153,7 +167,7 @@ router.get('/model-eval/leaderboard', getEvaluatedModels);
 router.post('/model-eval/run/:jobId', upload.single('eval_file'), runEvaluation);
 router.get('/model-eval/stream/:evalJobId', streamEvalStatus);
 router.post('/model-eval/save', saveEvalResult);
-router.get('/model-eval/history/:jobId', getEvalHistory);
+router.get('/model-eval/history/:jobId', authMiddleware, getEvalHistory);
 router.post('/model-eval/pin/:evalId', pinEvaluation);         // ⚠️ phải đứng trước /:evalId
 router.get('/model-eval/compare', compareEvaluations);         // ⚠️ trước GET /:evalId
 router.delete('/model-eval/:evalId', deleteEvaluation);        // ⚠️ trước GET /:evalId
@@ -176,6 +190,7 @@ router.get('/model-versions/download-dataset/:id', (req, res) => registryControl
 router.get('/model-registry/:registryId/active', (req, res) => registryController.getActiveVersion(req, res));
 
 // Dataset Prompt Routes
+router.get('/dataset-prompts', (req, res) => promptController.listByProject(req, res));
 router.get('/dataset-prompts/project/:projectName', (req, res) => promptController.listByProject(req, res));
 router.get('/dataset-prompts/:id', (req, res) => promptController.getById(req, res));
 router.post('/dataset-prompts', (req, res) => promptController.create(req, res));
@@ -183,5 +198,8 @@ router.delete('/dataset-prompts/:id', (req, res) => promptController.delete(req,
 
 // Data Labeling Routes
 router.use('/labels', labelRoutes);
+
+// Data Preparation routes must stay protected.
+router.use('/dataprep', authMiddleware, dataprepRoutes);
 
 export default router;

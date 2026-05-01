@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 
 import { AutoTrainScreen } from '../pages/AutoTrainScreen';
@@ -21,16 +21,7 @@ import { EvaluationHistory } from '../pages/EvaluationHistory';
 import { ModelRegistryPage } from '../pages/ModelRegistryPage';
 import { ModelVersionsPage } from '../pages/ModelVersionsPage';
 import { PublicProjectsHub } from '../pages/PublicProjectsHub';
-
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+import { queryClient } from './queryClient';
 
 export default function AppRouter() {
   return (
@@ -77,6 +68,13 @@ export default function AppRouter() {
           <Route path="/model-eval/compare" element={<ModelEvalCompareScreen />} />
           {/* /model-eval/:evalId phải đứng SAU /model-eval/run, /history, /compare để không bị shadow */}
           <Route path="/model-eval/:evalId" element={<ModelEvalResultScreen />} />
+
+          {/* Backward-compatible aliases for older URLs */}
+          <Route path="/model/eval/leaderboard" element={<ModelEvalLeaderboardScreen />} />
+          <Route path="/model/eval/run" element={<ModelEvalRunScreen />} />
+          <Route path="/model/eval/history/:jobId" element={<ModelEvalHistoryScreen />} />
+          <Route path="/model/eval/compare" element={<ModelEvalCompareScreen />} />
+          <Route path="/model/eval/:evalId" element={<ModelEvalResultScreen />} />
         </Routes>
       </Router>
     </QueryClientProvider>

@@ -4,6 +4,7 @@ import { Bot, ChevronLeft } from 'lucide-react';
 import { useAppStore } from '../hooks/useAppStore';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
+import { clearUserScopedQueryCache } from '../services/queryClient';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -18,7 +19,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [dataPrepStep, setDataPrepStep] = useState<number | null>(null);
 
   const isHomePage = location.pathname === '/';
-  const showDataPrepNextButton = location.pathname === '/chatbotconverter' && dataPrepStep === 8;
+  const showDataPrepNextButton = location.pathname === '/chatbotconverter' && dataPrepStep === 9;
 
   useEffect(() => {
     const handleDataPrepStepChange = (event: Event) => {
@@ -88,6 +89,7 @@ export function MainLayout({ children }: MainLayoutProps) {
                     <button
                       onClick={() => {
                         logout();
+                        clearUserScopedQueryCache();
                         navigate('/login');
                       }}
                       className="text-sm font-medium text-red-600 hover:text-red-800"

@@ -10,6 +10,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { useTrainingStore } from "../hooks/useTrainingStore";
+import { getAuthToken } from "../services/authSession";
 
 const DATASET_SOURCES = [
   { value: "local", label: "Local Upload" },
@@ -174,6 +175,18 @@ interface SystemResources {
   vram_total_mb: number;
   gpu_util: number;
 }
+
+const getAuthHeaders = (): Record<string, string> => {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const withAuthQuery = (url: string): string => {
+  const token = getAuthToken();
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+};
 
 export const AutoTrainScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -413,7 +426,9 @@ export const AutoTrainScreen: React.FC = () => {
 
     const hydrateAndTrack = async () => {
       try {
-        const res = await fetch(`/api/train/history/${resumeId}`);
+        const res = await fetch(`/api/train/history/${resumeId}`, {
+          headers: getAuthHeaders(),
+        });
         const data = await res.json();
 
         if (res.ok && data) {
@@ -466,7 +481,7 @@ export const AutoTrainScreen: React.FC = () => {
     setShowLog(true);
     store.addJob(jobId, config || store.jobConfigs[jobId]);
 
-    const es = new EventSource(`/api/train/stream/${jobId}`);
+    const es = new EventSource(withAuthQuery(`/api/train/stream/${jobId}`));
     store.setEventSource(jobId, es);
 
     es.onmessage = (event) => {
@@ -506,7 +521,7 @@ export const AutoTrainScreen: React.FC = () => {
 
             fetch("/api/train/history", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
               body: JSON.stringify({
                 jobId,
                 ...jobConfig,
@@ -643,6 +658,7 @@ export const AutoTrainScreen: React.FC = () => {
 
       const response = await fetch("/api/train/start", {
         method: "POST",
+        headers: getAuthHeaders(),
         body: formData,
       });
 
@@ -677,7 +693,10 @@ export const AutoTrainScreen: React.FC = () => {
 
   const handleStopTraining = async (jobId: string) => {
     try {
-      await fetch(`/api/train/stop/${jobId}`, { method: "POST" });
+      await fetch(`/api/train/stop/${jobId}`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
       const store = useTrainingStore.getState();
       store.closeEventSource(jobId);
       store.updateJobStatus(jobId, { ...store.activeJobs[jobId], status: "STOPPED" });

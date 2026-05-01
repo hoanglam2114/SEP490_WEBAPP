@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
+import { clearUserScopedQueryCache } from '../services/queryClient';
 
 const tools = [
   {
@@ -114,7 +115,48 @@ const TAG_COLORS: Record<string, string> = {
 export const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [hovered, setHovered] = useState<string | null>(null);
-  const { user, logout } = useAuthStore();
+  const { user, logout, token } = useAuthStore();
+  const [gpuUrl, setGpuUrl] = useState('');
+  const [isSavingUrl, setIsSavingUrl] = useState(false);
+
+  React.useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.gpuUrl) {
+            setGpuUrl(data.gpuUrl);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load GPU config', err);
+      }
+    };
+    fetchConfig();
+  }, [token]);
+
+  const handleSaveGpuUrl = async () => {
+    setIsSavingUrl(true);
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ gpuUrl })
+      });
+    } catch (err) {
+      console.error('Failed to save GPU config', err);
+    } finally {
+      setIsSavingUrl(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -129,8 +171,23 @@ export const HomePage: React.FC = () => {
                   d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
             </div>
-            <span className="text-sm font-bold text-slate-800 tracking-tight">Chatbot Training Toolkit</span>
+            <span className="text-sm font-bold text-slate-800 tracking-tight whitespace-nowrap">Chatbot Training Toolkit</span>
           </div>
+          
+          <div className="flex-1 max-w-sm mx-8 hidden md:flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">GPU URL:</span>
+            <input 
+              type="text" 
+              value={gpuUrl}
+              onChange={(e) => setGpuUrl(e.target.value)}
+              onBlur={handleSaveGpuUrl}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveGpuUrl() }}
+              className="flex-1 bg-slate-50 border border-slate-200 text-xs px-3 py-1.5 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800 transition-all placeholder:text-slate-400"
+              placeholder="e.g. https://xyz.ngrok-free.app"
+            />
+            {isSavingUrl && <span className="text-xs text-slate-400">Saving...</span>}
+          </div>
+
           <div className="flex items-center gap-4">
             {user ? (
               <div className="flex items-center gap-4">
@@ -138,6 +195,7 @@ export const HomePage: React.FC = () => {
                 <button
                   onClick={() => {
                     logout();
+                    clearUserScopedQueryCache();
                     navigate('/login');
                   }}
                   className="text-sm font-medium text-red-600 hover:text-red-800"

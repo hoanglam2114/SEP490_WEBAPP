@@ -11,8 +11,22 @@ const conversionService = new ConversionService();
 const fileStorage = new Map<string, { data: any[]; metadata: any }>();
 
 export class ConversionController {
+  private parseFileContent(content: string): any[] {
+    try {
+      return JSON.parse(content);
+    } catch (e) {
+      // Try JSONL
+      const lines = content.split('\n').filter((l) => l.trim());
+      try {
+        return lines.map((l) => JSON.parse(l));
+      } catch (e2) {
+        throw new Error('Invalid file format. Must be JSON or JSONL.');
+      }
+    }
+  }
+
   /**
-   * Upload file JSON
+   * Upload file JSON/JSONL
    */
   async uploadFile(req: Request, res: Response): Promise<void> {
     try {
@@ -22,7 +36,7 @@ export class ConversionController {
       }
 
       const fileContent = await fs.readFile(req.file.path, 'utf-8');
-      const messages: any[] = JSON.parse(fileContent);
+      const messages = this.parseFileContent(fileContent);
 
       if (!Array.isArray(messages)) {
         res.status(400).json({ error: 'Invalid JSON format. Expected array.' });
@@ -61,6 +75,14 @@ export class ConversionController {
           fileType,
           lessonCount,
           exerciseCount,
+        };
+      } else if (messages.length > 0 && Array.isArray(messages[0].messages)) {
+        fileType = 'openai_messages';
+        metadata = {
+          ...metadata,
+          fileType,
+          messageCount: messages.reduce((sum, conv) => sum + (conv.messages?.length || 0), 0),
+          conversationCount: messages.length,
         };
       } else {
         const conversations = conversionService.groupByConversations(messages);
@@ -128,6 +150,41 @@ export class ConversionController {
             totalTokensEstimate
           }
         };
+      } else if (stored.metadata.fileType === 'openai_messages') {
+        // If input is already OpenAI messages, we can pass through or convert to other formats
+        if (options.format === 'openai') {
+          result = {
+            data: stored.data,
+            format: 'openai',
+            stats: {
+              totalConversations: stored.data.length,
+              totalMessages: stored.metadata.messageCount,
+              totalTokensEstimate: conversionService.estimateTokens(JSON.stringify(stored.data))
+            }
+          };
+        } else if (options.format === 'alpaca') {
+          const alpacaData = conversionService.openAIToAlpaca(stored.data, options);
+          result = {
+            data: alpacaData,
+            format: 'alpaca',
+            stats: {
+              totalConversations: alpacaData.length,
+              totalMessages: alpacaData.length,
+              totalTokensEstimate: conversionService.estimateTokens(JSON.stringify(alpacaData))
+            }
+          };
+        } else {
+          // Default fallback or handle other formats if needed
+          result = {
+            data: stored.data,
+            format: options.format,
+            stats: {
+              totalConversations: stored.data.length,
+              totalMessages: stored.metadata.messageCount,
+              totalTokensEstimate: conversionService.estimateTokens(JSON.stringify(stored.data))
+            }
+          };
+        }
       } else {
         result = conversionService.convert(stored.data as MongoDBMessage[], options);
       }
@@ -215,6 +272,19 @@ export class ConversionController {
         return;
       }
 
+      if (stored.metadata.fileType === 'openai_messages') {
+        res.json({
+          ...stored.metadata,
+          uniqueUsers: 1, // Default for pre-formatted
+          avgMessagesPerConversation: (stored.metadata.messageCount / stored.metadata.conversationCount).toFixed(2),
+          dateRange: {
+            earliest: new Date().toISOString(),
+            latest: new Date().toISOString()
+          }
+        });
+        return;
+      }
+
       const conversations = conversionService.groupByConversations(stored.data as MongoDBMessage[]);
 
       // Phân tích thêm cho Chat
@@ -264,56 +334,13 @@ export class ConversionController {
         return;
       }
 
-      if (stored.metadata.fileType === 'lesson') {
-        const preview: any[] = [];
-        let totalExercises = 0;
-        stored.data.slice(0, limit).forEach(record => {
-          if (record.lessons && Array.isArray(record.lessons)) {
-            record.lessons.forEach((lesson: any) => {
-              const exercises = lesson.sections?.filter((s: any) => s.type === 'exercise') || [];
-              totalExercises += exercises.length;
-              if (exercises.length > 0) {
-                preview.push({
-                  conversation_id: lesson.lesson_title || record._id?.$oid || 'Unknown',
-                  user_id: 'LessonSystem',
-                  message_count: exercises.length,
-                  start_time: new Date().toISOString(),
-                  messages: exercises.map((ex: any) => ({
-                    role: 'exercise',
-                    content: ex.content.substring(0, 200) + (ex.content.length > 200 ? '...' : ''),
-                    created_at: new Date().toISOString()
-                  }))
-                });
-              }
-            })
-          }
-        });
-
-        res.json({
-          preview,
-          total: stored.metadata.lessonCount || 0,
-          showing: preview.length,
-        });
-        return;
-      }
-
-      const conversations = conversionService.groupByConversations(stored.data as MongoDBMessage[]);
-      const preview = conversations.slice(0, limit).map((conv) => ({
-        conversation_id: conv.conversation_id,
-        user_id: conv.user_id,
-        message_count: conv.message_count,
-        start_time: conv.start_time,
-        messages: conv.messages.map((m) => ({
-          role: m.role,
-          content: m.content.substring(0, 200) + (m.content.length > 200 ? '...' : ''),
-          created_at: m.created_at.$date,
-        })),
-      }));
-
+      const rawPreview = stored.data.slice(0, limit);
+      
       res.json({
-        preview,
-        total: conversations.length,
-        showing: preview.length,
+        preview: rawPreview,
+        total: stored.data.length,
+        showing: rawPreview.length,
+        isRaw: true
       });
     } catch (error: any) {
       console.error('Preview error:', error);

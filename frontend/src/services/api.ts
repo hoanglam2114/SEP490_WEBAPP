@@ -9,6 +9,7 @@ import {
 } from '../types';
 
 import axios from 'axios';
+import { getAuthToken } from './authSession';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
@@ -18,10 +19,6 @@ const api = axios.create({
     'Content-Type': 'application/json',
   }
 });
-
-const getAuthToken = (): string | null => {
-  return localStorage.getItem('token');
-};
 
 const buildAuthHeaders = (): Record<string, string> => {
   const token = getAuthToken();
@@ -47,6 +44,201 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   }
   return chunks;
 }
+
+type DatasetVersionDetailResponse = {
+  datasetVersion: {
+    _id: string;
+    projectId?: string | null;
+    parentVersionId?: string | null;
+    versionNo?: number | null;
+    projectName: string;
+    versionName: string;
+    isPublic?: boolean;
+    sharedWithUsers?: ShareUser[];
+    operationType?: string;
+    operationParams?: Record<string, any>;
+    prepareResumeStep?: number;
+    similarityThreshold: number;
+    totalSamples: number;
+    createdAt: string;
+  };
+  items: Array<{
+    _id: string;
+    sampleId: string;
+    sampleKey: string;
+    data: Record<string, any>;
+    evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+    results: {
+      accuracy?: number | null;
+      clarity?: number | null;
+      completeness?: number | null;
+      socratic?: number | null;
+      encouragement?: number | null;
+      factuality?: number | null;
+      overall: number | null;
+      reason: string;
+    };
+    evaluations?: Array<{
+      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
+      scores: {
+        accuracy?: number | null;
+        clarity?: number | null;
+        completeness?: number | null;
+        socratic?: number | null;
+        encouragement?: number | null;
+        factuality?: number | null;
+        overall: number | null;
+        reason: string;
+      };
+      reason?: string;
+      timestamp?: string;
+    }>;
+    createdAt: string;
+    updatedAt?: string;
+  }>;
+};
+
+export type ShareUser = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type DatasetAssignmentSample = {
+  sampleId: string;
+  sampleKey: string;
+  sampleIndex: number;
+  preview: string;
+  assignee: ShareUser | null;
+};
+
+export type DatasetAssignmentSummary = {
+  user: ShareUser;
+  count: number;
+  ranges: string[];
+  submission?: AssignmentSubmissionStatus;
+};
+
+export type AssignmentSubmissionProgress = {
+  assignedSamples: number;
+  requiredMessages: number;
+  completedMessages: number;
+  missingMessages: Array<{
+    sampleId: string;
+    sampleIndex: number;
+    sampleKey: string;
+    messageIndex: number;
+    role: string;
+  }>;
+  percent: number;
+  isComplete: boolean;
+};
+
+export type AssignmentSubmissionStatus = {
+  status: 'draft' | 'submitted' | 'approved';
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
+  progress: AssignmentSubmissionProgress;
+};
+
+export type DatasetAssignmentsResponse = {
+  datasetVersion: {
+    _id: string;
+    projectName: string;
+    versionName: string;
+    totalSamples: number;
+  };
+  samples: DatasetAssignmentSample[];
+  summary: DatasetAssignmentSummary[];
+  totals: {
+    totalSamples: number;
+    assigned: number;
+    unassigned: number;
+  };
+};
+
+type ClusterResponse = {
+  data: any[];
+  groups: any[];
+  assignments: number[];
+  clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+  avgSimilarity?: number;
+};
+
+export type SubjectAutoLabel = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OTHER';
+
+export type ClassificationGroup = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'REJECT' | 'REWRITE' | 'OUT_OF_SCOPE';
+export type QualityBucket = 'Gold' | 'Rewrite' | 'Reject';
+
+export type AutoLabelSuggestion = {
+  clusterId: number;
+  label: SubjectAutoLabel;
+  reason: string;
+  sampleCount: number;
+};
+
+export type ClassificationSummaryGroup = {
+  group: ClassificationGroup;
+  count: number;
+  percentage: number;
+};
+
+export type ClassificationResult = {
+  totalSamples: number;
+  groups: ClassificationSummaryGroup[];
+  sampleClassifications: Array<{ sampleId: string; group: ClassificationGroup }>;
+};
+
+export type ClassifiedSamplesResult = {
+  totalSamples: number;
+  groups: ClassificationSummaryGroup[];
+  items: Array<{ _id: string; sampleId: string; data: Record<string, any>; group: ClassificationGroup }>;
+};
+
+export type QualitySummaryGroup = {
+  group: QualityBucket;
+  count: number;
+  percentage: number;
+};
+
+export type QualityClassificationItem = {
+  _id: string;
+  sampleId: string;
+  data: Record<string, any>;
+  bucket: QualityBucket;
+  score: number;
+  vector: number[];
+  intentCounts: number[];
+  iar: Array<number | null>;
+  criticalFailures: number;
+  scorableTurns: number;
+};
+
+export type QualityWrongPair = {
+  intent: string;
+  action: string;
+  count: number;
+  criticalFailures: number;
+};
+
+export type QualityClassificationResult = {
+  summary?: {
+    totalSamples: number;
+    classifiedSamples: number;
+    skippedSamples: number;
+    groups: QualitySummaryGroup[];
+    wrongPairs?: QualityWrongPair[];
+    rejectTaggedCount?: number;
+  };
+  totalSamples: number;
+  classifiedSamples: number;
+  skippedSamples: number;
+  groups: QualitySummaryGroup[];
+  wrongPairs?: QualityWrongPair[];
+  rejectTaggedCount?: number;
+  items: QualityClassificationItem[];
+};
 
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "", provider?: string) => {
@@ -104,10 +296,47 @@ export const apiService = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
+    let receivedText = false;
+
+    const processSseLine = (line: string) => {
+      if (!line.trim().startsWith('data:')) {
+        return;
+      }
+
+      const dataText = line.trim().substring(5).trim();
+      if (!dataText || dataText === '[DONE]') {
+        return;
+      }
+
+      try {
+        const dataObj = JSON.parse(dataText);
+        if (dataObj.error) {
+          const streamErr = new Error(dataObj.error);
+          (streamErr as any).isStreamingError = true;
+          throw streamErr;
+        }
+        if (dataObj.is_final && onFinalInfo) {
+          onFinalInfo(dataObj);
+        } else if (typeof dataObj.text === "string" && dataObj.text.length > 0) {
+          receivedText = true;
+          onChunk(dataObj.text);
+        } else if (typeof dataObj.result === "string" && dataObj.result.length > 0) {
+          receivedText = true;
+          onChunk(dataObj.result);
+        }
+      } catch (e: any) {
+        if (e.isStreamingError) {
+          throw e;
+        }
+        console.warn("Lỗi parse SSE JSON:", dataText, e);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -116,36 +345,17 @@ export const apiService = {
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        if (line.trim().startsWith('data:')) {
-          const dataText = line.trim().substring(5).trim();
-
-          if (dataText === '[DONE]') {
-            continue;
-          }
-
-          if (dataText) {
-            try {
-              const dataObj = JSON.parse(dataText);
-              if (dataObj.error) {
-                const streamErr = new Error(dataObj.error);
-                (streamErr as any).isStreamingError = true;
-                throw streamErr;
-              }
-              if (dataObj.is_final && onFinalInfo) {
-                onFinalInfo(dataObj);
-              } else if (dataObj.text) {
-                onChunk(dataObj.text);
-              }
-            } catch (e: any) {
-              // Always rethrow if it's an error object we created or if it's a known error format
-              if (e.isStreamingError || e.message) {
-                throw e;
-              }
-              console.warn("Lỗi parse SSE JSON:", dataText, e);
-            }
-          }
-        }
+        processSseLine(line);
       }
+    }
+
+    const remaining = buffer.trim();
+    if (remaining) {
+      processSseLine(remaining);
+    }
+
+    if (!receivedText) {
+      throw new Error("Model không trả về nội dung. Vui lòng thử lại hoặc kiểm tra GPU service.");
     }
   },
 
@@ -206,6 +416,11 @@ export const apiService = {
 
   deleteFile: async (fileId: string): Promise<void> => {
     await api.delete(`/file/${fileId}`);
+  },
+
+  listUsers: async (): Promise<{ users: ShareUser[] }> => {
+    const response = await api.get('/auth/users');
+    return response.data;
   },
 
   evaluateData: async (
@@ -340,6 +555,11 @@ export const apiService = {
 
   createDatasetVersion: async (payload: {
     projectName: string;
+    projectId?: string;
+    parentVersionId?: string;
+    operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+    operationParams?: Record<string, any>;
+    prepareResumeStep?: number;
     similarityThreshold: number;
     format: 'openai' | 'alpaca';
     data: Array<Record<string, any>>;
@@ -349,65 +569,45 @@ export const apiService = {
     message: string;
     datasetVersion: {
       _id: string;
+      projectId?: string | null;
+      parentVersionId?: string | null;
+      versionNo?: number | null;
       projectName: string;
       versionName: string;
       isPublic?: boolean;
+      operationType?: string;
+      operationParams?: Record<string, any>;
+      prepareResumeStep?: number;
       similarityThreshold: number;
       totalSamples: number;
       createdAt: string;
     };
+    project?: {
+      _id: string;
+      name: string;
+      sourceType: 'chat' | 'lesson';
+    };
     sampleIdMap: Record<string, string>;
   }> => {
-    const response = await api.post('/dataset-versions/create', payload);
+    const response = await api.post('/dataprep/versions', payload);
     return response.data;
   },
 
-  getDatasetVersionDetail: async (id: string, showRejected = false, community = false): Promise<{
+  updateDatasetVersionPrepareProgress: async (id: string, prepareResumeStep: number): Promise<{
+    message: string;
     datasetVersion: {
       _id: string;
       projectName: string;
       versionName: string;
-      isPublic?: boolean;
-      similarityThreshold: number;
-      totalSamples: number;
-      createdAt: string;
+      prepareResumeStep: number;
     };
-    items: Array<{
-      _id: string;
-      sampleId: string;
-      sampleKey: string;
-      data: Record<string, any>;
-      evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
-      results: {
-        accuracy?: number | null;
-        clarity?: number | null;
-        completeness?: number | null;
-        socratic?: number | null;
-        encouragement?: number | null;
-        factuality?: number | null;
-        overall: number | null;
-        reason: string;
-      };
-      evaluations?: Array<{
-        evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
-        scores: {
-          accuracy?: number | null;
-          clarity?: number | null;
-          completeness?: number | null;
-          socratic?: number | null;
-          encouragement?: number | null;
-          factuality?: number | null;
-          overall: number | null;
-          reason: string;
-        };
-        reason?: string;
-        timestamp?: string;
-      }>;
-      createdAt: string;
-      updatedAt?: string;
-    }>;
   }> => {
-    const response = await api.get(`/dataset-versions/${id}`, {
+    const response = await api.patch(`/dataprep/versions/${id}/prepare-progress`, { prepareResumeStep });
+    return response.data;
+  },
+
+  getDatasetVersionDetail: async (id: string, showRejected = false, community = false): Promise<DatasetVersionDetailResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}`, {
       params: {
         ...(showRejected ? { showRejected: 'true' } : {}),
         ...(community ? { community: 'true' } : {}),
@@ -417,7 +617,7 @@ export const apiService = {
   },
 
   deleteDatasetVersionItem: async (sampleId: string): Promise<{ message: string; deletedSampleId: string }> => {
-    const response = await api.delete(`/dataset-versions/items/${sampleId}`);
+    const response = await api.delete(`/dataprep/versions/items/${sampleId}`);
     return response.data;
   },
 
@@ -428,6 +628,7 @@ export const apiService = {
       versionName: string;
       ownerId: string;
       ownerName: string;
+      accessType?: 'public' | 'shared' | 'assigned' | 'owned';
       updatedAt: string;
       topLabel: {
         _id: string;
@@ -450,11 +651,167 @@ export const apiService = {
       versionName: string;
     };
   }> => {
-    const response = await api.patch(`/dataset-versions/${id}/visibility`, { isPublic });
+    const response = await api.patch(`/dataprep/versions/${id}/visibility`, { isPublic });
     return response.data;
   },
 
-  getPublicProjectLabeling: async (id: string, showRejected = false): Promise<{
+  updateDatasetVersionSharing: async (id: string, userId: string | null): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      isPublic: boolean;
+      projectName: string;
+      versionName: string;
+      sharedWithUsers: ShareUser[];
+    };
+  }> => {
+    const response = await api.patch(`/dataprep/versions/${id}/share`, { userId });
+    return response.data;
+  },
+
+  getDatasetVersionAssignments: async (id: string): Promise<DatasetAssignmentsResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments`);
+    return response.data;
+  },
+
+  getMyAssignmentSubmissionStatus: async (id: string): Promise<AssignmentSubmissionStatus> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/me/status`);
+    return response.data;
+  },
+
+  submitMyAssignment: async (id: string): Promise<AssignmentSubmissionStatus & { message: string }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/me/submit`);
+    return response.data;
+  },
+
+  approveAssignmentSubmission: async (
+    id: string,
+    userId: string
+  ): Promise<AssignmentSubmissionStatus & { message: string }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/users/${userId}/approve`);
+    return response.data;
+  },
+
+  assignDatasetVersionRange: async (
+    id: string,
+    payload: { assigneeId: string; startIndex: number; count: number }
+  ): Promise<{ message: string; assignedCount: number }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/range`, payload);
+    return response.data;
+  },
+
+  clearDatasetVersionAssignmentRange: async (
+    id: string,
+    payload: { startIndex: number; count: number }
+  ): Promise<{ message: string; deletedCount: number }> => {
+    const response = await api.delete(`/dataprep/versions/${id}/assignments/range`, { data: payload });
+    return response.data;
+  },
+
+  clearDatasetVersionUserAssignments: async (
+    id: string,
+    userId: string
+  ): Promise<{ message: string; deletedCount: number }> => {
+    const response = await api.delete(`/dataprep/versions/${id}/assignments/users/${userId}`);
+    return response.data;
+  },
+
+  getSampleLabels: async (
+    sampleId: string,
+    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number }
+  ): Promise<{ labels: any[] }> => {
+    const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
+    return response.data;
+  },
+
+  addSampleLabel: async (
+    sampleId: string,
+    payload: {
+      name: string;
+      type: 'hard' | 'soft';
+      targetScope?: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+      targetTextSnapshot?: string;
+    },
+    fromCommunityHub = false
+  ): Promise<{ label: any }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/labels`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  voteSampleLabel: async (
+    labelId: string,
+    voteAction: 'up' | 'down',
+    fromCommunityHub = false
+  ): Promise<any> => {
+    const response = await api.post(`/dataprep/labels/${labelId}/votes`, { voteAction }, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  previewMessageAutoLabels: async (
+    sampleId: string,
+    payload: {
+      provider?: 'gemini' | 'openai' | 'deepseek';
+      messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+    },
+    fromCommunityHub = false
+  ): Promise<{
+    suggestions: Array<{
+      messageIndex: number;
+      role: 'user' | 'assistant';
+      label: string[];
+      confidence?: number;
+      is_correct_logic?: boolean;
+    }>;
+  }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/preview`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  saveMessageAutoLabels: async (
+    sampleId: string,
+    payload: {
+      suggestions: Array<{
+        messageIndex: number;
+        role: 'user' | 'assistant';
+        label: string[] | string;
+        confidence?: number;
+        is_correct_logic?: boolean;
+      }>;
+      messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+    },
+    fromCommunityHub = false
+  ): Promise<{ message: string; insertedCount: number }> => {
+    const response = await api.post(`/dataprep/samples/${sampleId}/message-auto-label/save`, payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
+  previewAutoLabels: async (
+    versionId: string,
+    provider: 'gemini' | 'openai' | 'deepseek'
+  ): Promise<{ suggestions: AutoLabelSuggestion[] }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/auto-label/preview`, { provider });
+    return response.data;
+  },
+
+  saveAutoLabels: async (
+    versionId: string,
+    labels: Array<{ clusterId: number; label: SubjectAutoLabel }>
+  ): Promise<{ message: string; insertedCount: number }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/auto-label/save`, { labels });
+    return response.data;
+  },
+
+  getPublicProjectLabeling: async (id: string, showRejected = false, ownerUnassignedOnly = false): Promise<{
     project: {
       id: string;
       projectName: string;
@@ -480,6 +837,7 @@ export const apiService = {
     const response = await api.get(`/community/public-projects/${id}/labeling`, {
       params: {
         ...(showRejected ? { showRejected: 'true' } : {}),
+        ...(ownerUnassignedOnly ? { ownerUnassignedOnly: 'true' } : {}),
       },
     });
     return response.data;
@@ -502,6 +860,7 @@ export const apiService = {
         similarityThreshold: number;
         totalSamples: number;
         createdAt: string;
+        prepareResumeStep?: number;
         evaluatedCount: number;
         avgOverall: number | null;
       }>;
@@ -552,10 +911,26 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster', {
         data,
+        k,
+        eps,
+        min_samples: minSamples,
+      })
+      .then((res) => res.data),
+
+  clusterVersion: (
+    versionId: string,
+    k?: number,
+    eps?: number,
+    minSamples?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/cluster`, {
         k,
         eps,
         min_samples: minSamples,
@@ -569,18 +944,37 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/filter', { data, threshold })
+      .then((res) => res.data),
+
+  clusterVersionFilter: (
+    versionId: string,
+    threshold?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/filter`, { threshold })
       .then((res) => res.data),
 
   clusterRemoveNoise: (): Promise<{
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/remove-noise')
+      .then((res) => res.data),
+
+  clusterVersionRemoveNoise: (
+    versionId: string
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/remove-noise`)
       .then((res) => res.data),
 
   clusterDeduplicate: (
@@ -589,14 +983,24 @@ export const apiService = {
     data: any[];
     groups: any[];
     assignments: number[];
+    clusterStats?: Array<{ clusterId: number; avgSimilarity: number; count: number }>;
+    avgSimilarity?: number;
   }> =>
     api
       .post('/cluster/deduplicate', { threshold })
       .then((res) => res.data),
 
+  clusterVersionDeduplicate: (
+    versionId: string,
+    threshold?: number
+  ): Promise<ClusterResponse> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/deduplicate`, { threshold })
+      .then((res) => res.data),
+
   deleteClusterCache: (): Promise<any> =>
     api
-      .delete('/cluster/cache')
+      .delete('/dataprep/preprocessing/cache')
       .then((res) => res.data),
 
   clusterVisualize: (
@@ -612,6 +1016,25 @@ export const apiService = {
   }> =>
     api
       .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
+      .then((res) => res.data),
+
+  clusterVersionVisualize: (
+    versionId: string,
+    maxK: number = 20,
+    eps: number = 0.15,
+    minSamples: number = 6
+  ): Promise<{
+    elbow: Array<{ k: number; wcss: number }>;
+    kDistance: Array<{ rank: number; distance: number }>;
+    pointCount: number;
+    noiseCount?: number;
+  }> =>
+    api
+      .post(`/dataprep/versions/${versionId}/preprocessing/visualize`, {
+        max_k: maxK,
+        eps,
+        min_samples: minSamples,
+      })
       .then((res) => res.data),
 
   getChatSessions: async (limit = 30): Promise<any[]> => {
@@ -658,6 +1081,7 @@ export const apiService = {
     const response = await api.post('/model-registry', payload);
     return response.data;
   },
+
   getModelRegistry: async (id: string) => {
     const response = await api.get(`/model-registry/${id}`);
     return response.data;
@@ -699,6 +1123,37 @@ export const apiService = {
   },
   getEvaluationsByJob: async (jobId: string) => {
     const response = await api.get(`/model-versions/evaluations/${jobId}`);
+    return response.data;
+  },
+
+  // Classification API
+  classifyVersion: async (versionId: string): Promise<ClassificationResult> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/classification/classify`);
+    return response.data;
+  },
+
+  getClassifiedSamples: async (
+    versionId: string,
+    group?: ClassificationGroup
+  ): Promise<ClassifiedSamplesResult> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/classification`, {
+      params: group ? { group } : undefined,
+    });
+    return response.data;
+  },
+
+  classifyQuality: async (versionId: string): Promise<QualityClassificationResult> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/quality/classify`);
+    return response.data;
+  },
+
+  getQualityClassifiedSamples: async (
+    versionId: string,
+    group?: QualityBucket
+  ): Promise<QualityClassificationResult> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/quality`, {
+      params: group ? { group } : undefined,
+    });
     return response.data;
   },
 };

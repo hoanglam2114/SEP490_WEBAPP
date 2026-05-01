@@ -309,6 +309,40 @@ export class ConversionService {
   }
 
   /**
+   * Convert OpenAI messages format sang Alpaca format
+   */
+  openAIToAlpaca(data: OpenAIFormat[], options: ConversionOptions): AlpacaFormat[] {
+    const results: AlpacaFormat[] = [];
+
+    data.forEach((item) => {
+      if (!item.messages || !Array.isArray(item.messages)) return;
+
+      const messages = item.messages;
+      for (let i = 0; i < messages.length; i++) {
+        const current = messages[i];
+        if (current.role !== 'user') continue;
+
+        // Find the next assistant message
+        const nextAssistant = messages.slice(i + 1).find(msg => msg.role === 'assistant');
+        if (nextAssistant) {
+          const instruction = this.cleanContent(current.content, options.removeThinkTags || false);
+          const output = this.cleanContent(nextAssistant.content, options.removeThinkTags || false);
+
+          if (instruction && output) {
+            results.push({
+              instruction,
+              input: '',
+              output,
+            });
+          }
+        }
+      }
+    });
+
+    return results;
+  }
+
+  /**
    * Convert sang ShareGPT format
    */
   toShareGPTFormat(

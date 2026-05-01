@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
-import { Plus, Trash2, ExternalLink, Box, Activity, ArrowLeft } from 'lucide-react';
+import { Plus, Trash2, Box, Activity, ArrowLeft } from 'lucide-react';
 
 interface ModelRegistry {
   _id: string;

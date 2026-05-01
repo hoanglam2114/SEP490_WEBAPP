@@ -1,12 +1,11 @@
 import { Request, Response } from 'express';
-const fetch = async (url: any, init?: any) => {
-  const module = await import('node-fetch');
-  return module.default(url, init);
-};
 import dotenv from 'dotenv';
+import { GpuClient } from '../modules/dataprep/gpu/gpuClient';
+import { configService } from '../services/configService';
 dotenv.config();
 
-const GPU_SERVICE_URL = process.env.GPU_SERVICE_URL || 'http://localhost:5000';
+const getGpuUrl = () => configService.getGpuUrl();
+const getGpuClient = () => new GpuClient(getGpuUrl());
 
 /**
  * POST /api/cluster
@@ -58,33 +57,17 @@ export const clusterData = async (req: Request, res: Response) => {
 
     // Existing logic for OpenAI format (calling external service)
     const { k, eps, min_samples } = req.body;
-    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${GPU_SERVICE_URL}/api/cluster`);
+    console.log(`[Backend] Clustering ${data.length} conversations (K=${k ?? 'auto'}, eps=${eps ?? 'auto'}, min_samples=${min_samples ?? 'auto'}) → ${getGpuUrl()}/api/cluster`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: JSON.stringify({ data, k, eps, min_samples }),
-    });
+    const gpuResponse = await getGpuClient().cluster({ data, k, eps, min_samples });
+    console.log(`[Backend] Cluster response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`);
 
-    const responseText = await gpuResponse.text();
-    console.log(`[Backend] Cluster response (${gpuResponse.status}): ${responseText.slice(0, 300)}`);
-
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      return res.status(502).json({
-        error: 'Cluster service returned non-JSON response',
-        raw: responseText.slice(0, 500),
-      });
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] clusterData error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({
       error: err.message || 'Failed to cluster data',
     });
@@ -104,33 +87,17 @@ export const clusterFilter = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing or empty data array' });
     }
 
-    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/filter`);
+    console.log(`[Backend] Filtering ${data.length} items with threshold ${threshold ?? 0.9} → ${getGpuUrl()}/api/cluster/filter`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/filter`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: JSON.stringify({ data, threshold }),
-    });
+    const gpuResponse = await getGpuClient().filter({ data, threshold });
+    console.log(`[Backend] Filter response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`);
 
-    const responseText = await gpuResponse.text();
-    console.log(`[Backend] Filter response (${gpuResponse.status}): ${responseText.slice(0, 300)}`);
-
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      return res.status(502).json({
-        error: 'Cluster filter service returned non-JSON response',
-        raw: responseText.slice(0, 500),
-      });
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] clusterFilter error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({
       error: err.message || 'Failed to filter cluster data',
     });
@@ -142,27 +109,15 @@ export const clusterFilter = async (req: Request, res: Response) => {
  */
 export const removeNoise = async (_req: Request, res: Response) => {
   try {
-    console.log(`[Backend] Removing noise via GPU service cache → ${GPU_SERVICE_URL}/api/cluster/remove-noise`);
+    console.log(`[Backend] Removing noise via GPU service cache → ${getGpuUrl()}/api/cluster/remove-noise`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/remove-noise`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-    });
-
-    const responseText = await gpuResponse.text();
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      return res.status(502).json({ error: 'Remove noise service returned non-JSON response', raw: responseText.slice(0, 500) });
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    const gpuResponse = await getGpuClient().removeNoise();
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] removeNoise error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({ error: err.message || 'Failed to remove noise' });
   }
 };
@@ -173,28 +128,15 @@ export const removeNoise = async (_req: Request, res: Response) => {
 export const deduplicate = async (req: Request, res: Response) => {
   try {
     const { threshold } = req.body;
-    console.log(`[Backend] Deduplicating via GPU service cache with threshold ${threshold ?? 0.9} → ${GPU_SERVICE_URL}/api/cluster/deduplicate`);
+    console.log(`[Backend] Deduplicating via GPU service cache with threshold ${threshold ?? 0.9} → ${getGpuUrl()}/api/cluster/deduplicate`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/deduplicate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: JSON.stringify({ threshold }),
-    });
-
-    const responseText = await gpuResponse.text();
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      return res.status(502).json({ error: 'Deduplicate service returned non-JSON response', raw: responseText.slice(0, 500) });
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    const gpuResponse = await getGpuClient().deduplicate({ threshold });
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] deduplicate error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({ error: err.message || 'Failed to deduplicate' });
   }
 };
@@ -206,28 +148,17 @@ export const deduplicate = async (req: Request, res: Response) => {
  */
 export const deleteClusterCache = async (_req: Request, res: Response) => {
   try {
-    console.log(`[Backend] Clearing Cluster Cache → ${GPU_SERVICE_URL}/api/cluster/cache`);
+    console.log(`[Backend] Clearing Cluster Cache → ${getGpuUrl()}/api/cluster/cache`);
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/cache`, {
-      method: 'DELETE',
-      headers: {
-        'ngrok-skip-browser-warning': 'true',
-      },
-    });
+    const gpuResponse = await getGpuClient().clearCache();
+    console.log(`[Backend] Cache Clear response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data)}`);
 
-    const responseText = await gpuResponse.text();
-    console.log(`[Backend] Cache Clear response (${gpuResponse.status}): ${responseText}`);
-
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      result = { message: responseText };
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] deleteClusterCache error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({
       error: err.message || 'Failed to clear cluster cache',
     });
@@ -252,36 +183,20 @@ export const clusterVisualize = async (req: Request, res: Response) => {
     }
 
     console.log(
-      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${GPU_SERVICE_URL}/api/cluster/visualize`
+      `[Backend] Visualize ${data.length} items (max_k=${max_k}, eps=${eps}, min_samples=${min_samples}) → ${getGpuUrl()}/api/cluster/visualize`
     );
 
-    const gpuResponse = await fetch(`${GPU_SERVICE_URL}/api/cluster/visualize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: JSON.stringify({ data, max_k, eps, min_samples }),
-    });
-
-    const responseText = await gpuResponse.text();
+    const gpuResponse = await getGpuClient().visualize({ data, max_k, eps, min_samples });
     console.log(
-      `[Backend] Visualize response (${gpuResponse.status}): ${responseText.slice(0, 300)}`
+      `[Backend] Visualize response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`
     );
 
-    let result: any;
-    try {
-      result = JSON.parse(responseText);
-    } catch {
-      return res.status(502).json({
-        error: 'Visualize service returned non-JSON response',
-        raw: responseText.slice(0, 500),
-      });
-    }
-
-    return res.status(gpuResponse.status).json(result);
+    return res.status(gpuResponse.status).json(gpuResponse.data);
   } catch (err: any) {
     console.error('[Backend] clusterVisualize error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
     return res.status(500).json({
       error: err.message || 'Failed to compute visualization data',
     });

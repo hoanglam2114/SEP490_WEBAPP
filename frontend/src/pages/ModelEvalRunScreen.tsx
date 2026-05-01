@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuthToken } from "../services/authSession";
 
 interface CompletedJob {
   jobId: string;
@@ -86,6 +87,18 @@ const PROVIDER_COLORS: Record<string, string> = {
   Deepseek: "bg-purple-50 text-purple-700 border-purple-200",
 };
 
+const getAuthHeaders = (): Record<string, string> => {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const withAuthQuery = (url: string): string => {
+  const token = getAuthToken();
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+};
+
 // ─── ETA: khởi tạo 340 + N×15.5s; mỗi giây -=1; SSE tính lại theo stage ───────────────
 
 const SEC_INIT = 340;
@@ -162,7 +175,6 @@ function computeEtaFromPayload(
     return Math.max(0, SEC_RUBRIC - elapsedSec);
   }
 
-  const K = oneBasedKFromPayload(payload);
   if (N <= 0) return null;
 
   if (stage === "replay") {
@@ -536,7 +548,9 @@ export const ModelEvalRunScreen: React.FC = () => {
 
   // ── Fetch jobs list ───────────────────────────────────────────────────
   useEffect(() => {
-    fetch("/api/train/history?status=COMPLETED")
+    fetch("/api/train/history?status=COMPLETED", {
+      headers: getAuthHeaders(),
+    })
       .then((r) => r.json())
       .then((data: CompletedJob[]) => {
         const completedWithRepo = data.filter(
@@ -641,7 +655,7 @@ export const ModelEvalRunScreen: React.FC = () => {
     if (sseMapRef.current.has(evalJobId)) return; // đã có rồi
     etaMapRef.current.set(evalJobId, { seconds: null, lastStage: "unknown" });
 
-    const es = new EventSource(`/api/model-eval/stream/${evalJobId}`);
+    const es = new EventSource(withAuthQuery(`/api/model-eval/stream/${evalJobId}`));
     sseMapRef.current.set(evalJobId, es);
 
     es.onmessage = (e) => {
@@ -884,6 +898,7 @@ export const ModelEvalRunScreen: React.FC = () => {
 
       const res = await fetch(`/api/model-eval/run/${selectedJobId}`, {
         method: "POST",
+        headers: getAuthHeaders(),
         body: formData,
       });
       const data = await res.json();

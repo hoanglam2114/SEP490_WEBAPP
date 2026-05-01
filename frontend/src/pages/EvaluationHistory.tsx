@@ -5,6 +5,7 @@ import { Toaster, toast } from 'react-hot-toast';
 import { MoreVertical, Trash2 } from 'lucide-react';
 import { ScoreHistoryModal, type ScoreHistoryEntry } from '../components/ScoreHistoryModal';
 import { apiService } from '../services/api';
+import { dataprepApi } from '../features/dataprep/api/dataprepApi';
 
 type EvaluatedBy = 'manual' | 'gemini' | 'openai' | 'deepseek' | 'openrouter' | 'none';
 
@@ -22,6 +23,7 @@ type EvalResults = {
 type ProjectVersionSummary = {
   _id: string;
   versionName: string;
+  prepareResumeStep?: number;
   similarityThreshold: number;
   totalSamples: number;
   createdAt: string;
@@ -67,6 +69,7 @@ type VersionDetailResponse = {
     _id: string;
     projectName: string;
     versionName: string;
+    prepareResumeStep?: number;
     similarityThreshold: number;
     totalSamples: number;
     createdAt: string;
@@ -299,7 +302,7 @@ export const EvaluationHistory: React.FC = () => {
   const versionQuery = useQuery<VersionDetailResponse>({
     queryKey: ['dataset-version-detail', selectedVersionId, showRejectedSamples],
     enabled: Boolean(selectedVersionId),
-    queryFn: () => apiService.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
+    queryFn: () => dataprepApi.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
   });
 
   useEffect(() => {
@@ -350,7 +353,7 @@ export const EvaluationHistory: React.FC = () => {
     });
   }, [deletedSampleIds, detailItems, projectMinOverallMap, selectedProjectName, showUnaudited]);
 
-  const handleContinueEvaluation = () => {
+  const handleContinuePrepare = () => {
     if (!versionQuery.data?.datasetVersion || !visibleItems.length) {
       toast.error('Không có version detail để tiếp tục đánh giá.');
       return;
@@ -384,11 +387,12 @@ export const EvaluationHistory: React.FC = () => {
           projectName: versionQuery.data.datasetVersion.projectName,
           format,
           data: format === 'openai'
-            ? visibleItems.map((item) => ({ conversation_id: item.sampleKey, messages: item.data.messages || [] }))
+            ? visibleItems.map((item) => ({ conversation_id: item.sampleKey, messages: item.data.messages || [], cluster: item.data.cluster }))
             : visibleItems.map((item) => ({ id: item.sampleKey, ...item.data })),
           evaluationMap,
           datasetVersionId: versionQuery.data.datasetVersion._id,
           sampleIdMap: Object.fromEntries(visibleItems.map((item) => [item.sampleKey, item.sampleId])),
+          startStep: versionQuery.data.datasetVersion.prepareResumeStep || 5,
         },
       },
     });
@@ -593,10 +597,10 @@ export const EvaluationHistory: React.FC = () => {
                   Download
                 </button>
                 <button
-                  onClick={handleContinueEvaluation}
+                  onClick={handleContinuePrepare}
                   className="px-3 py-2 text-sm font-semibold text-indigo-700 border border-indigo-300 rounded-lg bg-indigo-50 hover:bg-indigo-100"
                 >
-                  Continue Evaluation
+                  Continue Prepare
                 </button>
               </div>
             </div>

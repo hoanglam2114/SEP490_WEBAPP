@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { getAuthToken } from '../services/authSession';
 
 type PromptVersionItem = {
   _id: string;
-  projectName: string;
+  name: string;
   version: number;
   content: string;
   description?: string;
@@ -29,10 +30,10 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
   onSystemPromptTextChange,
   onSelectedPromptVersionChange,
   previewJson,
-  projectName = 'default-project',
+  projectName = '',
 }) => {
   const getAuthHeaders = (includeJsonContentType = false): Record<string, string> => {
-    const token = localStorage.getItem('token');
+    const token = getAuthToken();
     const headers: Record<string, string> = {};
     if (includeJsonContentType) {
       headers['Content-Type'] = 'application/json';
@@ -45,6 +46,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
 
   const [content, setContent] = useState(systemPromptText);
   const [description, setDescription] = useState('');
+  const [promptName, setPromptName] = useState(projectName || '');
   const [historyList, setHistoryList] = useState<PromptVersionItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -178,7 +180,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
 
     onSelectedPromptVersionChange({
       promptId: selectedHistory._id,
-      systemPromptVersion: `V${selectedHistory.version}`,
+      systemPromptVersion: selectedHistory.name,
       content: selectedHistory.content || '',
     });
   }, [onSelectedPromptVersionChange, selectedHistory]);
@@ -191,7 +193,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
       setError('');
 
       try {
-        const response = await fetch(`/api/dataset-prompts/project/${encodeURIComponent(projectName)}`, {
+        const response = await fetch('/api/dataset-prompts', {
           headers: getAuthHeaders(),
         });
         if (!response.ok) {
@@ -247,7 +249,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
         method: 'POST',
         headers: getAuthHeaders(true),
         body: JSON.stringify({
-          projectName,
+          name: promptName.trim() || 'Untitled Prompt',
           content: trimmedContent,
           description: description.trim() || undefined,
         }),
@@ -422,7 +424,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
                         )}
                       </div>
                       <p className="text-sm font-semibold text-gray-900">
-                        V{item.version} - {item.description?.trim() || 'No description'}
+                        {item.name} - {item.description?.trim() || 'No description'}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">{new Date(item.createdAt).toLocaleString()}</p>
                     </div>
@@ -491,6 +493,20 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
             </div>
 
             <div>
+              <label htmlFor="promptNameInput" className="mb-1 block text-sm font-medium text-gray-700">
+                Prompt Name (Unique)
+              </label>
+              <input
+                id="promptNameInput"
+                type="text"
+                value={promptName}
+                onChange={(event) => setPromptName(event.target.value)}
+                placeholder="Example: Socratic Helper"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
+
+            <div>
               <label htmlFor="promptDescription" className="mb-1 block text-sm font-medium text-gray-700">
                 Description
               </label>
@@ -505,7 +521,7 @@ export const SystemPromptPage: React.FC<SystemPromptPageProps> = ({
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <p className="text-xs text-gray-500">Project: {projectName}</p>
+              <p className="text-xs text-gray-500">Library Source: {promptName || 'General'}</p>
               <button
                 type="button"
                 onClick={handleSaveNewVersion}

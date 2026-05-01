@@ -24,14 +24,19 @@ export const useAppStore = create<AppState>((set) => ({
   projectName: '',
 
   setUploadedFile: (file) =>
-    set((state) => ({
-      uploadedFile: file,
-      // Khi là lesson file, tự động chọn format alpaca
-      conversionOptions:
-        file?.fileType === 'lesson'
-          ? { ...state.conversionOptions, format: 'alpaca' }
-          : state.conversionOptions,
-    })),
+    set((state) => {
+      let nextFormat = state.conversionOptions.format;
+      if (file?.fileType === 'lesson') {
+        nextFormat = 'alpaca';
+      } else if (file?.fileType === 'openai_messages') {
+        nextFormat = 'openai';
+      }
+
+      return {
+        uploadedFile: file,
+        conversionOptions: { ...state.conversionOptions, format: nextFormat },
+      };
+    }),
 
   updateConversionOptions: (options) =>
     set((state) => ({
