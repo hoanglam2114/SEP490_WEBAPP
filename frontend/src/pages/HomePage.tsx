@@ -362,4 +362,17 @@ export const HomePage: React.FC = () => {
                 {/* Arrow */}
                 <div className={`mt-4 flex items-center gap-1 text-xs font-semibold transition-all duration-200
                   ${isHovered ? 'text-slate-800 translate-x-0.5' : 'text-slate-300'}`}>
-                  O
+                  Open
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+    </div>
+  );
+};
