@@ -1,32 +1,27 @@
-# Stage 1: Build
-FROM node:20-alpine AS build
+# ─── Stage 1: Build ───────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm install --legacy-peer-deps
+
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve
-FROM nginx:alpine
+# ─── Stage 2: Serve with Nginx ────────────────────────────────────────────────
+FROM nginx:alpine AS production
 
-# Copy build output từ stage 1 vào thư mục phục vụ của nginx
-COPY --from=build /app/dist /usr/share/nginx/html
+# Remove default nginx config
+RUN rm /etc/nginx/conf.d/default.conf
 
-# Copy file cấu hình nginx (tùy chọn, để hỗ trợ SPA routing)
-RUN echo 'server { \
-    listen 80; \
-    location / { \
-    root /usr/share/nginx/html; \
-    index index.html; \
-    try_files $uri $uri/ /index.html; \
-    } \
-    location /api { \
-    proxy_pass http://backend:3000; \
-    } \
-    }' > /etc/nginx/conf.d/default.conf
+# Copy custom nginx config
+COPY nginx.conf /etc/nginx/conf.d/app.conf
+
+# Copy built static files from builder
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
+EXPOSE 443
 
 CMD ["nginx", "-g", "daemon off;"]
