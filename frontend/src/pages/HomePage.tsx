@@ -131,7 +131,7 @@ export const HomePage: React.FC = () => {
 
     const fetchConfig = async () => {
       try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+        const res = await fetch(`/api/config/gpu-url`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
@@ -155,12 +155,12 @@ export const HomePage: React.FC = () => {
     setConnectionStatus('connecting');
     setShowHistory(false);
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+      await fetch(`/api/config/gpu-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ gpuUrl: url })
       });
-      const pingRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/model-eval/gpu-status`);
+      const pingRes = await fetch(`/api/model-eval/gpu-status`);
       if (pingRes.ok) {
         setConnectedUrl(url);
         setConnectionStatus('connected');
@@ -182,7 +182,7 @@ export const HomePage: React.FC = () => {
     setInputUrl('');
     setConnectionStatus('idle');
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+      await fetch(`/api/config/gpu-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ gpuUrl: '' })
@@ -362,17 +362,4 @@ export const HomePage: React.FC = () => {
                 {/* Arrow */}
                 <div className={`mt-4 flex items-center gap-1 text-xs font-semibold transition-all duration-200
                   ${isHovered ? 'text-slate-800 translate-x-0.5' : 'text-slate-300'}`}>
-                  Open
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-    </div>
-  );
-};
+                  O
