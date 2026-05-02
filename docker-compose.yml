@@ -24,30 +24,9 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "80:80"
+      - "88:80"
     depends_on:
       - backend
-    networks:
-      - app-network
-
-  # GPU Service (Python/Unsloth)
-  gpu-service:
-    build: ./gpu-service
-    ports:
-      - "5000:5000"
-    environment:
-      - NGROK_TOKEN=${NGROK_TOKEN:-}
-      - HF_TOKEN=${HF_TOKEN:-}
-      - BACKEND_URL=http://backend:3000
-    env_file:
-      - .env
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     networks:
       - app-network
 

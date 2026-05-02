@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { getAuthToken } from '../services/authSession';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +79,7 @@ export function ModelEvalHistoryScreen() {
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unauthorized, setUnauthorized] = useState(false);
 
   // Compare mode: chọn tối đa 2 run
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -92,9 +94,18 @@ export function ModelEvalHistoryScreen() {
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
-    fetch(`/api/model-eval/history/${jobId}`)
-      .then(r => r.json())
-      .then((json: HistoryResponse) => {
+    const token = getAuthToken();
+    fetch(`/api/model-eval/history/${jobId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(r => {
+        if (r.status === 401) { setUnauthorized(true); setLoading(false); return null; }
+        if (!r.ok) throw new Error(`Lỗi server: ${r.status} ${r.statusText}`);
+        return r.json();
+      })
+      .then((json: HistoryResponse | null) => {
+        if (!json) return;
+        if (!Array.isArray(json.evals)) throw new Error('Dữ liệu trả về không hợp lệ');
         setData(json);
         setLoading(false);
       })
@@ -167,6 +178,39 @@ export function ModelEvalHistoryScreen() {
   // ---------------------------------------------------------------------------
   // Loading / Error
   // ---------------------------------------------------------------------------
+  if (unauthorized) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-8 max-w-sm w-full text-center shadow-sm">
+          <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-slate-800 mb-1">Cần đăng nhập</p>
+          <p className="text-xs text-slate-500 mb-5">
+            Tính năng lịch sử đánh giá chỉ dành cho tài khoản đã đăng nhập.
+          </p>
+          <div className="flex gap-2 justify-center">
+            <button
+              onClick={() => navigate('/model-eval/leaderboard')}
+              className="px-4 py-2 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              ← Quay lại
+            </button>
+            <button
+              onClick={() => navigate('/login')}
+              className="px-4 py-2 text-xs font-semibold bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors"
+            >
+              Đăng nhập
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -177,8 +221,25 @@ export function ModelEvalHistoryScreen() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-red-500 text-sm">{error || 'Không tìm thấy dữ liệu'}</div>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+        <div className="bg-white border border-red-100 rounded-xl p-6 max-w-sm w-full text-center">
+          <p className="text-sm font-semibold text-red-600 mb-1">Không thể tải dữ liệu</p>
+          <p className="text-xs text-slate-500 mb-4">{error || 'Không tìm thấy dữ liệu'}</p>
+          <div className="flex gap-2 justify-center">
+            <button
+              onClick={() => navigate('/model-eval/leaderboard')}
+              className="px-4 py-2 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              ← Quay lại
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 text-xs font-semibold bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors"
+            >
+              Thử lại
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

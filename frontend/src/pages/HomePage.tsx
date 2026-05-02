@@ -116,21 +116,30 @@ export const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [hovered, setHovered] = useState<string | null>(null);
   const { user, logout, token } = useAuthStore();
-  const [gpuUrl, setGpuUrl] = useState('');
-  const [isSavingUrl, setIsSavingUrl] = useState(false);
+  const [inputUrl, setInputUrl] = useState('');
+  const [connectedUrl, setConnectedUrl] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const [urlHistory, setUrlHistory] = useState<string[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   React.useEffect(() => {
+    // Load history from localStorage
+    try {
+      const h = JSON.parse(localStorage.getItem('gpu_url_history') || '[]');
+      setUrlHistory(Array.isArray(h) ? h : []);
+    } catch { /* ignore */ }
+
     const fetchConfig = async () => {
       try {
         const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
+          headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
           const data = await res.json();
           if (data.gpuUrl) {
-            setGpuUrl(data.gpuUrl);
+            setInputUrl(data.gpuUrl);
+            setConnectedUrl(data.gpuUrl);
+            setConnectionStatus('connected');
           }
         }
       } catch (err) {
@@ -140,22 +149,45 @@ export const HomePage: React.FC = () => {
     fetchConfig();
   }, [token]);
 
-  const handleSaveGpuUrl = async () => {
-    setIsSavingUrl(true);
+  const handleConnect = async () => {
+    const url = inputUrl.trim();
+    if (!url) return;
+    setConnectionStatus('connecting');
+    setShowHistory(false);
     try {
       await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ gpuUrl })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ gpuUrl: url })
       });
-    } catch (err) {
-      console.error('Failed to save GPU config', err);
-    } finally {
-      setIsSavingUrl(false);
+      const pingRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/model-eval/gpu-status`);
+      if (pingRes.ok) {
+        setConnectedUrl(url);
+        setConnectionStatus('connected');
+        setUrlHistory(prev => {
+          const next = [url, ...prev.filter(u => u !== url)].slice(0, 5);
+          localStorage.setItem('gpu_url_history', JSON.stringify(next));
+          return next;
+        });
+      } else {
+        setConnectionStatus('error');
+      }
+    } catch {
+      setConnectionStatus('error');
     }
+  };
+
+  const handleDisconnect = async () => {
+    setConnectedUrl('');
+    setInputUrl('');
+    setConnectionStatus('idle');
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/config/gpu-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ gpuUrl: '' })
+      });
+    } catch { /* ignore */ }
   };
 
   return (
@@ -174,18 +206,83 @@ export const HomePage: React.FC = () => {
             <span className="text-sm font-bold text-slate-800 tracking-tight whitespace-nowrap">Chatbot Training Toolkit</span>
           </div>
           
-          <div className="flex-1 max-w-sm mx-8 hidden md:flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">GPU URL:</span>
-            <input 
-              type="text" 
-              value={gpuUrl}
-              onChange={(e) => setGpuUrl(e.target.value)}
-              onBlur={handleSaveGpuUrl}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveGpuUrl() }}
-              className="flex-1 bg-slate-50 border border-slate-200 text-xs px-3 py-1.5 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800 transition-all placeholder:text-slate-400"
-              placeholder="e.g. https://xyz.ngrok-free.app"
+          {/* GPU Connection widget */}
+          <div className="flex-1 max-w-md mx-6 hidden md:flex items-center gap-2 relative">
+            {/* Status dot */}
+            <span
+              title={
+                connectionStatus === 'connected' ? `Đã kết nối: ${connectedUrl}` :
+                connectionStatus === 'connecting' ? 'Đang kết nối...' :
+                connectionStatus === 'error' ? 'Kết nối thất bại' :
+                'Chưa kết nối'
+              }
+              className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${
+                connectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' :
+                connectionStatus === 'connecting' ? 'bg-amber-400 animate-pulse' :
+                connectionStatus === 'error'      ? 'bg-red-400' :
+                                                    'bg-slate-300'
+              }`}
             />
-            {isSavingUrl && <span className="text-xs text-slate-400">Saving...</span>}
+            {/* URL input */}
+            <input
+              type="text"
+              value={inputUrl}
+              onChange={(e) => {
+                setInputUrl(e.target.value);
+                if (connectionStatus === 'connected' || connectionStatus === 'error') setConnectionStatus('idle');
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleConnect(); }}
+              disabled={connectionStatus === 'connected' || connectionStatus === 'connecting'}
+              className="flex-1 min-w-0 bg-slate-50 border border-slate-200 text-xs px-3 py-1.5 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800 transition-all placeholder:text-slate-400 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed font-mono"
+              placeholder="https://xyz.ngrok-free.app"
+            />
+            {/* History dropdown */}
+            {urlHistory.length > 0 && connectionStatus !== 'connected' && connectionStatus !== 'connecting' && (
+              <div className="relative flex-shrink-0">
+                <button
+                  onClick={() => setShowHistory(v => !v)}
+                  title="Lịch sử kết nối"
+                  className="text-slate-400 hover:text-slate-600 px-1 py-1 text-xs leading-none transition-colors"
+                >▾</button>
+                {showHistory && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
+                    <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 w-72 overflow-hidden">
+                      <div className="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                        Lịch sử kết nối
+                      </div>
+                      {urlHistory.map((url, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { setInputUrl(url); setShowHistory(false); setConnectionStatus('idle'); }}
+                          className="w-full text-left px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 font-mono truncate block transition-colors"
+                          title={url}
+                        >
+                          {url}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {/* Connect / Disconnect button */}
+            {connectionStatus === 'connected' ? (
+              <button
+                onClick={handleDisconnect}
+                className="flex-shrink-0 text-xs font-semibold text-slate-400 hover:text-red-500 transition-colors whitespace-nowrap"
+              >
+                Ngắt
+              </button>
+            ) : (
+              <button
+                onClick={handleConnect}
+                disabled={!inputUrl.trim() || connectionStatus === 'connecting'}
+                className="flex-shrink-0 text-xs font-semibold bg-slate-800 text-white px-3 py-1.5 rounded-md hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              >
+                {connectionStatus === 'connecting' ? '…' : 'Kết nối'}
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-4">

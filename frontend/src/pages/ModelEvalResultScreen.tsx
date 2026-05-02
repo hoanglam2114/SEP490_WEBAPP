@@ -22,6 +22,7 @@ import {
   Tooltip,
   Cell,
 } from "recharts";
+import { getAuthToken } from "../services/authSession";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1141,6 +1142,7 @@ export const ModelEvalResultScreen: React.FC = () => {
 
   const [data, setData] = useState<EvaluationData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unauthorized, setUnauthorized] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [tablePage, setTablePage] = useState(1);
@@ -1159,15 +1161,51 @@ export const ModelEvalResultScreen: React.FC = () => {
 
   useEffect(() => {
     if (!evalId) return;
-    fetch(`/api/model-eval/${evalId}`)
+    const token = getAuthToken();
+    fetch(`/api/model-eval/${evalId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
       .then((r) => {
+        if (r.status === 401) { setUnauthorized(true); return null; }
         if (!r.ok) throw new Error();
         return r.json();
       })
-      .then(setData)
+      .then((json) => { if (json) setData(json); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [evalId]);
+
+  if (unauthorized)
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-8 max-w-sm w-full text-center shadow-sm">
+          <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-slate-800 mb-1">Cần đăng nhập</p>
+          <p className="text-xs text-slate-500 mb-5">
+            Tính năng này chỉ dành cho tài khoản đã đăng nhập.
+          </p>
+          <div className="flex gap-2 justify-center">
+            <button
+              onClick={() => navigate('/model-eval/leaderboard')}
+              className="px-4 py-2 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              ← Leaderboard
+            </button>
+            <button
+              onClick={() => navigate('/login')}
+              className="px-4 py-2 text-xs font-semibold bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors"
+            >
+              Đăng nhập
+            </button>
+          </div>
+        </div>
+      </div>
+    );
 
   if (loading)
     return (
