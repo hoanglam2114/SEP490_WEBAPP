@@ -122,12 +122,17 @@ export const HomePage: React.FC = () => {
   const [urlHistory, setUrlHistory] = useState<string[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
+
   React.useEffect(() => {
     // Load history from localStorage
     try {
       const h = JSON.parse(localStorage.getItem('gpu_url_history') || '[]');
       setUrlHistory(Array.isArray(h) ? h : []);
     } catch { /* ignore */ }
+
+    // Nếu user đã chủ động ngắt kết nối thì không restore
+    const wasDisconnected = localStorage.getItem('gpu_disconnected') === 'true';
+    if (wasDisconnected) return;
 
     const fetchConfig = async () => {
       try {
@@ -136,10 +141,18 @@ export const HomePage: React.FC = () => {
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.gpuUrl) {
+          if (data.gpuUrl && data.configured) {
             setInputUrl(data.gpuUrl);
             setConnectedUrl(data.gpuUrl);
-            setConnectionStatus('connected');
+            // Ping 1 lần khi navigate về home để xác nhận GPU còn online không
+            try {
+              const ping = await fetch('/api/model-eval/gpu-status', {
+                signal: AbortSignal.timeout(6000)
+              });
+              setConnectionStatus(ping.ok ? 'connected' : 'error');
+            } catch {
+              setConnectionStatus('error');
+            }
           }
         }
       } catch (err) {
@@ -148,6 +161,7 @@ export const HomePage: React.FC = () => {
     };
     fetchConfig();
   }, [token]);
+
 
   const handleConnect = async () => {
     const url = inputUrl.trim();
@@ -164,6 +178,7 @@ export const HomePage: React.FC = () => {
       if (pingRes.ok) {
         setConnectedUrl(url);
         setConnectionStatus('connected');
+        localStorage.removeItem('gpu_disconnected');
         setUrlHistory(prev => {
           const next = [url, ...prev.filter(u => u !== url)].slice(0, 5);
           localStorage.setItem('gpu_url_history', JSON.stringify(next));
@@ -181,6 +196,7 @@ export const HomePage: React.FC = () => {
     setConnectedUrl('');
     setInputUrl('');
     setConnectionStatus('idle');
+    localStorage.setItem('gpu_disconnected', 'true');
     try {
       await fetch(`/api/config/gpu-url`, {
         method: 'POST',
@@ -207,47 +223,60 @@ export const HomePage: React.FC = () => {
           </div>
           
           {/* GPU Connection widget */}
-          <div className="flex-1 max-w-md mx-6 hidden md:flex items-center gap-2 relative">
-            {/* Status dot */}
-            <span
-              title={
-                connectionStatus === 'connected' ? `Đã kết nối: ${connectedUrl}` :
-                connectionStatus === 'connecting' ? 'Đang kết nối...' :
-                connectionStatus === 'error' ? 'Kết nối thất bại' :
-                'Chưa kết nối'
-              }
-              className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${
-                connectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' :
-                connectionStatus === 'connecting' ? 'bg-amber-400 animate-pulse' :
-                connectionStatus === 'error'      ? 'bg-red-400' :
-                                                    'bg-slate-300'
-              }`}
-            />
-            {/* URL input */}
-            <input
-              type="text"
-              value={inputUrl}
-              onChange={(e) => {
-                setInputUrl(e.target.value);
-                if (connectionStatus === 'connected' || connectionStatus === 'error') setConnectionStatus('idle');
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleConnect(); }}
-              disabled={connectionStatus === 'connected' || connectionStatus === 'connecting'}
-              className="flex-1 min-w-0 bg-slate-50 border border-slate-200 text-xs px-3 py-1.5 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800 transition-all placeholder:text-slate-400 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed font-mono"
-              placeholder="https://xyz.ngrok-free.app"
-            />
-            {/* History dropdown */}
-            {urlHistory.length > 0 && connectionStatus !== 'connected' && connectionStatus !== 'connecting' && (
-              <div className="relative flex-shrink-0">
+          <div className="flex-1 max-w-sm mx-6 hidden md:block relative">
+            {connectionStatus === 'connected' ? (
+              /* ── Compact connected badge ── */
+              <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                <span
+                  className="text-xs text-emerald-700 font-mono truncate flex-1 min-w-0"
+                  title={connectedUrl}
+                >
+                  {connectedUrl}
+                </span>
                 <button
-                  onClick={() => setShowHistory(v => !v)}
-                  title="Lịch sử kết nối"
-                  className="text-slate-400 hover:text-slate-600 px-1 py-1 text-xs leading-none transition-colors"
-                >▾</button>
+                  onClick={handleDisconnect}
+                  className="flex-shrink-0 text-xs text-slate-400 hover:text-red-500 transition-colors ml-1 whitespace-nowrap"
+                  title="Ngắt kết nối GPU"
+                >
+                  Ngắt
+                </button>
+              </div>
+            ) : (
+              /* ── Input mode when idle / error / connecting ── */
+              <div className="flex items-center gap-2">
+                <span
+                  title={connectionStatus === 'connecting' ? 'Đang kết nối...' : connectionStatus === 'error' ? 'Kết nối thất bại' : 'Chưa kết nối GPU'}
+                  className={`w-2 h-2 rounded-full flex-shrink-0 transition-colors ${
+                    connectionStatus === 'connecting' ? 'bg-amber-400 animate-pulse' :
+                    connectionStatus === 'error'      ? 'bg-red-400' :
+                                                        'bg-slate-300'
+                  }`}
+                />
+                <div className="relative flex-1 min-w-0">
+                  <input
+                    type="text"
+                    value={inputUrl}
+                    onChange={(e) => { setInputUrl(e.target.value); if (connectionStatus === 'error') setConnectionStatus('idle'); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleConnect(); }}
+                    disabled={connectionStatus === 'connecting'}
+                    className="w-full bg-slate-50 border border-slate-200 text-xs px-3 py-1.5 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800 transition-all placeholder:text-slate-400 disabled:opacity-50 font-mono pr-6"
+                    placeholder="https://xyz.ngrok-free.app"
+                  />
+                  {/* History button inside input */}
+                  {urlHistory.length > 0 && connectionStatus !== 'connecting' && (
+                    <button
+                      onClick={() => setShowHistory(v => !v)}
+                      title="Lịch sử kết nối"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs leading-none transition-colors"
+                    >▾</button>
+                  )}
+                </div>
+                {/* History dropdown */}
                 {showHistory && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
-                    <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 w-72 overflow-hidden">
+                    <div className="absolute left-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 w-full overflow-hidden">
                       <div className="px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100">
                         Lịch sử kết nối
                       </div>
@@ -264,24 +293,14 @@ export const HomePage: React.FC = () => {
                     </div>
                   </>
                 )}
+                <button
+                  onClick={handleConnect}
+                  disabled={!inputUrl.trim() || connectionStatus === 'connecting'}
+                  className="flex-shrink-0 text-xs font-semibold bg-slate-800 text-white px-3 py-1.5 rounded-md hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                >
+                  {connectionStatus === 'connecting' ? '…' : 'Kết nối'}
+                </button>
               </div>
-            )}
-            {/* Connect / Disconnect button */}
-            {connectionStatus === 'connected' ? (
-              <button
-                onClick={handleDisconnect}
-                className="flex-shrink-0 text-xs font-semibold text-slate-400 hover:text-red-500 transition-colors whitespace-nowrap"
-              >
-                Ngắt
-              </button>
-            ) : (
-              <button
-                onClick={handleConnect}
-                disabled={!inputUrl.trim() || connectionStatus === 'connecting'}
-                className="flex-shrink-0 text-xs font-semibold bg-slate-800 text-white px-3 py-1.5 rounded-md hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-              >
-                {connectionStatus === 'connecting' ? '…' : 'Kết nối'}
-              </button>
             )}
           </div>
 
