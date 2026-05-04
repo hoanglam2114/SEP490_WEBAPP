@@ -17,7 +17,7 @@ dotenv.config();
 class WorkerManager {
   private workers: { url: string; activeJobs: number }[] = [];
 
-  constructor() {}
+  constructor() { }
 
   // Sync workers array with current config
   private syncWorkers() {
@@ -33,7 +33,7 @@ class WorkerManager {
   getNextWorker(): string {
     this.syncWorkers();
     if (this.workers.length === 0) return 'http://localhost:5000';
-    
+
     // Sort by active jobs and pick the first one
     this.workers.sort((a, b) => a.activeJobs - b.activeJobs);
     return this.workers[0].url;
@@ -180,6 +180,8 @@ export const startTraining = async (req: Request, res: Response) => {
       datasetSource,
       columnMapping,
       column_mapping, // Accept both camelCase and snake_case
+      systemPrompt,
+      systemPromptVersion,
     } = req.body;
 
     console.log('[Backend] Received columnMapping:', columnMapping);
@@ -212,7 +214,7 @@ export const startTraining = async (req: Request, res: Response) => {
         }
       } catch (zipErr: any) {
         // Clean up original multer file
-        fs.unlink(datasetFile.path, () => {});
+        fs.unlink(datasetFile.path, () => { });
         return res.status(400).json({ error: zipErr.message || 'Failed to extract ZIP file.' });
       }
     }
@@ -222,7 +224,7 @@ export const startTraining = async (req: Request, res: Response) => {
       try {
         const filePath = datasetFile.path;
         const fileContent = fs.readFileSync(filePath, { encoding: 'utf-8', flag: 'r' });
-        
+
         let columns: string[] = [];
         if (datasetFile.originalname.endsWith('.json')) {
           try {
@@ -304,6 +306,7 @@ export const startTraining = async (req: Request, res: Response) => {
       push_to_hub: push_to_hub === 'true' || push_to_hub === true,
       hf_repo_id: hf_repo_id || '',
       hf_token: hf_token || '',
+      system_prompt: systemPrompt || '',
       // Google Drive for checkpoint saving
       drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
       service_account: parsedGoogleCredentials,
@@ -386,8 +389,8 @@ export const startTraining = async (req: Request, res: Response) => {
         projectName: typeof projectName === 'string' ? projectName : 'AutoTrain Job',
         baseModel: model_name,
         // Dataset & Prompt traceability from ZIP metadata
-        systemPrompt: zipMetadata?.systemPrompt || '',
-        systemPromptVersion: zipMetadata?.systemPromptVersion || '',
+        systemPrompt: systemPrompt || zipMetadata?.systemPrompt || '',
+        systemPromptVersion: systemPromptVersion || zipMetadata?.systemPromptVersion || '',
         datasetVersionId: zipMetadata?.datasetVersionId || undefined,
         datasetSource: (datasetSource as string) || (datasetFile ? 'local' : 'hub'),
         datasetName: datasetFile ? datasetFile.originalname : dataset,
@@ -456,7 +459,7 @@ export const getActiveTrainingJobs = async (req: Request, res: Response) => {
       ownerId,
       status: { $in: ['QUEUED', 'PENDING', 'LOADING_MODEL', 'TRAINING', 'RUNNING'] }
     }).sort({ startedAt: -1 });
-    
+
     return res.json(activeJobs);
   } catch (err: any) {
     console.error('[Backend] getActiveTrainingJobs error:', err);
@@ -547,7 +550,7 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
         if (data.latest_checkpoint) {
           updateFields.latest_checkpoint_file_id = data.latest_checkpoint;
         }
-        
+
         const pushFields: any = {};
         if (data.metrics && typeof data.metrics.loss === 'number') {
           pushFields.lossHistory = { progress: data.progress || 0, loss: data.metrics.loss };
@@ -558,7 +561,7 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
 
         TrainingHistory.updateOne(
           { jobId, ownerId },
-          { 
+          {
             ...updateFields,
             ...(Object.keys(pushFields).length > 0 ? { $push: pushFields } : {})
           }
@@ -571,11 +574,11 @@ export const streamTrainingStatus = async (req: Request, res: Response) => {
       // (e.g., job not yet registered by the GPU service). Only close on definitive end-states.
       if (['COMPLETED', 'STOPPED', 'FAILED', 'ERROR'].includes(data.status)) {
         const workerMetrics = data.metrics || {};
-        
+
         // Lấy loss từ data hoặc metrics, nhưng phải khác 0
         // Nếu bằng 0, ta sẽ cố gắng tìm trong history hoặc giữ nguyên giá trị cũ
         let finalLoss = typeof data.loss === 'number' && data.loss > 0 ? data.loss : (typeof workerMetrics.loss === 'number' ? workerMetrics.loss : 0);
-        
+
         // Nếu vẫn bằng 0 (do Colab reset ở step cuối), thử lấy từ history đã lưu
         if (finalLoss === 0 && history && history.lossHistory && history.lossHistory.length > 0) {
           const lastValid = history.lossHistory.filter(h => h.loss > 0).pop();
@@ -638,7 +641,7 @@ export const stopTraining = async (req: Request, res: Response) => {
     }
     const workerUrl = history?.workerUrl || workerManager.getUrls()[0];
 
-    const response = await fetch(`${workerUrl}/api/train/stop/${jobId}`, { 
+    const response = await fetch(`${workerUrl}/api/train/stop/${jobId}`, {
       method: 'POST',
       headers: { 'ngrok-skip-browser-warning': 'true' }
     });
@@ -678,7 +681,7 @@ export const getSystemResources = async (_req: Request, res: Response) => {
     });
 
     const results: any[] = await Promise.all(resourcePromises);
-    
+
     // Aggregated resources for backward compatibility if needed, 
     // or just return the list of workers
     return res.json({
@@ -810,7 +813,7 @@ export const resumeTraining = async (req: Request, res: Response) => {
     }
 
     if (gpuResponse.ok) {
-      await TrainingHistory.updateOne({ jobId, ownerId }, { 
+      await TrainingHistory.updateOne({ jobId, ownerId }, {
         status: 'RUNNING',
         workerUrl: workerUrl
       });

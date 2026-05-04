@@ -26,6 +26,7 @@ export interface IModelVersion extends Document {
     [key: string]: any;
   };
   promptVersion?: string;
+  systemPrompt?: string;
   notes?: string;
   createdBy?: string;
   createdAt: Date;
@@ -52,6 +53,7 @@ const ModelVersionSchema = new Schema<IModelVersion>(
       source: { type: String },
     },
     promptVersion: { type: String },
+    systemPrompt: { type: String },
     notes: { type: String },
     createdBy: { type: String },
   },

@@ -156,6 +156,7 @@ export interface JobConfig {
   datasetSource: string;
   datasetName: string;
   columnMapping: string;
+  systemPrompt?: string;
   parameters: any;
   hfRepoId: string;
   hfToken: string;
@@ -201,6 +202,7 @@ export const AutoTrainScreen: React.FC = () => {
   const [hubPath, setHubPath] = useState("");
   const [columnMapping, setColumnMapping] = useState("text");
   const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [hfRepoId, setHfRepoId] = useState("");
   const [hfToken, setHfToken] = useState("");
 
@@ -443,6 +445,7 @@ export const AutoTrainScreen: React.FC = () => {
           setHubPath(typeof data.datasetSource === "string" && data.datasetSource === "hub" && typeof data.datasetName === "string" ? data.datasetName : "");
           setLocalFile(null);
           setDetectedColumns([]);
+          setSystemPrompt(typeof data.systemPrompt === "string" ? data.systemPrompt : "");
           setColumnMapping(typeof data.columnMapping === "string" ? data.columnMapping : "text");
           setParameters(mergedParams);
           setJsonText(JSON.stringify(mergedParams, null, 2));
@@ -454,6 +457,7 @@ export const AutoTrainScreen: React.FC = () => {
             datasetSource: typeof data.datasetSource === "string" ? data.datasetSource : "local",
             datasetName: typeof data.datasetName === "string" ? data.datasetName : "",
             columnMapping: typeof data.columnMapping === "string" ? data.columnMapping : "text",
+            systemPrompt: typeof data.systemPrompt === "string" ? data.systemPrompt : "",
             parameters: mergedParams,
             hfRepoId: typeof data.hfRepoId === "string" ? data.hfRepoId : "",
             hfToken: "",
@@ -488,7 +492,7 @@ export const AutoTrainScreen: React.FC = () => {
       try {
         const status: TrainingStatus = JSON.parse(event.data);
         const currentStore = useTrainingStore.getState();
-        
+
         // Cập nhật status chung
         currentStore.updateJobStatus(jobId, status);
 
@@ -655,6 +659,7 @@ export const AutoTrainScreen: React.FC = () => {
       formData.append("datasetSource", datasetSource);
       formData.append("columnMapping", columnMapping);
       formData.append("column_mapping", columnMapping); // Also send snake_case just in case
+      formData.append("systemPrompt", systemPrompt);
 
       const response = await fetch("/api/train/start", {
         method: "POST",
@@ -681,6 +686,7 @@ export const AutoTrainScreen: React.FC = () => {
         datasetName:
           datasetSource === "local" && localFile ? localFile.name : hubPath,
         columnMapping,
+        systemPrompt,
         parameters,
         hfRepoId,
         hfToken,
@@ -1197,6 +1203,24 @@ export const AutoTrainScreen: React.FC = () => {
 
                 {/* Hugging Face Settings (Always Visible) */}
                 <div className="pt-4 border-t border-slate-100 space-y-4">
+                  <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center justify-between">
+                      <span>System Prompt (Optional)</span>
+                      <span className="text-[10px] text-slate-400 font-normal normal-case">Defines model personality</span>
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-3 text-slate-400 text-sm">
+                        💬
+                      </span>
+                      <textarea
+                        className="w-full border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 min-h-[100px] resize-none transition-all"
+                        value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        placeholder="e.g. You are a helpful assistant..."
+                      />
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="animate-in fade-in slide-in-from-top-2 duration-200">
                       <label className="block text-sm font-medium text-slate-700 mb-1.5">

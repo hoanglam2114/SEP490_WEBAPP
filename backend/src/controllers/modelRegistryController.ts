@@ -3,6 +3,20 @@ import { ModelRegistry } from '../models/ModelRegistry';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
 import { TrainingHistory } from '../models/TrainingHistory';
 import { ModelEvaluation } from '../models/Evaluation';
+import mongoose from 'mongoose';
+
+// Helper để lấy kết quả đánh giá mới nhất cho một job huấn luyện
+const getLatestEvaluation = async (jobId: string, ownerId: string) => {
+  try {
+    // ModelEvaluation lưu liên kết qua trường jobId (chuỗi job_xxx)
+    return await ModelEvaluation.findOne({
+      ownerId,
+      jobId: jobId
+    }).sort({ createdAt: -1 });
+  } catch (e) {
+    return null;
+  }
+};
 import fs from 'fs';
 import { getAuthUserId } from '../utils/auth';
 
@@ -116,7 +130,34 @@ export class ModelRegistryController {
       const versions = await ModelVersion.find({ ownerId, modelRegistryId: req.params.registryId })
         .populate('trainingHistoryId')
         .sort({ createdAt: -1 });
-      res.json(versions);
+
+      // Bổ sung: Lấy thêm thông tin evaluation cho mỗi version từ bảng ModelEvaluation
+      const enrichedVersions = await Promise.all(versions.map(async (v: any) => {
+        const versionJson = v.toJSON();
+        if (v.trainingHistoryId) {
+          // QUAN TRỌNG: ModelEvaluation lưu jobId là chuỗi dạng 'job_xxx', không phải ObjectId
+          const history = v.trainingHistoryId as any;
+          const searchId = history.jobId || history._id?.toString() || history.toString();
+
+          const evaluation = await getLatestEvaluation(searchId, ownerId);
+
+          if (evaluation && evaluation.summary) {
+            versionJson.evaluationResult = evaluation.summary;
+            // Cập nhật metrics hiển thị nếu có kết quả đánh giá mới
+            if (evaluation.summary.overall) {
+              const max = evaluation.summary.max_possible || 5;
+              versionJson.metrics = {
+                ...(versionJson.metrics || {}),
+                overallScore: (evaluation.summary.overall / max) * 100,
+                evalSummary: evaluation.summary
+              };
+            }
+          }
+        }
+        return versionJson;
+      }));
+
+      res.json(enrichedVersions);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -151,6 +192,7 @@ export class ModelRegistryController {
       let metrics: any = {};
       let configSnapshot = null;
       let datasetInfo: { name: string; source: string } | undefined;
+      let systemPrompt = '';
 
       // 1. Fetch data from Training History
       if (trainingHistoryId) {
@@ -164,6 +206,7 @@ export class ModelRegistryController {
             name: history.datasetName,
             source: history.datasetSource,
           };
+          systemPrompt = history.systemPrompt || '';
         }
       }
 
@@ -195,6 +238,7 @@ export class ModelRegistryController {
         configSnapshot,
         datasetInfo,
         promptVersion,
+        systemPrompt,
         status: status || ModelVersionStatus.NOT_USE,
       });
 

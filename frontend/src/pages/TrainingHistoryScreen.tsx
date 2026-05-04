@@ -589,6 +589,14 @@ export const TrainingHistoryScreen: React.FC = () => {
                                     <span className="text-slate-700 font-semibold">{item.systemPromptVersion}</span>
                                   </div>
                                 )}
+                                {item.systemPrompt && (
+                                  <div className="space-y-1">
+                                    <span className="text-slate-500 text-xs">System Prompt</span>
+                                    <div className="bg-white border border-slate-200 rounded-lg p-3 text-xs text-slate-700 max-h-32 overflow-y-auto italic">
+                                      {item.systemPrompt}
+                                    </div>
+                                  </div>
+                                )}
                                 <div className="flex justify-between">
                                   <span className="text-slate-500">Training Duration</span>
                                   <span className="text-slate-700 font-semibold">{formatDuration(item.trainingDuration)}</span>
@@ -634,6 +642,15 @@ export const TrainingHistoryScreen: React.FC = () => {
                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Completed</span>
                             <span className="text-slate-700">{formatDate(item.completedAt)}</span>
                           </div>
+
+                          {item.systemPrompt && (
+                            <div className="flex flex-col col-span-1 sm:col-span-2 md:col-span-3 pt-2 border-t border-slate-100">
+                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter mb-1">System Prompt</span>
+                              <div className="bg-white border border-slate-200 rounded-lg p-3 text-xs text-slate-600 italic max-h-32 overflow-y-auto shadow-inner">
+                                {item.systemPrompt}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 
