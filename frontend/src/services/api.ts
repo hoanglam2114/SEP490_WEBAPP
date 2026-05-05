@@ -214,6 +214,16 @@ export type QualityClassificationItem = {
   iar: Array<number | null>;
   criticalFailures: number;
   scorableTurns: number;
+  turnPairs?: Array<{
+    userMessageIndex: number;
+    assistantMessageIndex: number;
+    user: string;
+    assistant: string;
+    userLabels: string[];
+    assistantLabels: string[];
+    expectedActions: string[];
+    matched: boolean;
+  }>;
 };
 
 export type QualityWrongPair = {
@@ -527,6 +537,57 @@ export const apiService = {
     return {
       items: results.flatMap((item) => item.items || []),
       refined: results.reduce((sum, item) => sum + (item.refined || 0), 0),
+    };
+  },
+
+  rewriteData: async (
+    data: Array<{
+      turns: Array<{
+        userMessageIndex: number;
+        assistantMessageIndex: number;
+        user: string;
+        assistant: string;
+        userLabels: string[];
+        assistantLabels: string[];
+        expectedActions: string[];
+        matched: boolean;
+      }>;
+    }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
+  ): Promise<{ items: Array<{ rewrites: Array<{ assistantMessageIndex: number; assistant: string }> }>; rewritten: number }> => {
+    const response = await api.post('/evaluate/rewrite', { data, provider });
+    return response.data;
+  },
+
+  rewriteDataChunked: async (
+    data: Array<{
+      turns: Array<{
+        userMessageIndex: number;
+        assistantMessageIndex: number;
+        user: string;
+        assistant: string;
+        userLabels: string[];
+        assistantLabels: string[];
+        expectedActions: string[];
+        matched: boolean;
+      }>;
+    }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 50
+  ): Promise<{ items: Array<{ rewrites: Array<{ assistantMessageIndex: number; assistant: string }> }>; rewritten: number }> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return { items: [], rewritten: 0 };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.rewriteData(data, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(chunks.map((chunk) => apiService.rewriteData(chunk, provider)));
+    return {
+      items: results.flatMap((item) => item.items || []),
+      rewritten: results.reduce((sum, item) => sum + (item.rewritten || 0), 0),
     };
   },
 

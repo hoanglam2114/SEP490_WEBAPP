@@ -76,6 +76,16 @@ export type QualityItem = {
   iar: Array<number | null>;
   criticalFailures: number;
   scorableTurns: number;
+  turnPairs: Array<{
+    userMessageIndex: number;
+    assistantMessageIndex: number;
+    user: string;
+    assistant: string;
+    userLabels: string[];
+    assistantLabels: string[];
+    expectedActions: string[];
+    matched: boolean;
+  }>;
 };
 
 export type QualityResult = {
@@ -236,6 +246,7 @@ export class QualityService {
       const intentCounts = new Array(INTENTS.length).fill(0);
       let scorableTurns = 0;
       let criticalFailures = 0;
+      const turnPairs: QualityItem['turnPairs'] = [];
 
       for (let index = 0; index < messages.length; index += 1) {
         const userMessage = messages[index];
@@ -274,6 +285,17 @@ export class QualityService {
           if (isCriticalFailure) {
             criticalFailures += 1;
           }
+
+          turnPairs.push({
+            userMessageIndex: userMessage.messageIndex,
+            assistantMessageIndex: assistantMessage.messageIndex,
+            user: String(userMessage.content || ''),
+            assistant: String(assistantMessage.content || ''),
+            userLabels: [userLabel],
+            assistantLabels: [...assistantLabels],
+            expectedActions: Array.from(validActions),
+            matched: isCorrect,
+          });
         }
       }
 
@@ -299,6 +321,7 @@ export class QualityService {
         iar,
         criticalFailures,
         scorableTurns,
+        turnPairs,
       });
     }
 

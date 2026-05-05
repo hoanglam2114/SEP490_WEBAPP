@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { EvaluationSample, EvaluationService, RefinementSample } from '../services/evaluationService';
+import { EvaluationSample, EvaluationService, RefinementSample, RewriteSample } from '../services/evaluationService';
 import { EvaluationHistory } from '../models/EvaluationHistory';
 import { DataPrepProject } from '../models/DataPrepProject';
 import { DatasetVersion } from '../models/DatasetVersion';
@@ -1184,6 +1184,43 @@ export class EvaluationController {
     }
   }
 
+  async rewrite(req: Request, res: Response): Promise<void> {
+    try {
+      const { data, provider } = req.body as {
+        data: RewriteSample[];
+        provider?: 'gemini' | 'openai' | 'deepseek';
+      };
+
+      if (!Array.isArray(data) || data.length === 0) {
+        res.status(400).json({ error: 'Cần cung cấp mảng data để rewrite.' });
+        return;
+      }
+
+      const service = this.getService(provider);
+      const samples = data.map((item) => ({
+        turns: Array.isArray(item?.turns) ? item.turns.map((turn) => ({
+          userMessageIndex: Number(turn?.userMessageIndex),
+          assistantMessageIndex: Number(turn?.assistantMessageIndex),
+          user: String(turn?.user || ''),
+          assistant: String(turn?.assistant || ''),
+          userLabels: Array.isArray(turn?.userLabels) ? turn.userLabels.map((label) => String(label || '')) : [],
+          assistantLabels: Array.isArray(turn?.assistantLabels) ? turn.assistantLabels.map((label) => String(label || '')) : [],
+          expectedActions: Array.isArray(turn?.expectedActions) ? turn.expectedActions.map((label) => String(label || '')) : [],
+          matched: Boolean(turn?.matched),
+        })) : [],
+      }));
+
+      const rewritten = await service.rewriteBatch(samples);
+      res.json({ items: rewritten, rewritten: rewritten.length });
+    } catch (error: any) {
+      console.error('Rewrite error:', error);
+      res.status(500).json({
+        error: 'Rewrite dữ liệu thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async updateDatasetVersionPrepareProgress(req: Request, res: Response): Promise<void> {
     try {
       const ownerId = getAuthUserId(req);
@@ -1208,7 +1245,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { prepareResumeStep } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1265,7 +1302,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { isPublic } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1330,7 +1367,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { sharedWithUserIds } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1823,7 +1860,7 @@ export class EvaluationController {
             progressSnapshot: progress,
           },
         },
-        { new: true, upsert: true }
+        { returnDocument: 'after', upsert: true }
       ).lean();
 
       res.json({
@@ -1883,7 +1920,7 @@ export class EvaluationController {
             progressSnapshot: progress,
           },
         },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       res.json({
@@ -1987,7 +2024,7 @@ export class EvaluationController {
             updatedAt: new Date(),
           },
         },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {

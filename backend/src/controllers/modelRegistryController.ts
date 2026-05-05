@@ -70,7 +70,7 @@ export class ModelRegistryController {
       const registry = await ModelRegistry.findOneAndUpdate(
         { _id: req.params.id, ownerId },
         req.body,
-        { new: true }
+        { returnDocument: 'after' }
       );
       if (!registry) {
         res.status(404).json({ message: 'Registry not found' });
@@ -221,7 +221,7 @@ export class ModelRegistryController {
       const version = await ModelVersion.findOneAndUpdate(
         { _id: req.params.id, ownerId },
         { status },
-        { new: true }
+        { returnDocument: 'after' }
       );
 
       if (!version) {

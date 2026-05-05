@@ -34,7 +34,7 @@ import { ShareAssignPanel } from '../features/dataprep/labeling/ShareAssignPanel
 import { ClusterPanel } from '../features/dataprep/preprocessing/ClusterPanel';
 import { ClassificationPanel } from '../features/dataprep/classification/ClassificationPanel';
 import { SubjectDistributionPanel } from '../features/dataprep/classification/SubjectDistributionPanel';
-import { BalanceDatasetPanel } from '../features/dataprep/classification/BalanceDatasetPanel';
+import { RewriteDatasetPanel, type RewriteSampleView, type RewriteTurnDraft } from '../features/dataprep/classification/RewriteDatasetPanel';
 import { CleaningPipelineOptions } from '../features/dataprep/preprocessing/CleaningPipelineOptions';
 import { PostConversionSummary } from '../features/dataprep/preprocessing/PostConversionSummary';
 import { VisualizationPanel, type VisualizationResult } from '../features/dataprep/preprocessing/VisualizationPanel';
@@ -102,7 +102,6 @@ type ClusterStat = {
 };
 
 type AutoLabelSuggestionMap = Partial<Record<AiProvider, AutoLabelSuggestion[]>>;
-
 type LoadProjectPayload = {
   fileId?: string;
   projectName: string;
@@ -431,7 +430,7 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 7, label: 'Labeling', group: 'Labeling' },
   { id: 8, label: 'Classification', group: 'Classification' },
   { id: 9, label: 'Distribution', group: 'Classification' },
-  { id: 10, label: 'Balance Dataset', group: 'Classification' },
+  { id: 10, label: 'Rewrite', group: 'Classification' },
   { id: 11, label: 'Evaluation', group: 'Evaluation' },
   { id: 12, label: 'Refine', group: 'Evaluation' },
   { id: 13, label: 'System Prompt', group: 'Finish' },
@@ -2384,6 +2383,11 @@ export function ConversionPage() {
   const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
   const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
   const [balanceApplied, setBalanceApplied] = useState(false);
+  const [rewriteProvider, setRewriteProvider] = useState<AiProvider>('gemini');
+  const [rewriteRows, setRewriteRows] = useState<RewriteSampleView[]>([]);
+  const [rewriteDrafts, setRewriteDrafts] = useState<Record<string, Record<number, RewriteTurnDraft>>>({});
+  const [rewriteApplied, setRewriteApplied] = useState(false);
+  const [isRewriteLoading, setIsRewriteLoading] = useState(false);
   const loadHandledRef = useRef<boolean>(false);
   const currentUserId = useMemo(() => {
     const candidate = (user as any)?.id || (user as any)?._id || (user as any)?.userId;
@@ -2425,6 +2429,9 @@ export function ConversionPage() {
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
+    setRewriteRows([]);
+    setRewriteDrafts({});
+    setRewriteApplied(false);
   }, [currentDatasetVersionId]);
 
   useEffect(() => {
@@ -2612,6 +2619,54 @@ export function ConversionPage() {
     }));
     return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
   }, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadRewriteRows = async () => {
+      if (currentStep !== 10 || !currentDatasetVersionId) {
+        return;
+      }
+
+      setIsRewriteLoading(true);
+      try {
+        const response = await apiService.getQualityClassifiedSamples(currentDatasetVersionId, 'Rewrite');
+        if (isCancelled) {
+          return;
+        }
+        const rows: RewriteSampleView[] = (response.items || []).map((item, index) => ({
+          rowId: String(item.sampleId),
+          blockLabel: `Conversation ${index + 1}`,
+          turns: (item.turnPairs || []).map((turn) => ({
+            userMessageIndex: Number(turn.userMessageIndex),
+            assistantMessageIndex: Number(turn.assistantMessageIndex),
+            user: String(turn.user || ''),
+            assistant: String(turn.assistant || ''),
+            userLabels: Array.isArray(turn.userLabels) ? turn.userLabels : [],
+            assistantLabels: Array.isArray(turn.assistantLabels) ? turn.assistantLabels : [],
+            expectedActions: Array.isArray(turn.expectedActions) ? turn.expectedActions : [],
+            matched: Boolean(turn.matched),
+          })),
+        })).filter((row) => row.turns.length > 0);
+        setRewriteRows(rows);
+      } catch (error) {
+        if (!isCancelled) {
+          setRewriteRows([]);
+          toast.error('Failed to load Rewrite samples.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsRewriteLoading(false);
+        }
+      }
+    };
+
+    loadRewriteRows();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [conversionOptions.removeThinkTags, currentDatasetVersionId, currentStep, previewMode]);
 
   const assignmentMapBySampleId = useMemo(() => {
     const samples = ownerAssignmentsQuery.data?.samples || [];
@@ -2948,6 +3003,9 @@ export function ConversionPage() {
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       setBalanceApplied(false);
+      setRewriteRows([]);
+      setRewriteDrafts({});
+      setRewriteApplied(false);
       setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
@@ -3289,6 +3347,49 @@ export function ConversionPage() {
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
   });
 
+  const rewriteMutation = useMutation({
+    mutationFn: async (provider: AiProvider) => {
+      if (!rewriteRows.length) {
+        throw new Error('No Rewrite samples available.');
+      }
+
+      const payload = rewriteRows.map((row) => ({
+        turns: row.turns,
+      }));
+
+      const response = await apiService.rewriteDataChunked(payload, provider);
+      return { provider, response };
+    },
+    onSuccess: ({ provider, response }) => {
+      const nextDrafts: Record<string, Record<number, RewriteTurnDraft>> = {};
+
+      rewriteRows.forEach((row, index) => {
+        const rewrites = response.items[index]?.rewrites || [];
+        const currentDrafts: Record<number, RewriteTurnDraft> = {};
+        rewrites.forEach((rewrite) => {
+          const proposal = String(rewrite.assistant || '').trim();
+          if (!proposal) {
+            return;
+          }
+          currentDrafts[rewrite.assistantMessageIndex] = {
+            proposal,
+            editedText: proposal,
+            decision: 'ai',
+          };
+        });
+        nextDrafts[row.rowId] = currentDrafts;
+      });
+
+      setRewriteDrafts(nextDrafts);
+      setRewriteApplied(false);
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
+      toast.success(`Generated rewrite proposals for ${response.items.length} samples using ${label}.`);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error.message || 'Rewrite generation failed.');
+    },
+  });
+
   const clusterMutation = useMutation({
     mutationFn: async () => {
       if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
@@ -3618,6 +3719,177 @@ export function ConversionPage() {
     setQualitySamplesResult(null);
     setBalanceApplied(true);
     toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
+  };
+
+  const handleRewriteDecisionChange = (rowId: string, assistantMessageIndex: number, decision: 'original' | 'ai' | 'edited') => {
+    setRewriteDrafts((prev) => {
+      const rowDrafts = prev[rowId];
+      const current = rowDrafts?.[assistantMessageIndex];
+      if (!rowDrafts || !current) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [rowId]: {
+          ...rowDrafts,
+          [assistantMessageIndex]: {
+            ...current,
+            decision,
+          },
+        },
+      };
+    });
+    setRewriteApplied(false);
+  };
+
+  const handleRewriteEditChange = (rowId: string, assistantMessageIndex: number, value: string) => {
+    setRewriteDrafts((prev) => {
+      const rowDrafts = prev[rowId];
+      const current = rowDrafts?.[assistantMessageIndex];
+      if (!rowDrafts || !current) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [rowId]: {
+          ...rowDrafts,
+          [assistantMessageIndex]: {
+            ...current,
+            editedText: value,
+            decision: 'edited',
+          },
+        },
+      };
+    });
+    setRewriteApplied(false);
+  };
+
+  const handleApplyRewriteSelections = () => {
+    if (!conversionResult || !rewriteRows.length) {
+      toast.error('No rewrite data available to apply.');
+      return;
+    }
+
+    const selectedTurns = rewriteRows.flatMap((row) => {
+      const rowDrafts = rewriteDrafts[row.rowId] || {};
+      return row.turns
+        .filter((turn) => {
+          const draft = rowDrafts[turn.assistantMessageIndex];
+          return draft && (draft.decision === 'ai' || draft.decision === 'edited');
+        })
+        .map((turn) => ({
+          rowId: row.rowId,
+          assistantMessageIndex: turn.assistantMessageIndex,
+          draft: rowDrafts[turn.assistantMessageIndex],
+        }));
+    });
+
+    if (!selectedTurns.length) {
+      toast.error('Select at least one rewritten assistant turn before applying.');
+      return;
+    }
+
+    setConversionResult((prev) => {
+      if (!prev) {
+        return prev;
+      }
+
+      const nextData = [...prev.data];
+
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(prev.data || []);
+        const conversationIndexById = new Map<string, number>();
+        conversations.forEach((conversation, index) => conversationIndexById.set(String(conversation.conversation_id), index));
+
+        selectedTurns.forEach(({ rowId, assistantMessageIndex, draft }) => {
+          if (!draft) {
+            return;
+          }
+
+          const targetIndex = conversationIndexById.get(rowId);
+          if (targetIndex === undefined) {
+            return;
+          }
+
+          const record = nextData[targetIndex];
+          if (!Array.isArray(record?.messages)) {
+            return;
+          }
+
+          const finalText = draft.decision === 'edited' ? draft.editedText : draft.proposal;
+          if (!Number.isInteger(assistantMessageIndex) || !record.messages[assistantMessageIndex]) {
+            return;
+          }
+
+          const updatedRecord = {
+            ...record,
+            messages: [...record.messages],
+          };
+          updatedRecord.messages[assistantMessageIndex] = {
+            ...updatedRecord.messages[assistantMessageIndex],
+            content: finalText,
+          };
+
+          nextData[targetIndex] = updatedRecord;
+        });
+      } else {
+        selectedTurns.forEach(({ rowId, draft }) => {
+          if (!draft) {
+            return;
+          }
+
+          const rowIndex = allRows.findIndex((item) => item.id === rowId);
+          if (rowIndex < 0 || !nextData[rowIndex]) {
+            return;
+          }
+
+          nextData[rowIndex] = {
+            ...nextData[rowIndex],
+            output: draft.decision === 'edited' ? draft.editedText : draft.proposal,
+          };
+        });
+      }
+
+      return {
+        ...prev,
+        data: nextData,
+        output: JSON.stringify(nextData),
+      };
+    });
+
+    setOriginalConvertedResult((prev) => prev || conversionResult);
+    setCurrentDatasetVersionId(null);
+    setDatasetVersionPromptId('');
+    setSampleIdMap({});
+    setEvaluationMap({});
+    setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    setActiveClassificationGroup(null);
+    setClassifiedSamplesResult(null);
+    setActiveQualityBucket(null);
+    setQualitySamplesResult(null);
+    setRewriteRows((prev) => prev.map((row) => {
+      const rowDrafts = rewriteDrafts[row.rowId] || {};
+      return {
+        ...row,
+        turns: row.turns.map((turn) => {
+          const draft = rowDrafts[turn.assistantMessageIndex];
+          if (!draft || (draft.decision !== 'ai' && draft.decision !== 'edited')) {
+            return turn;
+          }
+          return {
+            ...turn,
+            assistant: draft.decision === 'edited' ? draft.editedText : draft.proposal,
+          };
+        }),
+      };
+    }));
+    setRewriteApplied(true);
+    toast.success(`Applied ${selectedTurns.length} rewritten assistant turns to the working dataset.`);
   };
 
   const handleDownloadTrainTestZip = async () => {
@@ -3975,6 +4247,9 @@ export function ConversionPage() {
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
         setBalanceApplied(false);
+        setRewriteRows([]);
+        setRewriteDrafts({});
+        setRewriteApplied(false);
         setVisibleRowsInEvaluation([]);
         setVisibleRowsInRefinement([]);
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
@@ -4055,6 +4330,9 @@ export function ConversionPage() {
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setBalanceApplied(false);
+    setRewriteRows([]);
+    setRewriteDrafts({});
+    setRewriteApplied(false);
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setActiveProjectOwnerId(null);
@@ -4702,6 +4980,8 @@ export function ConversionPage() {
       {currentStep === 9 && (
         <SubjectDistributionPanel
           versionId={currentDatasetVersionId || ''}
+          alreadyApplied={balanceApplied}
+          onApply={handleApplySubjectBalance}
           onBack={() => setCurrentStep(getBackStep(9))}
           onNext={() => setCurrentStep(10)}
           nextDisabled={!canMoveFromStep9}
@@ -4709,10 +4989,17 @@ export function ConversionPage() {
       )}
 
       {currentStep === 10 && (
-        <BalanceDatasetPanel
-          versionId={currentDatasetVersionId || ''}
-          alreadyApplied={balanceApplied}
-          onApply={handleApplySubjectBalance}
+        <RewriteDatasetPanel
+          rows={rewriteRows}
+          provider={rewriteProvider}
+          onProviderChange={setRewriteProvider}
+          drafts={rewriteDrafts}
+          isGenerating={isRewriteLoading || rewriteMutation.isPending}
+          onGenerate={() => rewriteMutation.mutate(rewriteProvider)}
+          onTurnDecisionChange={handleRewriteDecisionChange}
+          onTurnEditChange={handleRewriteEditChange}
+          onApply={handleApplyRewriteSelections}
+          hasApplied={rewriteApplied}
           onBack={() => setCurrentStep(getBackStep(10))}
           onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation)}
           nextDisabled={!canMoveFromStep10}
