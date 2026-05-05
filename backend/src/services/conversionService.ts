@@ -520,7 +520,9 @@ export class ConversionService {
       "Không tìm thấy agent",
       "Status",
       "not supported by",
-      "__CHUNK__"
+      "__CHUNK__",
+      "Exception",
+      "Vui lòng thử lại.",
     ];
 
     // const BOILERPLATE_PATTERNS = [

@@ -86,7 +86,7 @@ export function CleaningPipelineOptions({ onAccept, isLoading }: CleaningPipelin
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-600 mb-1">Min assistant</label>
+                  <label className="block text-xs text-gray-600 mb-1">Min chars assistant</label>
                   <input
                     type="number"
                     value={conversionOptions.minCharsAssistant ?? 5}
@@ -98,7 +98,7 @@ export function CleaningPipelineOptions({ onAccept, isLoading }: CleaningPipelin
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-600 mb-1">Max assistant</label>
+                  <label className="block text-xs text-gray-600 mb-1">Max chars assistant</label>
                   <input
                     type="number"
                     value={conversionOptions.maxCharsAssistant ?? 4000}

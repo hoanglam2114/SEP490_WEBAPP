@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Trash2, Users } from 'lucide-react';
+import { CheckCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
 import type { DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
@@ -111,6 +111,7 @@ export function ShareAssignPanel({
   const samples = assignmentsQuery.data?.samples || [];
   const totals = assignmentsQuery.data?.totals || { totalSamples: 0, assigned: 0, unassigned: 0 };
   const summary = assignmentsQuery.data?.summary || [];
+  const isRefreshingAssignments = assignmentsQuery.isFetching && !assignmentsQuery.isLoading;
 
   const selectedRangeLabel = useMemo(() => {
     const start = Number(startIndex);
@@ -156,6 +157,15 @@ export function ShareAssignPanel({
             <p className="text-xs text-slate-500">Publish this version or grant direct access to one collaborator.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <button
+              type="button"
+              onClick={() => assignmentsQuery.refetch()}
+              disabled={assignmentsQuery.isLoading || isRefreshingAssignments}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingAssignments ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
             <select
               value={selectedSharedUserId}
               onChange={(event) => onUpdateVersionSharing(event.target.value)}
@@ -323,11 +333,15 @@ export function ShareAssignPanel({
                   <p className="mt-1 line-clamp-2 text-xs text-slate-500">{sample.preview || '-'}</p>
                 </div>
                 <div className="min-w-0 text-right">
-                  {sample.assignee ? (
-                    <>
-                      <p className="truncate text-xs font-semibold text-blue-700">{sample.assignee.name}</p>
-                      <p className="truncate text-[11px] text-slate-500">{sample.assignee.email}</p>
-                    </>
+                  {sample.assignees && sample.assignees.length > 0 ? (
+                    <div className="flex flex-col gap-1">
+                      {sample.assignees.map((u) => (
+                        <div key={u.id} className="border-b border-slate-50 pb-1 last:border-0 last:pb-0">
+                          <p className="truncate text-xs font-semibold text-blue-700">{u.name}</p>
+                          <p className="truncate text-[11px] text-slate-500">{u.email}</p>
+                        </div>
+                      ))}
+                    </div>
                   ) : (
                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-500">Unassigned</span>
                   )}

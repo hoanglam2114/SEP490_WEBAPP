@@ -159,11 +159,6 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
       throw error;
     }
     if (isOwner) {
-      if (access.hasAssignments && await access.isAssignedSample()) {
-        const error = new Error('This sample is assigned to a collaborator; owner can label only unassigned samples from Community Hub.');
-        (error as any).statusCode = 403;
-        throw error;
-      }
       return;
     }
     return;
@@ -234,11 +229,6 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
       throw error;
     }
     if (isOwner) {
-      if (access.hasAssignments && await access.isAssignedSample()) {
-        const error = new Error('This sample is assigned to a collaborator; owner can vote only on unassigned samples from Community Hub.');
-        (error as any).statusCode = 403;
-        throw error;
-      }
       return;
     }
     return;
@@ -260,10 +250,21 @@ function formatLabel(label: any, userId: string) {
   const downvoteCount = downvotes.length;
   const score = upvoteCount - downvoteCount;
 
+
+/** Shape each label document into the client-facing DTO. */
+
   const hasUpvoted = upvotes.includes(String(userId));
   const hasDownvoted = downvotes.includes(String(userId));
   const hasVoted = hasUpvoted || hasDownvoted;
   const userVoteType: 'up' | 'down' | null = hasUpvoted ? 'up' : hasDownvoted ? 'down' : null;
+
+  const creator = label.createdBy && typeof label.createdBy === 'object'
+    ? {
+        id: String(label.createdBy._id || label.createdBy.id || ''),
+        name: String(label.createdBy.name || ''),
+        email: String(label.createdBy.email || ''),
+      }
+    : { id: String(label.createdBy || '') };
 
   return {
     _id: label._id,
@@ -274,7 +275,8 @@ function formatLabel(label: any, userId: string) {
     messageIndex: label.messageIndex,
     messageRole: label.messageRole,
     targetTextSnapshot: label.targetTextSnapshot,
-    createdBy: label.createdBy,
+    creator,
+    createdBy: creator.id,
     createdAt: label.createdAt,
     updatedAt: label.updatedAt,
     upvotes,
@@ -326,6 +328,7 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
     }
 
     const labels = await Label.find(query)
+      .populate('createdBy', 'name email')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -430,13 +433,17 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       downvotes: [],
     });
 
-    res.status(201).json({ label: formatLabel(created.toObject(), userId) });
+    const populated = await Label.findById(created._id)
+      .populate('createdBy', 'name email')
+      .lean();
+
+    res.status(201).json({ label: formatLabel(populated, userId) });
+
   } catch (error: any) {
     console.error('addLabel error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to create label' });
   }
 };
-
 // ─── POST /labels/:labelId/vote ───────────────────────────────────────────────
 //
 // Body: { voteAction: 'up' | 'down' }

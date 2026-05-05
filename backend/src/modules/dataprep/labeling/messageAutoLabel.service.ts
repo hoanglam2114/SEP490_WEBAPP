@@ -236,7 +236,7 @@ function parseSuggestions(rawText: string, messages: MessageAutoLabelInput[]): M
 export class MessageAutoLabelingService {
   constructor(private readonly provider: ILlmProvider) {}
 
-  async assertAutoLabelAccess(sampleId: string, userId: string, options: { restrictOwnerToUnassigned?: boolean } = {}) {
+  async assertAutoLabelAccess(sampleId: string, userId: string) {
     if (!mongoose.Types.ObjectId.isValid(sampleId)) {
       throw Object.assign(new Error('Invalid sampleId.'), { statusCode: 400 });
     }
@@ -272,16 +272,6 @@ export class MessageAutoLabelingService {
       throw Object.assign(new Error('Forbidden: only the dataset owner or collaborator can auto-label messages.'), { statusCode: 403 });
     }
 
-    if (isOwner && options.restrictOwnerToUnassigned && assignmentCount > 0) {
-      const assignedSampleForOwner = await DatasetSampleAssignment.exists({
-        datasetVersionId: version._id,
-        sampleId: new mongoose.Types.ObjectId(sampleId),
-      });
-
-      if (assignedSampleForOwner) {
-        throw Object.assign(new Error('This sample is assigned to a collaborator; owner can auto-label only unassigned samples from Community Hub.'), { statusCode: 403 });
-      }
-    }
 
     if (!isOwner && assignmentCount > 0) {
       if (!assignedSample) {
@@ -300,8 +290,8 @@ export class MessageAutoLabelingService {
     }
   }
 
-  async preview(sampleId: string, userId: string, messages: MessageAutoLabelInput[], options: { restrictOwnerToUnassigned?: boolean } = {}): Promise<MessageAutoLabelSuggestion[]> {
-    await this.assertAutoLabelAccess(sampleId, userId, options);
+  async preview(sampleId: string, userId: string, messages: MessageAutoLabelInput[]): Promise<MessageAutoLabelSuggestion[]> {
+    await this.assertAutoLabelAccess(sampleId, userId);
     const normalizedMessages = normalizeMessages(messages);
     if (!normalizedMessages.length) {
       throw Object.assign(new Error('messages is required.'), { statusCode: 400 });
@@ -311,8 +301,8 @@ export class MessageAutoLabelingService {
     return parseSuggestions(rawText, normalizedMessages);
   }
 
-  async save(sampleId: string, userId: string, suggestions: MessageAutoLabelSaveSuggestion[], messages: MessageAutoLabelInput[], options: { restrictOwnerToUnassigned?: boolean } = {}) {
-    await this.assertAutoLabelAccess(sampleId, userId, options);
+  async save(sampleId: string, userId: string, suggestions: MessageAutoLabelSaveSuggestion[], messages: MessageAutoLabelInput[]) {
+    await this.assertAutoLabelAccess(sampleId, userId);
     const normalizedMessages = normalizeMessages(messages);
     const messageByIndex = new Map(normalizedMessages.map((message) => [message.messageIndex, message]));
 

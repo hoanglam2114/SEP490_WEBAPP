@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react';
-import { Loader2, Save, Sparkles } from 'lucide-react';
+import { GitCompare, Loader2, Save, Sparkles } from 'lucide-react';
 import { StepNavigation } from '../../../components/StepNavigation';
 import type { AutoLabelSuggestion, SubjectAutoLabel } from '../../../services/api';
 
 const SUBJECT_LABELS: SubjectAutoLabel[] = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY', 'OTHER'];
+type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type ClusterGroup = {
   groupId: number;
@@ -15,10 +16,13 @@ type AutoLabelingPanelProps = {
   table: ReactNode;
   clusterGroups: ClusterGroup[];
   suggestions: AutoLabelSuggestion[];
+  provider: AiProvider;
+  onProviderChange: (provider: AiProvider) => void;
   selectedGroupId: number | null;
   onSelectGroup: (groupId: number | null) => void;
   onChangeLabel: (clusterId: number, label: SubjectAutoLabel) => void;
   onLabelWithAI: () => void;
+  onCompare: () => void;
   onSave: () => void;
   onBack: () => void;
   onNext: () => void;
@@ -32,10 +36,13 @@ export function AutoLabelingPanel({
   table,
   clusterGroups,
   suggestions,
+  provider,
+  onProviderChange,
   selectedGroupId,
   onSelectGroup,
   onChangeLabel,
   onLabelWithAI,
+  onCompare,
   onSave,
   onBack,
   onNext,
@@ -60,15 +67,27 @@ export function AutoLabelingPanel({
         <div className="rounded-xl border border-gray-200 bg-white flex flex-col">
           <div className="flex items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3">
             <h3 className="text-sm font-semibold text-gray-900">Cluster Statistics</h3>
-            <button
-              type="button"
-              onClick={onLabelWithAI}
-              disabled={!hasDatasetVersion || !hasClusters || isGenerating || isSaving}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              {isGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-              Label with AI
-            </button>
+            <div className="flex items-center gap-2">
+              <select
+                value={provider}
+                onChange={(e) => onProviderChange(e.target.value as AiProvider)}
+                disabled={isGenerating || isSaving}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:opacity-60"
+              >
+                <option value="gemini">Gemini</option>
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">Deepseek</option>
+              </select>
+              <button
+                type="button"
+                onClick={onLabelWithAI}
+                disabled={!hasDatasetVersion || !hasClusters || isGenerating || isSaving}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                {isGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                Label with AI
+              </button>
+            </div>
           </div>
 
           {!hasDatasetVersion && (
@@ -149,6 +168,15 @@ export function AutoLabelingPanel({
           </div>
 
           <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-4 py-3 bg-gray-50/50">
+            <button
+              type="button"
+              onClick={onCompare}
+              disabled={isGenerating || isSaving}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+            >
+              <GitCompare className="h-4 w-4" />
+              Compare
+            </button>
             <button
               type="button"
               onClick={onSave}

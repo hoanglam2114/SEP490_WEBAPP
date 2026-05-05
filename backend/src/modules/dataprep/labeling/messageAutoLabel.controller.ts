@@ -16,10 +16,6 @@ function getService(provider?: string) {
   return new MessageAutoLabelingService(new GeminiProvider());
 }
 
-function isCommunityHubRequest(req: Request): boolean {
-  return String(req.query.fromCommunityHub || '').toLowerCase() === 'true';
-}
-
 export class MessageAutoLabelingController {
   async preview(req: Request, res: Response): Promise<void> {
     try {
@@ -36,9 +32,7 @@ export class MessageAutoLabelingController {
       };
 
       const service = getService(provider);
-      const suggestions = await service.preview(sampleId, ownerId, messages || [], {
-        restrictOwnerToUnassigned: isCommunityHubRequest(req),
-      });
+      const suggestions = await service.preview(sampleId, ownerId, messages || []);
 
       res.json({ suggestions });
     } catch (error: any) {
@@ -70,9 +64,7 @@ export class MessageAutoLabelingController {
       };
 
       const service = getService('gemini');
-      const result = await service.save(sampleId, ownerId, suggestions || [], messages || [], {
-        restrictOwnerToUnassigned: isCommunityHubRequest(req),
-      });
+      const result = await service.save(sampleId, ownerId, suggestions || [], messages || []);
 
       res.json({
         message: 'Message auto-labels saved successfully.',

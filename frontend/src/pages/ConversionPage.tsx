@@ -101,6 +101,8 @@ type ClusterStat = {
   count: number;
 };
 
+type AutoLabelSuggestionMap = Partial<Record<AiProvider, AutoLabelSuggestion[]>>;
+
 type LoadProjectPayload = {
   fileId?: string;
   projectName: string;
@@ -112,6 +114,66 @@ type LoadProjectPayload = {
   ownerId?: string;
   startStep?: Step;
 };
+
+function recommendClusterK(
+  elbow: Array<{ k: number; wcss: number }>,
+  silhouette: Array<{ k: number; silhouette: number }>
+): { recommendedK: number | null; recommendationReason: string } {
+  if (!elbow.length && !silhouette.length) {
+    return { recommendedK: null, recommendationReason: '' };
+  }
+
+  const validSilhouette = silhouette.filter(
+    (item) => Number.isFinite(item.k) && Number.isFinite(item.silhouette)
+  );
+  const bestSilhouette = validSilhouette.reduce<{ k: number; silhouette: number } | null>((best, item) => {
+    if (!best || item.silhouette > best.silhouette) {
+      return item;
+    }
+    return best;
+  }, null);
+
+  const validElbow = elbow.filter((item) => Number.isFinite(item.k) && Number.isFinite(item.wcss));
+  if (!validElbow.length) {
+    return bestSilhouette
+      ? { recommendedK: bestSilhouette.k, recommendationReason: 'best silhouette score' }
+      : { recommendedK: null, recommendationReason: '' };
+  }
+
+  const first = validElbow[0];
+  const last = validElbow[validElbow.length - 1];
+  const dx = last.k - first.k;
+  const dy = last.wcss - first.wcss;
+  const denominator = Math.sqrt(dx * dx + dy * dy) || 1;
+
+  const elbowCandidate = validElbow.reduce<{ k: number; distance: number } | null>((best, item) => {
+    const distance = Math.abs(dy * item.k - dx * item.wcss + last.k * first.wcss - last.wcss * first.k) / denominator;
+    if (!best || distance > best.distance) {
+      return { k: item.k, distance };
+    }
+    return best;
+  }, null);
+
+  if (!bestSilhouette) {
+    return elbowCandidate
+      ? { recommendedK: elbowCandidate.k, recommendationReason: 'elbow point' }
+      : { recommendedK: null, recommendationReason: '' };
+  }
+
+  if (elbowCandidate && Math.abs(bestSilhouette.k - elbowCandidate.k) <= 1) {
+    return {
+      recommendedK: elbowCandidate.k,
+      recommendationReason: 'elbow point confirmed by silhouette',
+    };
+  }
+
+  return {
+    recommendedK: elbowCandidate?.k ?? bestSilhouette.k,
+    recommendationReason: elbowCandidate
+      ? `elbow point prioritized; silhouette peaks at K=${bestSilhouette.k}`
+      : 'best silhouette score',
+  };
+}
 
 function clampScore(value: string | number): number {
   if (typeof value === 'string' && value.trim() === '') {
@@ -351,6 +413,13 @@ function getBackStep(step: Step): Step {
     return 2;
   }
   return (step - 1) as Step;
+}
+
+function getAutoLabelStorageKey(versionId: string | null): string | null {
+  if (!versionId) {
+    return null;
+  }
+  return `dataprep:auto-label-suggestions:${versionId}`;
 }
 
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
@@ -651,11 +720,70 @@ function serializeVersionItemsForDisplay(
   }));
 }
 
-function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; lockedToStep?: Step | null }) {
+function StepperHeader({
+  currentStep,
+  lockedToStep,
+  mode = 'default',
+}: {
+  currentStep: Step;
+  lockedToStep?: Step | null;
+  mode?: 'default' | 'owner-labeling' | 'guest-labeling';
+}) {
+  if (mode === 'guest-labeling') {
+    return null;
+  }
+
   const activeMainStage = MAIN_PIPELINE_STAGES.find((stage) => stage.steps.includes(currentStep));
-  const visibleSubsteps = activeMainStage
+  const visibleSubsteps = mode === 'owner-labeling'
+    ? SUBSTEP_PIPELINE.filter((step) => step.id === 6 || step.id === 7)
+    : activeMainStage
     ? SUBSTEP_PIPELINE.filter((step) => activeMainStage.steps.includes(step.id))
     : [];
+  const ownerLabelingActiveIndex = visibleSubsteps.findIndex((step) => step.id === currentStep);
+
+  if (mode === 'owner-labeling') {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold text-slate-900">Labeling Workflow</h2>
+          <p className="text-xs text-slate-500">Owner mode only shows the steps needed to share samples and review labeling.</p>
+        </div>
+        <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
+          <div className="mx-auto flex max-w-3xl items-start justify-center">
+            {visibleSubsteps.map((step, idx) => {
+              const isActive = step.id === currentStep;
+              const isCompleted = ownerLabelingActiveIndex > idx;
+              return (
+                <div key={step.id} className={`flex items-start ${idx !== visibleSubsteps.length - 1 ? 'flex-1' : ''}`}>
+                  <div className="relative flex min-w-[120px] flex-col items-center">
+                    <div
+                      className={`z-10 flex h-11 w-11 items-center justify-center rounded-full border-2 text-sm font-bold shadow-sm ${
+                        isCompleted
+                          ? 'border-emerald-500 bg-emerald-500 text-white'
+                          : isActive
+                            ? 'border-blue-600 bg-blue-50 text-blue-700 ring-4 ring-blue-50/60'
+                            : 'border-slate-300 bg-white text-slate-500'
+                      }`}
+                    >
+                      {isCompleted ? <CheckCircle2 className="h-5 w-5" /> : idx + 1}
+                    </div>
+                    <span className={`mt-2 text-center text-xs font-semibold ${isActive ? 'text-blue-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'}`}>
+                      {step.label}
+                    </span>
+                  </div>
+                  {idx !== visibleSubsteps.length - 1 && (
+                    <div className="relative mx-[-20px] mt-5 h-[2px] flex-1 bg-slate-200">
+                      <div className={`h-full bg-emerald-500 transition-all duration-500 ${isCompleted ? 'w-full' : 'w-0'}`} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm">
@@ -929,44 +1057,115 @@ function EvaluateModal({
   );
 }
 
-function AutoLabelModal({
+function AutoLabelCompareModal({
   isOpen,
-  provider,
-  onProviderChange,
+  providers,
+  leftProvider,
+  rightProvider,
+  onLeftProviderChange,
+  onRightProviderChange,
+  suggestionsByProvider,
+  clusterGroups,
   onClose,
-  onConfirm,
-  isSubmitting,
 }: {
   isOpen: boolean;
-  provider: AiProvider;
-  onProviderChange: (provider: AiProvider) => void;
+  providers: AiProvider[];
+  leftProvider: AiProvider;
+  rightProvider: AiProvider;
+  onLeftProviderChange: (provider: AiProvider) => void;
+  onRightProviderChange: (provider: AiProvider) => void;
+  suggestionsByProvider: AutoLabelSuggestionMap;
+  clusterGroups: ClusterGroup[];
   onClose: () => void;
-  onConfirm: () => void;
-  isSubmitting?: boolean;
 }) {
+  if (!isOpen) {
+    return null;
+  }
+
+  const leftMap = new Map((suggestionsByProvider[leftProvider] || []).map((item) => [item.clusterId, item]));
+  const rightMap = new Map((suggestionsByProvider[rightProvider] || []).map((item) => [item.clusterId, item]));
+
   return (
-    <ActionModalFrame
-      isOpen={isOpen}
-      title="Label with AI"
-      description="Choose a model to assign one subject label to each cluster."
-      confirmText="Confirm Auto Labeling"
-      isSubmitting={isSubmitting}
-      onClose={onClose}
-      onConfirm={onConfirm}
-    >
-      <div>
-        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
-        <select
-          value={provider}
-          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
-        >
-          <option value="gemini">Gemini</option>
-          <option value="openai">OpenAI</option>
-          <option value="deepseek">Deepseek</option>
-        </select>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Compare Auto Label Providers</h3>
+            <p className="text-sm text-gray-500">Review label and reason differences before saving.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-4 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Provider A</label>
+            <select
+              value={leftProvider}
+              onChange={(e) => onLeftProviderChange(e.target.value as AiProvider)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
+            >
+              {providers.map((provider) => (
+                <option key={provider} value={provider}>{provider}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Provider B</label>
+            <select
+              value={rightProvider}
+              onChange={(e) => onRightProviderChange(e.target.value as AiProvider)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
+            >
+              {providers.map((provider) => (
+                <option key={provider} value={provider}>{provider}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="max-h-[70vh] overflow-auto px-5 py-4">
+          <table className="min-w-full text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-gray-200">
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">Group</th>
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">{leftProvider}</th>
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">{rightProvider}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clusterGroups.map((group) => {
+                const left = leftMap.get(group.groupId);
+                const right = rightMap.get(group.groupId);
+                const isDifferent = left?.label !== right?.label || left?.reason !== right?.reason;
+                return (
+                  <tr key={group.groupId} className={`border-b border-gray-100 align-top ${isDifferent ? 'bg-amber-50/50' : ''}`}>
+                    <td className="px-3 py-3 font-semibold text-gray-800">Group {group.groupId}</td>
+                    <td className="px-3 py-3">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-slate-900">{left?.label || '-'}</div>
+                        <p className="text-xs leading-relaxed text-slate-500">{left?.reason || 'No cached result.'}</p>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-slate-900">{right?.label || '-'}</div>
+                        <p className="text-xs leading-relaxed text-slate-500">{right?.reason || 'No cached result.'}</p>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </ActionModalFrame>
+    </div>
   );
 }
 
@@ -1552,16 +1751,21 @@ function ConvertedDatasetTable({
                     ? row.conversationPairs
                     : [{ user: row.userText || '-', assistant: row.assistantText || '-' }];
 
-                  return pairs.map((pair, pairIndex) => (
-                    <tr
-                      key={`${row.id}-${pairIndex}`}
-                      className={`align-top ${pairIndex === pairs.length - 1
-                        ? 'border-b-4 border-b-gray-200'
-                        : 'border-b border-b-gray-100'
-                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
-                        } ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''
-                        }`}
-                    >
+                  return pairs.map((pair, pairIndex) => {
+                    const pairRowBackground = pairIndex % 2 === 0 ? 'bg-white' : 'bg-slate-100';
+                    const rowHighlightClass = (rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined'
+                      ? 'bg-sky-50'
+                      : pairRowBackground;
+
+                    return (
+                      <tr
+                        key={`${row.id}-${pairIndex}`}
+                        className={`align-top ${pairIndex === pairs.length - 1
+                          ? 'border-b-4 border-b-gray-200'
+                          : 'border-b border-b-gray-100'
+                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
+                          } ${rowHighlightClass}`}
+                      >
                       {showSystemColumn && pairIndex === 0 && (
                         <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
                           <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
@@ -1610,8 +1814,9 @@ function ConvertedDatasetTable({
                           {renderActionMenuCell(row, pairs.length)}
                         </>
                       )}
-                    </tr>
-                  ));
+                      </tr>
+                    );
+                  });
                 })
                 : mode === 'openai'
                   ? visibleRows.flatMap((row, index) => {
@@ -1625,7 +1830,7 @@ function ConvertedDatasetTable({
                         className={`align-top ${pairIndex === pairs.length - 1
                           ? 'border-b-4 border-b-gray-200'
                           : 'border-b border-b-gray-100'
-                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
+                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${pairIndex % 2 === 0 ? 'bg-white' : 'bg-slate-100'}`}
                       >
                         {showSystemColumn && (
                           <td className="px-4 py-3 align-top">
@@ -2125,7 +2330,6 @@ export function ConversionPage() {
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
   const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
   const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
-  const [isAutoLabelModalOpen, setIsAutoLabelModalOpen] = useState(false);
   const [isRefineModalOpen, setIsRefineModalOpen] = useState(false);
   const [isManualEvalModalOpen, setIsManualEvalModalOpen] = useState(false);
   const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
@@ -2148,8 +2352,12 @@ export function ConversionPage() {
   const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
   const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<AutoLabelSuggestion[]>([]);
+  const [autoLabelSuggestionsByProvider, setAutoLabelSuggestionsByProvider] = useState<AutoLabelSuggestionMap>({});
   const [autoLabelsSaved, setAutoLabelsSaved] = useState(false);
   const [autoLabelFilterGroupId, setAutoLabelFilterGroupId] = useState<number | null>(null);
+  const [isAutoLabelCompareOpen, setIsAutoLabelCompareOpen] = useState(false);
+  const [autoLabelCompareLeft, setAutoLabelCompareLeft] = useState<AiProvider>('gemini');
+  const [autoLabelCompareRight, setAutoLabelCompareRight] = useState<AiProvider>('openai');
   const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
   const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
   const [refineScoreThresholdInput, setRefineScoreThresholdInput] = useState<string>('8');
@@ -2206,6 +2414,12 @@ export function ConversionPage() {
     enabled: canManageVersionVisibility,
   });
 
+  const ownerAssignmentsQuery = useQuery({
+    queryKey: ['dataset-version-assignments', currentDatasetVersionId, 'owner-labeling'],
+    queryFn: () => currentDatasetVersionId ? dataprepApi.getDatasetVersionAssignments(currentDatasetVersionId) : Promise.resolve(null),
+    enabled: Boolean(currentDatasetVersionId && isProjectLabelingRoute),
+  });
+
   useEffect(() => {
     setActiveClassificationGroup(null);
     setClassifiedSamplesResult(null);
@@ -2245,6 +2459,47 @@ export function ConversionPage() {
       disposed = true;
     };
   }, [currentDatasetVersionId, isProjectLabelingRoute]);
+
+  useEffect(() => {
+    const storageKey = getAutoLabelStorageKey(currentDatasetVersionId);
+    if (!storageKey) {
+      setAutoLabelSuggestionsByProvider({});
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        setAutoLabelSuggestionsByProvider({});
+        return;
+      }
+      const parsed = JSON.parse(raw) as AutoLabelSuggestionMap;
+      setAutoLabelSuggestionsByProvider(parsed || {});
+    } catch {
+      setAutoLabelSuggestionsByProvider({});
+    }
+  }, [currentDatasetVersionId]);
+
+  useEffect(() => {
+    const storageKey = getAutoLabelStorageKey(currentDatasetVersionId);
+    if (!storageKey) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(autoLabelSuggestionsByProvider));
+    } catch {
+      // Ignore storage quota / availability issues and keep in-memory state only.
+    }
+  }, [autoLabelSuggestionsByProvider, currentDatasetVersionId]);
+
+  useEffect(() => {
+    const nextSuggestions = autoLabelSuggestionsByProvider[autoLabelProvider];
+    if (nextSuggestions && nextSuggestions.length > 0) {
+      setAutoLabelSuggestions(nextSuggestions);
+      return;
+    }
+    setAutoLabelSuggestions([]);
+  }, [autoLabelProvider, autoLabelSuggestionsByProvider]);
 
   const handleToggleVersionVisibility = async () => {
     if (!currentDatasetVersionId || !canManageVersionVisibility || isTogglingVersionPublic) {
@@ -2357,6 +2612,20 @@ export function ConversionPage() {
     }));
     return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
   }, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
+
+  const assignmentMapBySampleId = useMemo(() => {
+    const samples = ownerAssignmentsQuery.data?.samples || [];
+    return new Map(
+      samples.map((sample) => [
+        String(sample.sampleId),
+        (sample.assignees || []).map((assignee) => ({
+          id: assignee.id,
+          name: assignee.name,
+          email: assignee.email,
+        })),
+      ])
+    );
+  }, [ownerAssignmentsQuery.data?.samples]);
 
   const evaluationRows = useMemo(() => {
     if (previewMode !== 'openai') {
@@ -2675,6 +2944,7 @@ export function ConversionPage() {
       setIsCurrentVersionPublic(false);
       setSampleIdMap({});
       setAutoLabelSuggestions([]);
+      setAutoLabelSuggestionsByProvider({});
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       setBalanceApplied(false);
@@ -2737,9 +3007,13 @@ export function ConversionPage() {
       return dataprepApi.previewAutoLabels(currentDatasetVersionId, provider);
     },
     onSuccess: (response) => {
-      setAutoLabelSuggestions(response.suggestions || []);
+      const nextSuggestions = response.suggestions || [];
+      setAutoLabelSuggestions(nextSuggestions);
+      setAutoLabelSuggestionsByProvider((prev) => ({
+        ...prev,
+        [autoLabelProvider]: nextSuggestions,
+      }));
       setAutoLabelsSaved(false);
-      setIsAutoLabelModalOpen(false);
       toast.success(`Generated labels for ${response.suggestions?.length || 0} clusters.`);
     },
     onError: (error: any) => {
@@ -3039,6 +3313,7 @@ export function ConversionPage() {
       setClusterGroups(groupsWithStats);
       setSelectedClusterIds([]);
       setAutoLabelSuggestions([]);
+      setAutoLabelSuggestionsByProvider({});
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       toast.success(`Clustered data into ${groupsWithStats.length} groups.`);
@@ -3069,6 +3344,7 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     const nextMap: Record<string, number> = {};
@@ -3119,6 +3395,7 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setSelectedClusterIds([]);
 
@@ -3147,6 +3424,7 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setEvaluationMap({});
     setRefinedRowIds(new Set());
@@ -3164,12 +3442,20 @@ export function ConversionPage() {
     setIsVisualizing(true);
     try {
       const result = await apiService.clusterVisualize(conversionResult.data, maxK, dbscanEps, dbscanMinSamples);
+      const silhouette = Array.isArray(result.silhouette) ? result.silhouette : [];
+      const recommendation = recommendClusterK(result.elbow || [], silhouette);
       setVisualizationResult({
-        elbow: result.elbow,
-        kDistance: result.kDistance,
+        elbow: result.elbow || [],
+        silhouette,
+        kDistance: result.kDistance || [],
         pointCount: result.pointCount,
         noiseCount: result.noiseCount,
+        recommendedK: recommendation.recommendedK,
+        recommendationReason: recommendation.recommendationReason,
       });
+      if (typeof recommendation.recommendedK === 'number') {
+        setClusterK(recommendation.recommendedK);
+      }
       toast.success(`GPU Visualization complete — ${result.pointCount} points analyzed.`);
     } catch (err: any) {
       console.error('Visualize error:', err);
@@ -3588,6 +3874,7 @@ export function ConversionPage() {
     setRowClusterMap(restoredClusterState.rowClusterMap);
     setSelectedClusterIds([]);
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setVisibleRowsInEvaluation([]);
@@ -3636,7 +3923,7 @@ export function ConversionPage() {
         const response = await dataprepApi.getPublicProjectLabeling(
           routeProjectId,
           communityShowRejectedSamples,
-          openedFromOwnedCommunityHub
+          false
         );
         if (disposed) {
           return;
@@ -3684,6 +3971,7 @@ export function ConversionPage() {
         setRowClusterMap({});
         setSelectedClusterIds([]);
         setAutoLabelSuggestions([]);
+        setAutoLabelSuggestionsByProvider({});
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
         setBalanceApplied(false);
@@ -3763,6 +4051,7 @@ export function ConversionPage() {
     setRowClusterMap({});
     setSelectedClusterIds([]);
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setBalanceApplied(false);
@@ -3781,6 +4070,13 @@ export function ConversionPage() {
   const canMoveFromStep3 = true;
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = autoLabelsSaved;
+  const availableAutoLabelProviders = useMemo(
+    () => (['gemini', 'openai', 'deepseek'] as AiProvider[]).filter((provider) => {
+      const suggestions = autoLabelSuggestionsByProvider[provider];
+      return Array.isArray(suggestions) && suggestions.length > 0;
+    }),
+    [autoLabelSuggestionsByProvider]
+  );
   const canMoveFromStep8 = !!currentDatasetVersionId;
   const canMoveFromStep9 = !!currentDatasetVersionId;
   const canMoveFromStep10 = !!conversionResult;
@@ -3872,20 +4168,38 @@ export function ConversionPage() {
     setAutoLabelsSaved(false);
     setAutoLabelSuggestions((prev) => {
       const existing = prev.find((item) => item.clusterId === clusterId);
-      if (existing) {
-        return prev.map((item) => item.clusterId === clusterId ? { ...item, label } : item);
-      }
-      const group = clusterGroups.find((item) => item.groupId === clusterId);
-      return [
+      const nextSuggestions = existing
+        ? prev.map((item) => item.clusterId === clusterId ? { ...item, label } : item)
+        : [
         ...prev,
         {
           clusterId,
           label,
           reason: 'Manually selected by reviewer.',
-          sampleCount: group?.count || 0,
+          sampleCount: clusterGroups.find((item) => item.groupId === clusterId)?.count || 0,
         },
       ];
+      setAutoLabelSuggestionsByProvider((map) => ({
+        ...map,
+        [autoLabelProvider]: nextSuggestions,
+      }));
+      return nextSuggestions;
     });
+  };
+
+  const handleOpenAutoLabelCompare = () => {
+    if (availableAutoLabelProviders.length < 2) {
+      toast.error('Generate labels from at least two AI providers before comparing.');
+      return;
+    }
+    setAutoLabelCompareLeft((prev) => (availableAutoLabelProviders.includes(prev) ? prev : availableAutoLabelProviders[0]));
+    setAutoLabelCompareRight((prev) => {
+      if (availableAutoLabelProviders.includes(prev) && prev !== autoLabelCompareLeft) {
+        return prev;
+      }
+      return availableAutoLabelProviders.find((provider) => provider !== autoLabelCompareLeft) || availableAutoLabelProviders[1] || availableAutoLabelProviders[0];
+    });
+    setIsAutoLabelCompareOpen(true);
   };
 
   const handleProceedFromSystemPromptStep = async () => {
@@ -4149,13 +4463,11 @@ export function ConversionPage() {
 
   return (
     <div className="space-y-6">
-      <StepperHeader currentStep={currentStep} lockedToStep={isGuestMode ? 7 : null} />
-
-      {isGuestMode && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Guest Mode: only the Labeling substep is available for this project.
-        </div>
-      )}
+      <StepperHeader
+        currentStep={currentStep}
+        lockedToStep={isGuestMode ? 7 : null}
+        mode={isGuestMode ? 'guest-labeling' : isOwnerManagedCommunityRoute ? 'owner-labeling' : 'default'}
+      />
 
       {currentStep === 1 && (
         <div className="space-y-6">
@@ -4234,6 +4546,8 @@ export function ConversionPage() {
           clusterGroups={clusterGroups}
           clusterK={clusterK}
           setClusterK={setClusterK}
+          recommendedK={visualizationResult?.recommendedK}
+          recommendationReason={visualizationResult?.recommendationReason}
           dbscanEps={dbscanEps}
           setDbscanEps={setDbscanEps}
           dbscanMinSamples={dbscanMinSamples}
@@ -4268,10 +4582,13 @@ export function ConversionPage() {
           table={<ConvertedDatasetTable rows={autoLabelFilteredRows} mode={previewMode} />}
           clusterGroups={clusterGroups}
           suggestions={autoLabelSuggestions}
+          provider={autoLabelProvider}
+          onProviderChange={setAutoLabelProvider}
           selectedGroupId={autoLabelFilterGroupId}
           onSelectGroup={setAutoLabelFilterGroupId}
           onChangeLabel={handleChangeAutoLabelSuggestion}
-          onLabelWithAI={() => setIsAutoLabelModalOpen(true)}
+          onLabelWithAI={() => autoLabelPreviewMutation.mutate(autoLabelProvider)}
+          onCompare={handleOpenAutoLabelCompare}
           onSave={() => autoLabelSaveMutation.mutate()}
           onBack={() => setCurrentStep(getBackStep(5))}
           onNext={() => setCurrentStep(6)}
@@ -4299,40 +4616,52 @@ export function ConversionPage() {
       )}
 
       {currentStep === 7 && (
-        <LabelingWorkflowPanel
-          isCommunityRoute={isProjectLabelingRoute}
-          communityCounts={communityCounts}
-          showRejectedSamples={communityShowRejectedSamples}
-          onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
-          labelingPanel={(
-            <DataLabelingPanel
-              samples={allRows.map((row) => ({
-                key: row.id,
-                title: row.blockLabel,
-                sampleId: sampleIdMap[row.id] || sampleIdMap[row.blockId] || (row.id.match(/^[a-f\d]{24}$/i) ? row.id : null),
-                messages: row.conversationPairs
-                  ? row.conversationPairs.flatMap((pair) => [
-                    { role: 'user' as const, content: pair.user },
-                    { role: 'assistant' as const, content: pair.assistant },
-                  ])
-                  : [
-                    { role: 'user' as const, content: row.userText || row.instruction },
-                    { role: 'assistant' as const, content: row.assistantText || row.output },
-                  ],
-              }))}
-              onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
-              onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
-              showBackButton={!isGuestMode}
-              showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
-              nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
-              fromCommunityHub={isProjectLabelingRoute}
-              datasetVersionId={currentDatasetVersionId || undefined}
-              assignmentSubmissionEnabled={isGuestMode}
-              lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
-              lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
-            />
+        <div className="space-y-4">
+          {isGuestMode && (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">Data Labeling</h2>
+              <p className="mt-1 text-xs text-slate-500">Review assigned conversations and submit your labels.</p>
+            </div>
           )}
-        />
+          <LabelingWorkflowPanel
+            isCommunityRoute={isProjectLabelingRoute}
+            communityCounts={communityCounts}
+            showRejectedSamples={communityShowRejectedSamples}
+            onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
+            labelingPanel={(
+              <DataLabelingPanel
+                samples={allRows.map((row) => {
+                  const sampleId = sampleIdMap[row.id] || sampleIdMap[row.blockId] || (row.id.match(/^[a-f\d]{24}$/i) ? row.id : null);
+                  return {
+                    key: row.id,
+                    title: row.blockLabel,
+                    sampleId,
+                    assignees: sampleId ? assignmentMapBySampleId.get(String(sampleId)) || [] : [],
+                    messages: row.conversationPairs
+                      ? row.conversationPairs.flatMap((pair) => [
+                        { role: 'user' as const, content: pair.user },
+                        { role: 'assistant' as const, content: pair.assistant },
+                      ])
+                      : [
+                        { role: 'user' as const, content: row.userText || row.instruction },
+                        { role: 'assistant' as const, content: row.assistantText || row.output },
+                      ],
+                  };
+                })}
+                onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
+                onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
+                showBackButton={!isGuestMode}
+                showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
+                nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
+                fromCommunityHub={isProjectLabelingRoute}
+                datasetVersionId={currentDatasetVersionId || undefined}
+                assignmentSubmissionEnabled={isGuestMode}
+                lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
+                lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
+              />
+            )}
+          />
+        </div>
       )}
 
       {currentStep === 8 && (
@@ -4514,13 +4843,16 @@ export function ConversionPage() {
         isSubmitting={evaluateMutation.isPending}
       />
 
-      <AutoLabelModal
-        isOpen={isAutoLabelModalOpen}
-        provider={autoLabelProvider}
-        onProviderChange={setAutoLabelProvider}
-        onClose={() => setIsAutoLabelModalOpen(false)}
-        onConfirm={() => autoLabelPreviewMutation.mutate(autoLabelProvider)}
-        isSubmitting={autoLabelPreviewMutation.isPending}
+      <AutoLabelCompareModal
+        isOpen={isAutoLabelCompareOpen}
+        providers={availableAutoLabelProviders}
+        leftProvider={autoLabelCompareLeft}
+        rightProvider={autoLabelCompareRight}
+        onLeftProviderChange={setAutoLabelCompareLeft}
+        onRightProviderChange={setAutoLabelCompareRight}
+        suggestionsByProvider={autoLabelSuggestionsByProvider}
+        clusterGroups={clusterGroups}
+        onClose={() => setIsAutoLabelCompareOpen(false)}
       />
 
       <ManualEvaluateModal

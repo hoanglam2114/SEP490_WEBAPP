@@ -109,6 +109,7 @@ export type DatasetAssignmentSample = {
   sampleKey: string;
   sampleIndex: number;
   preview: string;
+  assignees: ShareUser[];
   assignee: ShareUser | null;
 };
 
@@ -1010,6 +1011,7 @@ export const apiService = {
     minSamples: number = 6
   ): Promise<{
     elbow: Array<{ k: number; wcss: number }>;
+    silhouette?: Array<{ k: number; silhouette: number }>;
     kDistance: Array<{ rank: number; distance: number }>;
     pointCount: number;
     noiseCount?: number;
@@ -1025,6 +1027,7 @@ export const apiService = {
     minSamples: number = 6
   ): Promise<{
     elbow: Array<{ k: number; wcss: number }>;
+    silhouette?: Array<{ k: number; silhouette: number }>;
     kDistance: Array<{ rank: number; distance: number }>;
     pointCount: number;
     noiseCount?: number;
