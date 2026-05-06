@@ -1,0 +1,82 @@
+services:
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    container_name: sep490_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend ────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sep490_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://mongo:27017/sep_training
+      - GPU_SERVICE_URL=${GPU_SERVICE_URL:-}
+      - PORT=3000
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - app_network
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sep490_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot
+    networks:
+      - app_network
+    depends_on:
+      - backend
+
+  # ── Certbot (tự động gia hạn SSL) ─────────────────────────────────────────
+  certbot:
+    image: certbot/certbot
+    container_name: sep490_certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done;'"
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  mongo_data:
+    driver: local
+  uploads_data:
+    driver: local
+  certbot_certs:
+    external: true
+    name: sep490_webapp_certbot_certs
+  certbot_webroot:
+    external: true
+    name: sep490_webapp_certbot_webroot
+
+# ── Network ───────────────────────────────────────────────────────────────────
+networks:
+  app_network:
+    driver: bridge
