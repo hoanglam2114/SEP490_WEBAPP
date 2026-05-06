@@ -44,7 +44,15 @@ import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 import { useAuthStore } from '../store/authStore';
 import { ExportPanel } from '../features/dataprep/export/ExportPanel';
-import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult, QualityBucket, QualityClassificationResult } from '../services/api';
+import type {
+  AutoLabelSuggestion,
+  SubjectAutoLabel,
+  ClassificationGroup,
+  ClassifiedSamplesResult,
+  QualityBucket,
+  QualityClassificationResult,
+  LabelingIntentActionStatus,
+} from '../services/api';
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 type PreviewMode = 'alpaca' | 'openai';
@@ -682,6 +690,50 @@ function buildClusterStateFromData(
   return { rowClusterMap, clusterGroups };
 }
 
+function buildConversionResultFromVersionItems(
+  items: Array<{ sampleKey: string; data: Record<string, any> }>,
+  format: PreviewMode,
+  projectName: string
+): ConversionResult {
+  const data = items.map((item) => {
+    if (format === 'openai') {
+      return {
+        ...item.data,
+        conversation_id: String((item.data as any).conversation_id || item.sampleKey),
+      };
+    }
+    return {
+      ...item.data,
+      id: String((item.data as any).id || item.sampleKey),
+    };
+  });
+
+  return {
+    data,
+    format,
+    output: JSON.stringify(data),
+    filename: `${projectName || 'restored_project'}.json`,
+    stats: {
+      totalConversations: data.length,
+      totalMessages: format === 'openai'
+        ? data.reduce((sum, item) => sum + (Array.isArray((item as any)?.messages) ? (item as any).messages.length : 0), 0)
+        : data.length,
+      totalTokensEstimate: 0,
+    },
+  };
+}
+
+function inferLoadedFormat(
+  items: Array<{ data: Record<string, any> }>,
+  fallback: string
+): PreviewMode {
+  const first = items[0]?.data || {};
+  if (Array.isArray((first as any).messages)) {
+    return 'openai';
+  }
+  return fallback === 'openai' ? 'openai' : 'alpaca';
+}
+
 function buildClusterGroupsFromOperationParams(operationParams: Record<string, any> | null | undefined): ClusterGroup[] {
   const rawClusters = Array.isArray(operationParams?.clusters) ? operationParams.clusters : [];
   return rawClusters
@@ -1051,6 +1103,141 @@ function EvaluateModal({
           <option value="openai">OpenAI</option>
           <option value="deepseek">Deepseek</option>
         </select>
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function IncompleteLabelingModal({
+  isOpen,
+  status,
+  selectedBucket,
+  isSubmitting,
+  onSelectBucket,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  status: LabelingIntentActionStatus | null;
+  selectedBucket: QualityBucket;
+  isSubmitting?: boolean;
+  onSelectBucket: (bucket: QualityBucket) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const bucketOptions: Array<{ value: QualityBucket; title: string; description: string; tone: string }> = [
+    {
+      value: 'Gold',
+      title: 'Gold',
+      description: 'Treat incomplete samples as usable without rewrite.',
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    },
+    {
+      value: 'Rewrite',
+      title: 'Rewrite',
+      description: 'Send incomplete samples to the rewrite review bucket.',
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    },
+    {
+      value: 'Reject',
+      title: 'Reject',
+      description: 'Exclude incomplete samples from the main dataset.',
+      tone: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+  ];
+
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Incomplete Intent-Action labeling"
+      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. Choose how those samples should be bucketed before moving to the next step.`}
+      confirmText="Continue"
+      isSubmitting={isSubmitting}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Labeled: <span className="font-semibold">{status?.labeledSamples || 0}</span> / {status?.totalSamples || 0} samples
+      </div>
+
+      <div className="grid gap-3">
+        {bucketOptions.map((option) => {
+          const active = selectedBucket === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onSelectBucket(option.value)}
+              className={`rounded-xl border px-4 py-3 text-left transition-colors ${active ? option.tone : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold">{option.title}</p>
+                  <p className="mt-1 text-xs text-gray-600">{option.description}</p>
+                </div>
+                <span className={`h-4 w-4 rounded-full border ${active ? 'border-indigo-600 bg-indigo-600' : 'border-gray-300 bg-white'}`} />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function PendingRewriteModal({
+  isOpen,
+  pendingCount,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  pendingCount: number;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Rewrite review not finished"
+      description={`There are still ${pendingCount} rewrite sample(s) without a final rewrite decision. You can continue to Evaluation, but those samples will keep their current assistant responses.`}
+      confirmText="Continue to Evaluation"
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Evaluation will use:
+        {' '}
+        <span className="font-semibold">Gold samples</span>
+        {' '}and
+        {' '}
+        <span className="font-semibold">Rewrite samples with any applied local assistant edits</span>.
+        Unreviewed rewrite samples are not blocked, but they are not auto-fixed.
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function BalanceReminderModal({
+  isOpen,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Balance plan not applied"
+      description="You have not applied the balance plan yet. The dataset can still move forward, but subject imbalance and rejected samples will remain unchanged."
+      confirmText="Continue anyway"
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        This is only a reminder. You can go back and apply the balance plan now, or continue to the Rewrite step with the current dataset.
       </div>
     </ActionModalFrame>
   );
@@ -2382,12 +2569,20 @@ export function ConversionPage() {
   const [classifiedSamplesResult, setClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
   const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
   const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
+  const [allQualitySamplesResult, setAllQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
   const [balanceApplied, setBalanceApplied] = useState(false);
   const [rewriteProvider, setRewriteProvider] = useState<AiProvider>('gemini');
   const [rewriteRows, setRewriteRows] = useState<RewriteSampleView[]>([]);
   const [rewriteDrafts, setRewriteDrafts] = useState<Record<string, Record<number, RewriteTurnDraft>>>({});
   const [rewriteApplied, setRewriteApplied] = useState(false);
   const [isRewriteLoading, setIsRewriteLoading] = useState(false);
+  const [rewriteSource, setRewriteSource] = useState<'backend' | 'local-applied'>('backend');
+  const [isPendingRewriteModalOpen, setIsPendingRewriteModalOpen] = useState(false);
+  const [isBalanceReminderModalOpen, setIsBalanceReminderModalOpen] = useState(false);
+  const [isIncompleteLabelingModalOpen, setIsIncompleteLabelingModalOpen] = useState(false);
+  const [pendingIncompleteBucket, setPendingIncompleteBucket] = useState<QualityBucket>('Rewrite');
+  const [isSavingIncompleteBucket, setIsSavingIncompleteBucket] = useState(false);
+  const [isRestoringParentVersion, setIsRestoringParentVersion] = useState(false);
   const loadHandledRef = useRef<boolean>(false);
   const currentUserId = useMemo(() => {
     const candidate = (user as any)?.id || (user as any)?._id || (user as any)?.userId;
@@ -2424,15 +2619,31 @@ export function ConversionPage() {
     enabled: Boolean(currentDatasetVersionId && isProjectLabelingRoute),
   });
 
+  const labelingIntentStatusQuery = useQuery({
+    queryKey: ['labeling-intent-action-status', currentDatasetVersionId],
+    queryFn: () => currentDatasetVersionId ? apiService.getLabelingIntentActionStatus(currentDatasetVersionId) : Promise.resolve(null),
+    enabled: Boolean(currentDatasetVersionId && currentStep === 7 && !isGuestMode && !isOwnerManagedCommunityRoute),
+    refetchInterval: currentStep === 7 && currentDatasetVersionId ? 4000 : false,
+    refetchOnWindowFocus: false,
+  });
+
+  const resetRewriteSession = (source: 'backend' | 'local-applied' = 'backend') => {
+    setRewriteRows([]);
+    setRewriteDrafts({});
+    setRewriteApplied(false);
+    setRewriteSource(source);
+  };
+
   useEffect(() => {
+    if (!currentDatasetVersionId && rewriteSource === 'local-applied') {
+      return;
+    }
     setActiveClassificationGroup(null);
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
-    setRewriteRows([]);
-    setRewriteDrafts({});
-    setRewriteApplied(false);
-  }, [currentDatasetVersionId]);
+    setAllQualitySamplesResult(null);
+  }, [currentDatasetVersionId, rewriteSource]);
 
   useEffect(() => {
     if (!currentDatasetVersionId) {
@@ -2624,7 +2835,7 @@ export function ConversionPage() {
     let isCancelled = false;
 
     const loadRewriteRows = async () => {
-      if (currentStep !== 10 || !currentDatasetVersionId) {
+      if (currentStep !== 10 || rewriteSource !== 'backend' || !currentDatasetVersionId) {
         return;
       }
 
@@ -2649,6 +2860,7 @@ export function ConversionPage() {
           })),
         })).filter((row) => row.turns.length > 0);
         setRewriteRows(rows);
+        setRewriteSource('backend');
       } catch (error) {
         if (!isCancelled) {
           setRewriteRows([]);
@@ -2666,7 +2878,36 @@ export function ConversionPage() {
     return () => {
       isCancelled = true;
     };
-  }, [conversionOptions.removeThinkTags, currentDatasetVersionId, currentStep, previewMode]);
+  }, [conversionOptions.removeThinkTags, currentDatasetVersionId, currentStep, previewMode, rewriteSource]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const loadAllQualitySamples = async () => {
+      if (!currentDatasetVersionId || currentStep < 8 || currentStep > 11) {
+        return;
+      }
+      if (!['backend', 'local-applied'].includes(rewriteSource)) {
+        return;
+      }
+
+      try {
+        const result = await apiService.getQualityClassifiedSamples(currentDatasetVersionId);
+        if (!disposed) {
+          setAllQualitySamplesResult(result);
+        }
+      } catch {
+        if (!disposed) {
+          setAllQualitySamplesResult(null);
+        }
+      }
+    };
+
+    loadAllQualitySamples();
+    return () => {
+      disposed = true;
+    };
+  }, [currentDatasetVersionId, currentStep, rewriteSource]);
 
   const assignmentMapBySampleId = useMemo(() => {
     const samples = ownerAssignmentsQuery.data?.samples || [];
@@ -2682,9 +2923,27 @@ export function ConversionPage() {
     );
   }, [ownerAssignmentsQuery.data?.samples]);
 
+  const nonRejectQualitySampleIds = useMemo(() => {
+    if (!allQualitySamplesResult?.items?.length) {
+      return null;
+    }
+    return new Set(
+      allQualitySamplesResult.items
+        .filter((item) => item.bucket !== 'Reject')
+        .map((item) => String(item.sampleId || item._id))
+    );
+  }, [allQualitySamplesResult]);
+
   const evaluationRows = useMemo(() => {
+    const filterRows = (rows: DisplayRow[]) => {
+      if (!nonRejectQualitySampleIds) {
+        return rows;
+      }
+      return rows.filter((row) => nonRejectQualitySampleIds.has(String(row.id)) || nonRejectQualitySampleIds.has(String(row.blockId)));
+    };
+
     if (previewMode !== 'openai') {
-      return rowsWithClusterGroups;
+      return filterRows(rowsWithClusterGroups);
     }
 
     const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
@@ -2695,7 +2954,7 @@ export function ConversionPage() {
       }
     });
 
-    return conversations
+    return filterRows(conversations
       .map((conv, index) => {
         const pairs: Array<{ user: string; assistant: string }> = [];
         for (let i = 0; i < conv.messages.length; i += 1) {
@@ -2719,8 +2978,39 @@ export function ConversionPage() {
           conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
           groupId: groupByConversation.get(String(conv.conversation_id)),
         } as DisplayRow;
-      });
-  }, [conversionResult?.data, previewMode, rowsWithClusterGroups]);
+      }));
+  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode, rowsWithClusterGroups]);
+
+  const pendingRewriteSampleCount = useMemo(() => (
+    rewriteRows.filter((row) => row.turns.some((turn) => {
+      if (turn.matched) {
+        return false;
+      }
+      const draft = rewriteDrafts[row.rowId]?.[turn.assistantMessageIndex];
+      return !draft || draft.decision === 'original';
+    })).length
+  ), [rewriteDrafts, rewriteRows]);
+
+  const currentPipelineExportData = useMemo(() => {
+    if (!conversionResult?.data?.length) {
+      return [];
+    }
+
+    if (!nonRejectQualitySampleIds) {
+      return conversionResult.data;
+    }
+
+    if (previewMode === 'openai') {
+      return normalizeOpenAIConversations(conversionResult.data).filter((conv) => (
+        nonRejectQualitySampleIds.has(String(conv.conversation_id))
+      ));
+    }
+
+    return conversionResult.data.filter((item: any, index: number) => {
+      const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
+      return nonRejectQualitySampleIds.has(rowId);
+    });
+  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode]);
 
   const buildDatasetVersionPayload = (): {
     projectName: string;
@@ -2917,8 +3207,9 @@ export function ConversionPage() {
   };
 
   const averagedEvaluation = useMemo(() => {
-    const values = Object.values(evaluationMap)
-      .map((entry) => getAveragedScores(normalizeEvaluationEntry(entry), previewMode))
+    const targetKeys = Array.from(new Set(evaluationRows.map((row) => resolveEvaluationKey(row))));
+    const values = targetKeys
+      .map((key) => getAveragedScores(normalizeEvaluationEntry(evaluationMap[key]), previewMode))
       .filter((score): score is EvaluationScores => Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= 0));
     if (!values.length) return null;
     const total = values.reduce<{ accuracy: number; clarity: number; completeness: number; socratic: number; encouragement: number; factuality: number; overall: number }>(
@@ -2944,7 +3235,7 @@ export function ConversionPage() {
       factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
-  }, [evaluationMap, previewMode]);
+  }, [evaluationMap, evaluationRows, previewMode]);
 
   const attachClusterStats = (groups: ClusterGroup[] = [], clusterStats?: ClusterStat[]): ClusterGroup[] => {
     if (!Array.isArray(clusterStats) || clusterStats.length === 0) {
@@ -3003,9 +3294,7 @@ export function ConversionPage() {
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       setBalanceApplied(false);
-      setRewriteRows([]);
-      setRewriteDrafts({});
-      setRewriteApplied(false);
+      resetRewriteSession();
       setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
@@ -3348,42 +3637,39 @@ export function ConversionPage() {
   });
 
   const rewriteMutation = useMutation({
-    mutationFn: async (provider: AiProvider) => {
-      if (!rewriteRows.length) {
-        throw new Error('No Rewrite samples available.');
+    mutationFn: async (params: { provider: AiProvider; rowId: string }) => {
+      const targetRow = rewriteRows.find((row) => row.rowId === params.rowId);
+      if (!targetRow) {
+        throw new Error('Rewrite sample not found.');
       }
 
-      const payload = rewriteRows.map((row) => ({
-        turns: row.turns,
-      }));
+      const payload = [{ turns: targetRow.turns }];
 
-      const response = await apiService.rewriteDataChunked(payload, provider);
-      return { provider, response };
+      const response = await apiService.rewriteDataChunked(payload, params.provider);
+      return { provider: params.provider, response, rowId: params.rowId };
     },
-    onSuccess: ({ provider, response }) => {
-      const nextDrafts: Record<string, Record<number, RewriteTurnDraft>> = {};
-
-      rewriteRows.forEach((row, index) => {
-        const rewrites = response.items[index]?.rewrites || [];
-        const currentDrafts: Record<number, RewriteTurnDraft> = {};
-        rewrites.forEach((rewrite) => {
-          const proposal = String(rewrite.assistant || '').trim();
-          if (!proposal) {
-            return;
-          }
-          currentDrafts[rewrite.assistantMessageIndex] = {
-            proposal,
-            editedText: proposal,
-            decision: 'ai',
-          };
-        });
-        nextDrafts[row.rowId] = currentDrafts;
+    onSuccess: ({ provider, response, rowId }) => {
+      const rewrites = response.items[0]?.rewrites || [];
+      const nextRowDrafts: Record<number, RewriteTurnDraft> = {};
+      rewrites.forEach((rewrite) => {
+        const proposal = String(rewrite.assistant || '').trim();
+        if (!proposal) {
+          return;
+        }
+        nextRowDrafts[rewrite.assistantMessageIndex] = {
+          proposal,
+          editedText: proposal,
+          decision: 'ai',
+        };
       });
 
-      setRewriteDrafts(nextDrafts);
+      setRewriteDrafts((prev) => ({
+        ...prev,
+        [rowId]: nextRowDrafts,
+      }));
       setRewriteApplied(false);
       const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
-      toast.success(`Generated rewrite proposals for ${response.items.length} samples using ${label}.`);
+      toast.success(`Generated rewrite proposals for the current sample using ${label}.`);
     },
     onError: (error: any) => {
       toast.error(error?.response?.data?.error || error.message || 'Rewrite generation failed.');
@@ -3448,6 +3734,7 @@ export function ConversionPage() {
     setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
+    setAllQualitySamplesResult(null);
     const nextMap: Record<string, number> = {};
     if (previewMode === 'openai') {
       const convs = normalizeOpenAIConversations(result.data);
@@ -3499,6 +3786,7 @@ export function ConversionPage() {
     setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setSelectedClusterIds([]);
+    setAllQualitySamplesResult(null);
 
     // Restore rowClusterMap from the saved cluster assignments
     const nextMap: Record<string, number> = {};
@@ -3532,6 +3820,7 @@ export function ConversionPage() {
     setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
+    setAllQualitySamplesResult(null);
     toast.success('Dataset reset to original converted state.');
   };
 
@@ -3616,56 +3905,6 @@ export function ConversionPage() {
     }
   };
 
-  const ensureDatasetVersionForExport = async (): Promise<string | null> => {
-    if (!conversionResult?.data?.length) {
-      return null;
-    }
-
-    if (!currentDatasetVersionId || (selectedPromptId && datasetVersionPromptId !== selectedPromptId)) {
-      try {
-        const payload = buildDatasetVersionPayload();
-        if (payload && payload.data.length) {
-          const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-          const created = await dataprepApi.createDatasetVersion({
-            projectName: payload.projectName,
-            similarityThreshold: payload.similarityThreshold,
-            format: payload.format,
-            data: payload.data,
-            promptId: selectedPromptId,
-            promptContentSnapshot: effectivePromptContent || undefined,
-            projectId: payload.projectId,
-            parentVersionId: payload.parentVersionId,
-            operationType: payload.operationType,
-            operationParams: payload.operationParams,
-            prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.finish,
-          });
-          setCurrentDatasetVersionId(created.datasetVersion._id);
-          setSampleIdMap(created.sampleIdMap || {});
-          setDatasetVersionPromptId(selectedPromptId);
-          return created.datasetVersion._id;
-        }
-      } catch (error: any) {
-        toast.error(error?.response?.data?.error || error?.message || 'Failed to sync prompt linkage before download.');
-        return null;
-      }
-    }
-    return currentDatasetVersionId;
-  };
-
-  const loadExportDatasetDetail = async () => {
-    const datasetVersionId = await ensureDatasetVersionForExport();
-    if (!datasetVersionId) {
-      throw new Error('No dataset version available for export.');
-    }
-
-    const detail = await dataprepApi.getDatasetVersionDetail(
-      datasetVersionId,
-      false, // showRejected = false (excludes REJECT >= 3)
-      isProjectLabelingRoute
-    );
-    return detail;
-  };
-
   const handleApplySubjectBalance = (
     keptItems: ClassifiedSamplesResult['items'],
     removedCount: number
@@ -3717,6 +3956,8 @@ export function ConversionPage() {
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
+    setAllQualitySamplesResult(null);
+    resetRewriteSession();
     setBalanceApplied(true);
     toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
   };
@@ -3868,10 +4109,6 @@ export function ConversionPage() {
     setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
-    setActiveClassificationGroup(null);
-    setClassifiedSamplesResult(null);
-    setActiveQualityBucket(null);
-    setQualitySamplesResult(null);
     setRewriteRows((prev) => prev.map((row) => {
       const rowDrafts = rewriteDrafts[row.rowId] || {};
       return {
@@ -3889,19 +4126,12 @@ export function ConversionPage() {
       };
     }));
     setRewriteApplied(true);
+    setRewriteSource('local-applied');
     toast.success(`Applied ${selectedTurns.length} rewritten assistant turns to the working dataset.`);
   };
 
   const handleDownloadTrainTestZip = async () => {
-    let exportData: any[] = [];
-    try {
-      const detail = await loadExportDatasetDetail();
-      exportData = detail.items.map((item: any) => item.data);
-    } catch (err: any) {
-      console.error('Export fetch error:', err);
-      // Fallback to local data if fetch fails (not ideal, but keeps current behavior)
-      exportData = conversionResult?.data || [];
-    }
+    const exportData = currentPipelineExportData;
 
     if (!exportData.length) {
       toast.error('No data available to export.');
@@ -3964,42 +4194,38 @@ export function ConversionPage() {
   };
 
   const handleDownloadByScore = async () => {
-    let exportData: any[] = [];
-    let items: any[] = [];
-    try {
-      const detail = await loadExportDatasetDetail();
-      items = detail.items;
-      exportData = items.map((item: any) => item.data);
-    } catch (err: any) {
-      console.error('Export fetch error:', err);
-      toast.error('Failed to fetch dataset detail for scored export.');
-      return;
-    }
-
-    if (!items.length) {
+    if (!evaluationRows.length) {
       toast.error('No data available to download.');
       return;
     }
 
-    const qualifiedIndices = items
-      .map((item, idx) => {
-        // Use the aggregated scores from the backend if available, or fall back to evaluationMap
-        const overall = item.results?.overall;
-        if (Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold) {
-          return idx;
-        }
-        return -1;
-      })
-      .filter((idx) => idx !== -1);
+    const rawRecordByKey = new Map<string, any>();
+    if (previewMode === 'openai') {
+      normalizeOpenAIConversations(conversionResult?.data || []).forEach((conv) => {
+        rawRecordByKey.set(String(conv.conversation_id), conv);
+      });
+    } else {
+      (conversionResult?.data || []).forEach((item: any, index: number) => {
+        const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
+        rawRecordByKey.set(rowId, item);
+      });
+    }
 
-    if (!qualifiedIndices.length) {
+    const qualifiedRows = evaluationRows.filter((row) => {
+      const score = getAveragedScores(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)]), previewMode);
+      return Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= downloadScoreThreshold);
+    });
+
+    if (!qualifiedRows.length) {
       toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
       return;
     }
 
     const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-    const filteredData = qualifiedIndices.map((idx) => {
-      let payload = sanitizeRecordForDownload(exportData[idx], previewMode, effectivePromptContent);
+    const filteredData = qualifiedRows.map((row) => {
+      const key = resolveEvaluationKey(row);
+      const rawRecord = rawRecordByKey.get(key);
+      let payload = sanitizeRecordForDownload(rawRecord, previewMode, effectivePromptContent);
       if (previewMode === 'openai') {
         payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
       }
@@ -4247,9 +4473,7 @@ export function ConversionPage() {
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
         setBalanceApplied(false);
-        setRewriteRows([]);
-        setRewriteDrafts({});
-        setRewriteApplied(false);
+        resetRewriteSession();
         setVisibleRowsInEvaluation([]);
         setVisibleRowsInRefinement([]);
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
@@ -4330,9 +4554,7 @@ export function ConversionPage() {
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setBalanceApplied(false);
-    setRewriteRows([]);
-    setRewriteDrafts({});
-    setRewriteApplied(false);
+    resetRewriteSession();
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setActiveProjectOwnerId(null);
@@ -4356,7 +4578,7 @@ export function ConversionPage() {
     [autoLabelSuggestionsByProvider]
   );
   const canMoveFromStep8 = !!currentDatasetVersionId;
-  const canMoveFromStep9 = !!currentDatasetVersionId;
+  const canMoveFromStep9 = !!conversionResult;
   const canMoveFromStep10 = !!conversionResult;
   const canMoveFromStep11 = !!conversionResult;
   const canMoveFromStep12 = !!conversionResult;
@@ -4391,6 +4613,178 @@ export function ConversionPage() {
     const saved = await persistPrepareProgress(prepareResumeStep);
     if (saved) {
       setCurrentStep(prepareResumeStep);
+    }
+  };
+
+  const handleProceedFromLabelingStep = async () => {
+    if (!currentDatasetVersionId) {
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+      return;
+    }
+
+    const { data: status } = await labelingIntentStatusQuery.refetch();
+    if (!status || status.unlabeledSamples <= 0) {
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+      return;
+    }
+
+    setPendingIncompleteBucket(status.incompleteBucket || 'Rewrite');
+    setIsIncompleteLabelingModalOpen(true);
+  };
+
+  const handleConfirmIncompleteBucket = async () => {
+    if (!currentDatasetVersionId) {
+      setIsIncompleteLabelingModalOpen(false);
+      return;
+    }
+
+    setIsSavingIncompleteBucket(true);
+    try {
+      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, pendingIncompleteBucket);
+      await labelingIntentStatusQuery.refetch();
+      toast.success(result.message || `Incomplete samples will be treated as ${pendingIncompleteBucket}.`);
+      setIsIncompleteLabelingModalOpen(false);
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to save incomplete sample bucket.');
+    } finally {
+      setIsSavingIncompleteBucket(false);
+    }
+  };
+
+  const handleProceedFromRewriteStep = async () => {
+    if (pendingRewriteSampleCount > 0) {
+      setIsPendingRewriteModalOpen(true);
+      return;
+    }
+    await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+  };
+
+  const handleProceedFromDistributionStep = () => {
+    if (!balanceApplied) {
+      setIsBalanceReminderModalOpen(true);
+      return;
+    }
+    setCurrentStep(10);
+  };
+
+  const restoreVersionSession = async (versionId: string, targetStep: Step) => {
+    setIsRestoringParentVersion(true);
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(
+        versionId,
+        false,
+        isProjectLabelingRoute
+      );
+
+      const normalizedFormat: PreviewMode = inferLoadedFormat(detail.items, conversionOptions.format);
+      const restoredResult = buildConversionResultFromVersionItems(
+        detail.items.map((item) => ({ sampleKey: item.sampleKey, data: item.data })),
+        normalizedFormat,
+        detail.datasetVersion.projectName || projectName
+      );
+      const restoredClusterState = buildClusterStateFromData(
+        restoredResult.data,
+        normalizedFormat,
+        conversionOptions.removeThinkTags ?? true
+      );
+      const restoredEvaluationMap = detail.items.reduce<Record<string, RowEvaluationEntry>>((acc, item) => {
+        const evaluations = Array.isArray(item.evaluations)
+          ? item.evaluations.map((entry) => ({
+            evaluatedBy: entry.evaluatedBy,
+            scores: {
+              accuracy: entry.scores?.accuracy ?? null,
+              clarity: entry.scores?.clarity ?? null,
+              completeness: entry.scores?.completeness ?? null,
+              socratic: entry.scores?.socratic ?? null,
+              encouragement: entry.scores?.encouragement ?? null,
+              factuality: entry.scores?.factuality ?? null,
+              overall: entry.scores?.overall ?? null,
+            },
+            reason: entry.reason || '',
+            timestamp: entry.timestamp || new Date().toISOString(),
+          }))
+          : [];
+        if (evaluations.length > 0) {
+          acc[item.sampleKey] = { evaluations };
+        }
+        return acc;
+      }, {});
+      const restoredSampleIdMap = detail.items.reduce<Record<string, string>>((acc, item) => {
+        acc[item.sampleKey] = item.sampleId;
+        return acc;
+      }, {});
+
+      setConversionResult(restoredResult);
+      setOriginalConvertedResult((prev) => prev || restoredResult);
+      setCurrentDatasetVersionId(detail.datasetVersion._id);
+      setDatasetVersionPromptId('');
+      setSampleIdMap(restoredSampleIdMap);
+      setClusterGroups(restoredClusterState.clusterGroups);
+      setRowClusterMap(restoredClusterState.rowClusterMap);
+      setSelectedClusterIds([]);
+      setEvaluationMap(restoredEvaluationMap);
+      setVisibleRowsInEvaluation([]);
+      setVisibleRowsInRefinement([]);
+      setRefinedRowIds(new Set());
+      setRefineHistoryMap({});
+      setManualTargetRow(null);
+      setItemToDelete(null);
+      setIsEvaluateModalOpen(false);
+      setIsRefineModalOpen(false);
+      setIsManualEvalModalOpen(false);
+      setScoreHistoryModalOpen(false);
+      setIsComparingGroups(false);
+      setCompareSlot1(null);
+      setCompareSlot2(null);
+      setRefineComparisonView(null);
+      setActiveClassificationGroup(null);
+      setClassifiedSamplesResult(null);
+      setActiveQualityBucket(null);
+      setQualitySamplesResult(null);
+      setAllQualitySamplesResult(null);
+      resetRewriteSession();
+      setCurrentStep(targetStep);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to restore parent version.');
+    } finally {
+      setIsRestoringParentVersion(false);
+    }
+  };
+
+  const handleBackFromEvaluation = async () => {
+    if (!currentDatasetVersionId) {
+      setCurrentStep(getBackStep(11));
+      return;
+    }
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(currentDatasetVersionId, false, isProjectLabelingRoute);
+      const parentVersionId = detail.datasetVersion.parentVersionId ? String(detail.datasetVersion.parentVersionId) : '';
+      if (!parentVersionId) {
+        setCurrentStep(getBackStep(11));
+        return;
+      }
+      await restoreVersionSession(parentVersionId, 10);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to load evaluation parent version.');
+    }
+  };
+
+  const handleBackFromRefine = async () => {
+    if (!currentDatasetVersionId) {
+      setCurrentStep(getBackStep(12));
+      return;
+    }
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(currentDatasetVersionId, false, isProjectLabelingRoute);
+      const parentVersionId = detail.datasetVersion.parentVersionId ? String(detail.datasetVersion.parentVersionId) : '';
+      if (!parentVersionId) {
+        setCurrentStep(getBackStep(12));
+        return;
+      }
+      await restoreVersionSession(parentVersionId, 11);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to load refine parent version.');
     }
   };
 
@@ -4901,6 +5295,31 @@ export function ConversionPage() {
               <p className="mt-1 text-xs text-slate-500">Review assigned conversations and submit your labels.</p>
             </div>
           )}
+          {!isGuestMode && !isOwnerManagedCommunityRoute && labelingIntentStatusQuery.data && (
+            <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Intent-Action Coverage</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {labelingIntentStatusQuery.data.labeledSamples} / {labelingIntentStatusQuery.data.totalSamples} samples have complete Intent-Action labels.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">
+                    Complete: {labelingIntentStatusQuery.data.labeledSamples}
+                  </span>
+                  <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700">
+                    Missing: {labelingIntentStatusQuery.data.unlabeledSamples}
+                  </span>
+                  {labelingIntentStatusQuery.data.incompleteBucket && (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">
+                      Default bucket: {labelingIntentStatusQuery.data.incompleteBucket}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
           <LabelingWorkflowPanel
             isCommunityRoute={isProjectLabelingRoute}
             communityCounts={communityCounts}
@@ -4927,7 +5346,7 @@ export function ConversionPage() {
                   };
                 })}
                 onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
-                onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
+                onNext={handleProceedFromLabelingStep}
                 showBackButton={!isGuestMode}
                 showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
                 nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
@@ -4983,7 +5402,7 @@ export function ConversionPage() {
           alreadyApplied={balanceApplied}
           onApply={handleApplySubjectBalance}
           onBack={() => setCurrentStep(getBackStep(9))}
-          onNext={() => setCurrentStep(10)}
+          onNext={handleProceedFromDistributionStep}
           nextDisabled={!canMoveFromStep9}
         />
       )}
@@ -4995,13 +5414,14 @@ export function ConversionPage() {
           onProviderChange={setRewriteProvider}
           drafts={rewriteDrafts}
           isGenerating={isRewriteLoading || rewriteMutation.isPending}
-          onGenerate={() => rewriteMutation.mutate(rewriteProvider)}
+          onGenerate={(rowId) => rewriteMutation.mutate({ provider: rewriteProvider, rowId })}
           onTurnDecisionChange={handleRewriteDecisionChange}
           onTurnEditChange={handleRewriteEditChange}
           onApply={handleApplyRewriteSelections}
           hasApplied={rewriteApplied}
+          pendingSampleCount={pendingRewriteSampleCount}
           onBack={() => setCurrentStep(getBackStep(10))}
-          onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation)}
+          onNext={handleProceedFromRewriteStep}
           nextDisabled={!canMoveFromStep10}
         />
       )}
@@ -5027,9 +5447,9 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(getBackStep(11))}
+          onBack={handleBackFromEvaluation}
           onNext={() => setCurrentStep(12)}
-          nextDisabled={!canMoveFromStep11}
+          nextDisabled={!canMoveFromStep11 || isRestoringParentVersion}
         />
       )}
 
@@ -5063,9 +5483,9 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(getBackStep(12))}
+          onBack={handleBackFromRefine}
           onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.finish)}
-          nextDisabled={!canMoveFromStep12}
+          nextDisabled={!canMoveFromStep12 || isRestoringParentVersion}
         />
       )}
 
@@ -5192,6 +5612,35 @@ export function ConversionPage() {
         isOpen={Boolean(itemToDelete)}
         onClose={() => setItemToDelete(null)}
         onConfirm={handleConfirmDeleteSample}
+      />
+
+      <IncompleteLabelingModal
+        isOpen={isIncompleteLabelingModalOpen}
+        status={labelingIntentStatusQuery.data || null}
+        selectedBucket={pendingIncompleteBucket}
+        isSubmitting={isSavingIncompleteBucket}
+        onSelectBucket={setPendingIncompleteBucket}
+        onClose={() => setIsIncompleteLabelingModalOpen(false)}
+        onConfirm={handleConfirmIncompleteBucket}
+      />
+
+      <BalanceReminderModal
+        isOpen={isBalanceReminderModalOpen}
+        onClose={() => setIsBalanceReminderModalOpen(false)}
+        onConfirm={() => {
+          setIsBalanceReminderModalOpen(false);
+          setCurrentStep(10);
+        }}
+      />
+
+      <PendingRewriteModal
+        isOpen={isPendingRewriteModalOpen}
+        pendingCount={pendingRewriteSampleCount}
+        onClose={() => setIsPendingRewriteModalOpen(false)}
+        onConfirm={async () => {
+          setIsPendingRewriteModalOpen(false);
+          await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+        }}
       />
 
       <ScoreHistoryModal

@@ -251,6 +251,13 @@ export type QualityClassificationResult = {
   items: QualityClassificationItem[];
 };
 
+export type LabelingIntentActionStatus = {
+  totalSamples: number;
+  labeledSamples: number;
+  unlabeledSamples: number;
+  incompleteBucket: QualityBucket | null;
+};
+
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "", provider?: string) => {
     const response = await api.post("/chat", { text_input, hf_hub_id, provider });
@@ -1218,6 +1225,19 @@ export const apiService = {
     const response = await api.get(`/dataprep/versions/${versionId}/quality`, {
       params: group ? { group } : undefined,
     });
+    return response.data;
+  },
+
+  getLabelingIntentActionStatus: async (versionId: string): Promise<LabelingIntentActionStatus> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/quality/labeling-status`);
+    return response.data;
+  },
+
+  updateLabelingIncompleteBucket: async (
+    versionId: string,
+    bucket: QualityBucket | null
+  ): Promise<LabelingIntentActionStatus & { message: string }> => {
+    const response = await api.patch(`/dataprep/versions/${versionId}/quality/incomplete-bucket`, { bucket });
     return response.data;
   },
 };

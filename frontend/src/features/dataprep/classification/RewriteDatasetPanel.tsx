@@ -34,11 +34,12 @@ type RewriteDatasetPanelProps = {
   onProviderChange: (provider: AiProvider) => void;
   drafts: Record<string, Record<number, RewriteTurnDraft>>;
   isGenerating: boolean;
-  onGenerate: () => void;
+  onGenerate: (rowId: string) => void;
   onTurnDecisionChange: (rowId: string, assistantMessageIndex: number, decision: RewriteTurnDecision) => void;
   onTurnEditChange: (rowId: string, assistantMessageIndex: number, value: string) => void;
   onApply: () => void;
   hasApplied: boolean;
+  pendingSampleCount: number;
   onBack: () => void;
   onNext: () => void;
   nextDisabled: boolean;
@@ -65,6 +66,7 @@ export function RewriteDatasetPanel({
   onTurnEditChange,
   onApply,
   hasApplied,
+  pendingSampleCount,
   onBack,
   onNext,
   nextDisabled,
@@ -129,38 +131,6 @@ export function RewriteDatasetPanel({
             <h3 className="text-base font-bold text-gray-900">Rewrite Review</h3>
             <p className="text-xs text-gray-500">Review mismatched Intent-Action turns. Only assistant messages can be rewritten; user context stays fixed.</p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={provider}
-              onChange={(event) => onProviderChange(event.target.value as AiProvider)}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
-            >
-              {PROVIDERS.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-
-            <button
-              onClick={onGenerate}
-              disabled={isGenerating || totalFlaggedTurns === 0}
-              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:bg-gray-300"
-            >
-              {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              Generate rewrite proposals
-            </button>
-
-            <button
-              onClick={onApply}
-              disabled={selectedCount === 0}
-              className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
-            >
-              <CheckCircle2 className="h-4 w-4" />
-              {hasApplied ? 'Re-apply selected rewrites' : 'Apply selected rewrites'}
-            </button>
-          </div>
         </div>
 
         <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -175,6 +145,10 @@ export function RewriteDatasetPanel({
           <div className="rounded-lg bg-emerald-50 p-3">
             <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Selected to apply</p>
             <p className="mt-1 text-xl font-bold text-emerald-700">{selectedCount}</p>
+          </div>
+          <div className="rounded-lg bg-amber-50 p-3 sm:col-span-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Samples still pending review</p>
+            <p className="mt-1 text-xl font-bold text-amber-700">{pendingSampleCount}</p>
           </div>
         </div>
 
@@ -198,6 +172,40 @@ export function RewriteDatasetPanel({
                   <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
                     {currentSampleSelectedCount} selected
                   </span>
+                </div>
+              </div>
+
+              <div className="border-b border-gray-200 bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <select
+                    value={provider}
+                    onChange={(event) => onProviderChange(event.target.value as AiProvider)}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
+                  >
+                    {PROVIDERS.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={() => onGenerate(currentSample.rowId)}
+                    disabled={isGenerating || currentSampleFlaggedCount === 0}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:bg-gray-300"
+                  >
+                    {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    Generate rewrite proposals
+                  </button>
+
+                  <button
+                    onClick={onApply}
+                    disabled={selectedCount === 0}
+                    className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    {hasApplied ? 'Re-apply selected rewrites' : 'Apply selected rewrites'}
+                  </button>
                 </div>
               </div>
 

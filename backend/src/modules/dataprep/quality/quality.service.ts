@@ -106,6 +106,13 @@ export type QualityResult = {
   items: QualityItem[];
 };
 
+export type LabelingStatusResult = {
+  totalSamples: number;
+  labeledSamples: number;
+  unlabeledSamples: number;
+  incompleteBucket: QualityBucket | null;
+};
+
 const QUALITY_AUTO_REJECT_MARKER = 'quality-classification:auto-reject';
 const HARD_REJECT_FILTER_UPVOTES = 3;
 
@@ -204,7 +211,7 @@ export class QualityService {
     versionId: string,
     ownerId: string,
     group?: string,
-    options: { tagRejects?: boolean } = {}
+    options: { tagRejects?: boolean; incompleteBucket?: QualityBucket | null } = {}
   ): Promise<QualityResult> {
     if (!mongoose.Types.ObjectId.isValid(versionId)) {
       throw Object.assign(new Error('Invalid dataset version id.'), { statusCode: 400 });
@@ -236,6 +243,10 @@ export class QualityService {
       type: 'hard',
     }).lean();
     const labelMap = buildLabelMap(labels);
+    const configuredIncompleteBucket = isQualityBucket(String((version as any)?.operationParams?.qualityIncompleteBucket || ''))
+      ? String((version as any).operationParams.qualityIncompleteBucket) as QualityBucket
+      : null;
+    const incompleteBucket = options.incompleteBucket ?? configuredIncompleteBucket;
 
     const qualityItems: QualityItem[] = [];
     const wrongPairMap = new Map<string, QualityWrongPair>();
@@ -246,6 +257,8 @@ export class QualityService {
       const intentCounts = new Array(INTENTS.length).fill(0);
       let scorableTurns = 0;
       let criticalFailures = 0;
+      let requiredTurns = 0;
+      let hasMissingLabeling = false;
       const turnPairs: QualityItem['turnPairs'] = [];
 
       for (let index = 0; index < messages.length; index += 1) {
@@ -254,12 +267,16 @@ export class QualityService {
 
         const assistantMessage = messages.slice(index + 1).find((message) => message.role === 'assistant');
         if (!assistantMessage) continue;
+        requiredTurns += 1;
 
         const userLabels = (labelMap.get(`${String(item._id)}:${userMessage.messageIndex}:user`) || [])
           .filter((label) => USER_INTENT_SET.has(label));
         const assistantLabels = (labelMap.get(`${String(item._id)}:${assistantMessage.messageIndex}:assistant`) || [])
           .filter((label) => ASSISTANT_ACTION_SET.has(label));
-        if (!userLabels.length || !assistantLabels.length) continue;
+        if (!userLabels.length || !assistantLabels.length) {
+          hasMissingLabeling = true;
+          continue;
+        }
 
         for (const userLabel of userLabels) {
           const intentIndex = INTENT_INDEX.get(userLabel as any);
@@ -297,6 +314,26 @@ export class QualityService {
             matched: isCorrect,
           });
         }
+      }
+
+      const isIncomplete = requiredTurns === 0 || hasMissingLabeling;
+      if (isIncomplete && incompleteBucket) {
+        qualityItems.push({
+          _id: String(item._id),
+          sampleId: String(item.sampleId),
+          data: item.data || {},
+          bucket: incompleteBucket,
+          score: incompleteBucket === 'Gold' ? 1 : incompleteBucket === 'Rewrite' ? 0.5 : 0,
+          vector,
+          intentCounts,
+          iar: vector.map((value, index) => (
+            intentCounts[index] > 0 ? value / intentCounts[index] : null
+          )),
+          criticalFailures,
+          scorableTurns,
+          turnPairs,
+        });
+        continue;
       }
 
       if (scorableTurns === 0) {
@@ -367,6 +404,112 @@ export class QualityService {
         rejectTaggedCount: result.rejectTaggedCount,
       },
       ...result,
+    };
+  }
+
+  async getLabelingStatus(versionId: string, ownerId: string): Promise<LabelingStatusResult> {
+    if (!mongoose.Types.ObjectId.isValid(versionId)) {
+      throw Object.assign(new Error('Invalid dataset version id.'), { statusCode: 400 });
+    }
+
+    const version = await DatasetVersion.findOne({ _id: versionId, ownerId }).lean();
+    if (!version) {
+      throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
+    }
+
+    const items = await ProcessedDatasetItem.find({ datasetVersionId: version._id }).sort({ createdAt: 1 }).lean();
+    if (!items.length) {
+      return {
+        totalSamples: 0,
+        labeledSamples: 0,
+        unlabeledSamples: 0,
+        incompleteBucket: null,
+      };
+    }
+
+    const itemIds = items.map((item: any) => item._id);
+    const labels = await Label.find({
+      sampleId: { $in: itemIds },
+      targetScope: 'message',
+      type: 'hard',
+    }).lean();
+    const labelMap = buildLabelMap(labels);
+    const incompleteBucket = isQualityBucket(String((version as any)?.operationParams?.qualityIncompleteBucket || ''))
+      ? String((version as any).operationParams.qualityIncompleteBucket) as QualityBucket
+      : null;
+
+    let labeledSamples = 0;
+    let unlabeledSamples = 0;
+
+    for (const item of items as any[]) {
+      const messages = serializeMessages(item.data || {});
+      let requiredTurns = 0;
+      let missingTurns = 0;
+
+      for (let index = 0; index < messages.length; index += 1) {
+        const userMessage = messages[index];
+        if (userMessage.role !== 'user') continue;
+
+        const assistantMessage = messages.slice(index + 1).find((message) => message.role === 'assistant');
+        if (!assistantMessage) continue;
+        requiredTurns += 1;
+
+        const userLabels = (labelMap.get(`${String(item._id)}:${userMessage.messageIndex}:user`) || [])
+          .filter((label) => USER_INTENT_SET.has(label));
+        const assistantLabels = (labelMap.get(`${String(item._id)}:${assistantMessage.messageIndex}:assistant`) || [])
+          .filter((label) => ASSISTANT_ACTION_SET.has(label));
+
+        if (!userLabels.length || !assistantLabels.length) {
+          missingTurns += 1;
+        }
+      }
+
+      if (requiredTurns > 0 && missingTurns === 0) {
+        labeledSamples += 1;
+      } else {
+        unlabeledSamples += 1;
+      }
+    }
+
+    return {
+      totalSamples: items.length,
+      labeledSamples,
+      unlabeledSamples,
+      incompleteBucket,
+    };
+  }
+
+  async updateIncompleteBucket(
+    versionId: string,
+    ownerId: string,
+    bucket: QualityBucket | null
+  ): Promise<LabelingStatusResult> {
+    if (!mongoose.Types.ObjectId.isValid(versionId)) {
+      throw Object.assign(new Error('Invalid dataset version id.'), { statusCode: 400 });
+    }
+
+    const version = await DatasetVersion.findOne({ _id: versionId, ownerId });
+    if (!version) {
+      throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
+    }
+
+    const currentParams = version.operationParams && typeof version.operationParams === 'object'
+      ? { ...(version.operationParams as Record<string, unknown>) }
+      : {};
+
+    if (bucket) {
+      currentParams.qualityIncompleteBucket = bucket;
+    } else {
+      delete currentParams.qualityIncompleteBucket;
+    }
+
+    version.operationParams = currentParams;
+    await version.save();
+
+    const status = await this.getLabelingStatus(versionId, ownerId);
+    return {
+      ...status,
+      incompleteBucket: bucket,
     };
   }
 
