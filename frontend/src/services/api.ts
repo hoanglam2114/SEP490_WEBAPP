@@ -258,6 +258,26 @@ export type LabelingIntentActionStatus = {
   incompleteBucket: QualityBucket | null;
 };
 
+export type SafeSplitConflictPreview = {
+  trainIndex: number;
+  testIndex: number;
+  similarity: number;
+};
+
+export type SafeSplitResult = {
+  resolved: boolean;
+  attempts: number;
+  threshold: number;
+  trainIndices: number[];
+  testIndices: number[];
+  trainCount: number;
+  testCount: number;
+  conflictCount: number;
+  maxCrossSplitSimilarity: number;
+  datasetFingerprint?: string;
+  conflictsPreview?: SafeSplitConflictPreview[];
+};
+
 export const apiService = {
   chat: async (text_input: string, hf_hub_id: string = "", provider?: string) => {
     const response = await api.post("/chat", { text_input, hf_hub_id, provider });
@@ -864,6 +884,35 @@ export const apiService = {
     return response.data;
   },
 
+  previewAndSaveMessageAutoLabelsBatch: async (
+    payload: {
+      provider?: 'gemini' | 'openai' | 'deepseek';
+      samples: Array<{
+        sampleId: string;
+        messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+      }>;
+      concurrency?: number;
+    },
+    fromCommunityHub = false
+  ): Promise<{
+    processedCount: number;
+    successCount: number;
+    failureCount: number;
+    insertedCount: number;
+    results: Array<{
+      sampleId: string;
+      status: 'success' | 'failed' | 'skipped';
+      insertedCount: number;
+      suggestionCount: number;
+      error?: string;
+    }>;
+  }> => {
+    const response = await api.post('/dataprep/message-auto-label/batch', payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
   previewAutoLabels: async (
     versionId: string,
     provider: 'gemini' | 'openai' | 'deepseek'
@@ -1086,6 +1135,23 @@ export const apiService = {
   }> =>
     api
       .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
+      .then((res) => res.data),
+
+  clusterSafeSplit: (
+    data: any[],
+    testPercentage: number,
+    threshold: number,
+    maxAttempts: number,
+    seed = 42
+  ): Promise<SafeSplitResult> =>
+    api
+      .post('/cluster/safe-split', {
+        data,
+        test_percentage: testPercentage,
+        threshold,
+        max_attempts: maxAttempts,
+        seed,
+      })
       .then((res) => res.data),
 
   clusterVersionVisualize: (

@@ -39,6 +39,7 @@ import { CleaningPipelineOptions } from '../features/dataprep/preprocessing/Clea
 import { PostConversionSummary } from '../features/dataprep/preprocessing/PostConversionSummary';
 import { VisualizationPanel, type VisualizationResult } from '../features/dataprep/preprocessing/VisualizationPanel';
 import { SystemPromptStepPanel } from '../features/dataprep/prompt/SystemPromptStepPanel';
+import { SplitGuardPanel } from '../features/dataprep/export/SplitGuardPanel';
 import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
@@ -52,9 +53,10 @@ import type {
   QualityBucket,
   QualityClassificationResult,
   LabelingIntentActionStatus,
+  SafeSplitResult,
 } from '../services/api';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -402,7 +404,7 @@ const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'labeling', label: 'Labeling', steps: [5, 6, 7] },
   { id: 'classification', label: 'Classification', steps: [8, 9, 10] },
   { id: 'evaluation', label: 'Evaluation', steps: [11, 12] },
-  { id: 'finish', label: 'Finish', steps: [13, 14] },
+  { id: 'finish', label: 'Finish', steps: [13, 14, 15] },
 ];
 
 const PREPARE_STAGE_RESUME_STEPS: Record<'labeling' | 'classification' | 'evaluation' | 'finish', Step> = {
@@ -442,20 +444,19 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 11, label: 'Evaluation', group: 'Evaluation' },
   { id: 12, label: 'Refine', group: 'Evaluation' },
   { id: 13, label: 'System Prompt', group: 'Finish' },
-  { id: 14, label: 'Train/Test Export', group: 'Finish' },
+  { id: 14, label: 'Split Guard', group: 'Finish' },
+  { id: 15, label: 'Train/Test Export', group: 'Finish' },
 ];
 
 // NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
 // computeElbow, computeKDistance, buildFeatureVectors) have been removed.
 // Step 3 now uses GPU Service API for semantic embedding-based computation.
 
-function shuffle<T>(arr: T[]): T[] {
-  const next = [...arr];
-  for (let i = next.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [next[i], next[j]] = [next[j], next[i]];
+function getPipelineRecordKey(record: any, index: number, mode: PreviewMode): string {
+  if (mode === 'openai') {
+    return String(record?.conversation_id ?? index);
   }
-  return next;
+  return String(record?.id ?? record?.sampleId ?? `alpaca-${index}`);
 }
 
 function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptText?: string): any {
@@ -2510,6 +2511,9 @@ export function ConversionPage() {
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
   const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
   const [downloadTestPercentage, setDownloadTestPercentage] = useState<number>(10);
+  const [splitGuardThreshold, setSplitGuardThreshold] = useState<number>(0.85);
+  const [splitGuardMaxAttempts, setSplitGuardMaxAttempts] = useState<number>(20);
+  const [splitGuardResult, setSplitGuardResult] = useState<SafeSplitResult | null>(null);
   const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
   const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
   const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[]; clusterStats?: ClusterStat[]; avgSimilarity?: number } | null>(null);
@@ -3011,6 +3015,82 @@ export function ConversionPage() {
       return nonRejectQualitySampleIds.has(rowId);
     });
   }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode]);
+
+  const splitGuardDatasetFingerprint = useMemo(
+    () => JSON.stringify(currentPipelineExportData),
+    [currentPipelineExportData]
+  );
+
+  useEffect(() => {
+    setSplitGuardResult(null);
+  }, [splitGuardDatasetFingerprint, downloadTestPercentage, splitGuardThreshold, splitGuardMaxAttempts]);
+
+  const effectivePromptContent = useMemo(
+    () => String(selectedPromptContent || systemPromptText || '').trim(),
+    [selectedPromptContent, systemPromptText]
+  );
+
+  const lockedSplitPayload = useMemo(() => {
+    if (!splitGuardResult?.resolved || !currentPipelineExportData.length) {
+      return null;
+    }
+
+    const trainIndexSet = new Set(splitGuardResult.trainIndices || []);
+    const testIndexSet = new Set(splitGuardResult.testIndices || []);
+    const trainData: any[] = [];
+    const testData: any[] = [];
+
+    currentPipelineExportData.forEach((record, idx) => {
+      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
+      if (previewMode === 'openai') {
+        payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
+      }
+      if (testIndexSet.has(idx)) {
+        testData.push(payload);
+      } else if (trainIndexSet.has(idx)) {
+        trainData.push(payload);
+      }
+    });
+
+    return { trainData, testData };
+  }, [currentPipelineExportData, effectivePromptContent, previewMode, splitGuardResult]);
+
+  const huggingFaceSplitUpload = useMemo(() => {
+    if (!lockedSplitPayload) {
+      return null;
+    }
+
+    return {
+      fileName: `${projectName.trim() || 'dataset'}_train_test_split.json`,
+      content: JSON.stringify(
+        {
+          train: lockedSplitPayload.trainData,
+          test: lockedSplitPayload.testData,
+          metadata: {
+            projectName: projectName.trim() || 'dataset',
+            datasetVersionId: currentDatasetVersionId || null,
+            systemPrompt: effectivePromptContent || null,
+            systemPromptVersion: selectedSystemPromptVersion || null,
+            threshold: splitGuardResult?.threshold ?? splitGuardThreshold,
+            attempts: splitGuardResult?.attempts ?? 0,
+            conflictCount: splitGuardResult?.conflictCount ?? 0,
+            maxCrossSplitSimilarity: splitGuardResult?.maxCrossSplitSimilarity ?? 0,
+            exportedAt: new Date().toISOString(),
+          },
+        },
+        null,
+        2
+      ),
+    };
+  }, [
+    currentDatasetVersionId,
+    effectivePromptContent,
+    lockedSplitPayload,
+    projectName,
+    selectedSystemPromptVersion,
+    splitGuardResult,
+    splitGuardThreshold,
+  ]);
 
   const buildDatasetVersionPayload = (): {
     projectName: string;
@@ -3676,6 +3756,35 @@ export function ConversionPage() {
     },
   });
 
+  const splitGuardMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentPipelineExportData.length) {
+        throw new Error('No data available for split guard.');
+      }
+
+      return apiService.clusterSafeSplit(
+        currentPipelineExportData,
+        downloadTestPercentage,
+        splitGuardThreshold,
+        splitGuardMaxAttempts,
+        42
+      );
+    },
+    onSuccess: (result) => {
+      setSplitGuardResult(result);
+      if (result.resolved) {
+        toast.success(`Safe split generated after ${result.attempts} attempt(s).`);
+      } else {
+        toast.error(
+          `Safe split still has ${result.conflictCount} conflict(s) after ${result.attempts} attempt(s).`
+        );
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error.message || 'Failed to generate safe split.');
+    },
+  });
+
   const clusterMutation = useMutation({
     mutationFn: async () => {
       if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
@@ -4131,43 +4240,17 @@ export function ConversionPage() {
   };
 
   const handleDownloadTrainTestZip = async () => {
-    const exportData = currentPipelineExportData;
+    if (!lockedSplitPayload || !splitGuardResult?.resolved) {
+      toast.error('Generate a safe split before exporting.');
+      return;
+    }
 
-    if (!exportData.length) {
+    if (!currentPipelineExportData.length) {
       toast.error('No data available to export.');
       return;
     }
 
-    const totalCount = exportData.length;
-    const allIndices = Array.from({ length: totalCount }, (_, idx) => idx);
-    const shuffled = shuffle(allIndices);
-    const safePercentage = Math.min(100, Math.max(0, downloadTestPercentage));
-    let testCount = Math.round(totalCount * (safePercentage / 100));
-    if (safePercentage > 0 && testCount === 0) {
-      testCount = 1;
-    }
-    if (safePercentage < 100 && testCount === totalCount && totalCount > 0) {
-      testCount = totalCount - 1;
-    }
-
-    const testIndexSet = new Set<number>();
-    shuffled.slice(0, testCount).forEach((idx) => testIndexSet.add(idx));
-
-    const trainData: any[] = [];
-    const testData: any[] = [];
-    const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-
-    exportData.forEach((record, idx) => {
-      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
-      if (previewMode === 'openai') {
-        payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
-      }
-      if (testIndexSet.has(idx)) {
-        testData.push(payload);
-      } else {
-        trainData.push(payload);
-      }
-    });
+    const { trainData, testData } = lockedSplitPayload;
 
     const zip = new JSZip();
     zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
@@ -4182,6 +4265,10 @@ export function ConversionPage() {
           systemPromptVersion: selectedSystemPromptVersion || null,
           totalTrain: trainData.length,
           totalTest: testData.length,
+          threshold: splitGuardResult.threshold,
+          attempts: splitGuardResult.attempts,
+          conflictCount: splitGuardResult.conflictCount,
+          maxCrossSplitSimilarity: splitGuardResult.maxCrossSplitSimilarity,
           exportedAt: new Date().toISOString(),
         },
         null,
@@ -4190,10 +4277,15 @@ export function ConversionPage() {
     );
     const blob = await zip.generateAsync({ type: 'blob' });
     saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
-    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records (test ${safePercentage.toFixed(0)}%).`);
+    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records.`);
   };
 
   const handleDownloadByScore = async () => {
+    if (!lockedSplitPayload || !splitGuardResult?.resolved) {
+      toast.error('Generate a safe split before exporting.');
+      return;
+    }
+
     if (!evaluationRows.length) {
       toast.error('No data available to download.');
       return;
@@ -4221,23 +4313,61 @@ export function ConversionPage() {
       return;
     }
 
-    const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-    const filteredData = qualifiedRows.map((row) => {
-      const key = resolveEvaluationKey(row);
-      const rawRecord = rawRecordByKey.get(key);
-      let payload = sanitizeRecordForDownload(rawRecord, previewMode, effectivePromptContent);
+    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
+    const qualifiedKeySet = new Set(qualifiedRows.map((row) => resolveEvaluationKey(row)));
+
+    const qualifiedTrainData: any[] = [];
+    const qualifiedTestData: any[] = [];
+    const trainIndexSet = new Set(splitGuardResult.trainIndices || []);
+    const testIndexSet = new Set(splitGuardResult.testIndices || []);
+
+    currentPipelineExportData.forEach((record, index) => {
+      const key = getPipelineRecordKey(record, index, previewMode);
+      if (!qualifiedKeySet.has(key)) {
+        return;
+      }
+
+      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
       if (previewMode === 'openai') {
         payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
       }
-      return payload;
+
+      if (testIndexSet.has(index)) {
+        qualifiedTestData.push(payload);
+      } else if (trainIndexSet.has(index)) {
+        qualifiedTrainData.push(payload);
+      }
     });
 
-    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
-    const blob = new Blob([JSON.stringify(filteredData, null, 2)], {
-      type: 'application/json;charset=utf-8',
-    });
-    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}.json`);
-    toast.success(`Downloaded ${filteredData.length} samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+    const zip = new JSZip();
+    zip.file('train_dataset.json', JSON.stringify(qualifiedTrainData, null, 2));
+    zip.file('test_dataset.json', JSON.stringify(qualifiedTestData, null, 2));
+    zip.file(
+      '_metadata.json',
+      JSON.stringify(
+        {
+          projectName: projectName.trim() || 'dataset',
+          datasetVersionId: currentDatasetVersionId || null,
+          systemPrompt: effectivePromptContent || null,
+          systemPromptVersion: selectedSystemPromptVersion || null,
+          threshold: splitGuardResult.threshold,
+          attempts: splitGuardResult.attempts,
+          conflictCount: splitGuardResult.conflictCount,
+          maxCrossSplitSimilarity: splitGuardResult.maxCrossSplitSimilarity,
+          overallScoreThreshold: downloadScoreThreshold,
+          totalTrain: qualifiedTrainData.length,
+          totalTest: qualifiedTestData.length,
+          exportedAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+    const blob = await zip.generateAsync({ type: 'blob' });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}_split.zip`);
+    toast.success(
+      `Downloaded ${qualifiedTrainData.length + qualifiedTestData.length} split samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`
+    );
   };
 
   const handleOpenManualEvaluate = (row: DisplayRow) => {
@@ -4583,6 +4713,7 @@ export function ConversionPage() {
   const canMoveFromStep11 = !!conversionResult;
   const canMoveFromStep12 = !!conversionResult;
   const canMoveFromStep13 = !!conversionResult;
+  const canMoveFromStep14 = Boolean(splitGuardResult?.resolved);
 
   const persistPrepareProgress = async (prepareResumeStep: Step): Promise<boolean> => {
     try {
@@ -5507,6 +5638,24 @@ export function ConversionPage() {
       )}
 
       {currentStep === 14 && (
+        <SplitGuardPanel
+          totalSamples={currentPipelineExportData.length}
+          testPercentage={downloadTestPercentage}
+          setTestPercentage={setDownloadTestPercentage}
+          threshold={splitGuardThreshold}
+          setThreshold={setSplitGuardThreshold}
+          maxAttempts={splitGuardMaxAttempts}
+          setMaxAttempts={setSplitGuardMaxAttempts}
+          result={splitGuardResult}
+          isGenerating={splitGuardMutation.isPending}
+          onGenerate={() => splitGuardMutation.mutate()}
+          onBack={() => setCurrentStep(getBackStep(14))}
+          onNext={() => setCurrentStep(15)}
+          nextDisabled={!canMoveFromStep14}
+        />
+      )}
+
+      {currentStep === 15 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -5518,14 +5667,14 @@ export function ConversionPage() {
             systemPromptText={systemPromptText}
           />
           <ExportPanel
-            conversionResult={conversionResult}
-            downloadTestPercentage={downloadTestPercentage}
-            setDownloadTestPercentage={setDownloadTestPercentage}
+            splitGuardResult={splitGuardResult}
+            exportSampleCount={currentPipelineExportData.length}
             handleDownloadTrainTestZip={handleDownloadTrainTestZip}
             downloadScoreThreshold={downloadScoreThreshold}
             setDownloadScoreThreshold={setDownloadScoreThreshold}
             handleDownloadByScore={handleDownloadByScore}
-            onBack={() => setCurrentStep(getBackStep(14))}
+            huggingFaceUpload={huggingFaceSplitUpload}
+            onBack={() => setCurrentStep(getBackStep(15))}
           />
         </div>
       )}

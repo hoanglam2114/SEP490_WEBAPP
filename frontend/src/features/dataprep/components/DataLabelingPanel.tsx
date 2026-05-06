@@ -73,6 +73,20 @@ type MessageAutoLabelSuggestion = {
   is_correct_logic?: boolean;
 };
 
+type BatchAutoLabelResult = {
+  processedCount: number;
+  successCount: number;
+  failureCount: number;
+  insertedCount: number;
+  results: Array<{
+    sampleId: string;
+    status: 'success' | 'failed' | 'skipped';
+    insertedCount: number;
+    suggestionCount: number;
+    error?: string;
+  }>;
+};
+
 type LabelingSample = {
   key: string;
   title: string;
@@ -294,6 +308,8 @@ export function DataLabelingPanel({
   const [isSavingAutoLabels, setIsSavingAutoLabels] = useState(false);
   const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<Record<number, MessageAutoLabelSuggestion>>({});
+  const [autoLabelBatchCountInput, setAutoLabelBatchCountInput] = useState('1');
+  const [batchAutoLabelResult, setBatchAutoLabelResult] = useState<BatchAutoLabelResult | null>(null);
   const [error, setError] = useState('');
 
   const assignmentStatusQuery = useQuery({
@@ -339,6 +355,12 @@ export function DataLabelingPanel({
   const autoLabelSuggestionCount = Object.keys(autoLabelSuggestions).length;
   const autoLabelSuggestedLabelCount = Object.values(autoLabelSuggestions)
     .reduce((sum, suggestion) => sum + suggestionLabels(suggestion).length, 0);
+  const maxBatchCount = Math.max(samples.length, 1);
+  const parsedBatchCount = Number.parseInt(autoLabelBatchCountInput, 10);
+  const effectiveBatchCount = Math.min(
+    maxBatchCount,
+    Number.isInteger(parsedBatchCount) && parsedBatchCount > 0 ? parsedBatchCount : 1,
+  );
   const assignmentStatus = assignmentStatusQuery.data;
   const assignmentIsLocked = assignmentStatus?.status === 'submitted' || assignmentStatus?.status === 'approved';
   const effectiveLockInteractions = lockInteractions || assignmentIsLocked;
@@ -424,6 +446,19 @@ export function DataLabelingPanel({
     setSoftLabelInput('');
     setAutoLabelSuggestions({});
   }, [currentSample?.sampleId]);
+
+  useEffect(() => {
+    if (!samples.length) {
+      if (autoLabelBatchCountInput !== '1') {
+        setAutoLabelBatchCountInput('1');
+      }
+      return;
+    }
+
+    if (effectiveBatchCount !== parsedBatchCount) {
+      setAutoLabelBatchCountInput(String(effectiveBatchCount));
+    }
+  }, [autoLabelBatchCountInput, effectiveBatchCount, parsedBatchCount, samples.length]);
 
   useEffect(() => {
     if (currentIndex <= samples.length - 1) {
@@ -608,32 +643,59 @@ export function DataLabelingPanel({
   };
 
   const handleAutoLabelMessages = async () => {
-    if (!currentSample?.sampleId) {
-      setError('Cannot auto-label: missing sampleId');
+    if (!samples.length) {
+      setError('Cannot auto-label: there are no samples.');
       return;
     }
-    if (!currentMessagesPayload.length) {
-      setError('Cannot auto-label: this conversation has no messages.');
+
+    const targetSamples = samples
+      .slice(0, effectiveBatchCount)
+      .filter((sample) => sample.sampleId)
+      .map((sample) => ({
+        sampleId: String(sample.sampleId),
+        messages: sample.messages.map((message, index) => ({
+          messageIndex: index,
+          role: message.role,
+          content: message.content,
+        })),
+      }));
+
+    if (!targetSamples.length) {
+      setError('Cannot auto-label: selected samples are missing sampleId.');
       return;
     }
 
     setIsAutoLabelingMessages(true);
     setError('');
+    setBatchAutoLabelResult(null);
 
     try {
-      const payload = await dataprepApi.previewMessageAutoLabels(currentSample.sampleId, {
+      const payload = await dataprepApi.previewAndSaveMessageAutoLabelsBatch({
         provider: autoLabelProvider,
-        messages: currentMessagesPayload,
+        samples: targetSamples,
+        concurrency: 4,
       }, fromCommunityHub);
-      const nextSuggestions = (payload?.suggestions || []).reduce<Record<number, MessageAutoLabelSuggestion>>((acc, suggestion) => {
-        if (Number.isInteger(suggestion.messageIndex)) {
-          acc[Number(suggestion.messageIndex)] = suggestion;
-        }
-        return acc;
-      }, {});
-      setAutoLabelSuggestions(nextSuggestions);
+      setBatchAutoLabelResult(payload);
+
+      const currentSampleId = currentSample?.sampleId;
+      const currentSampleInBatch = currentSampleId
+        ? targetSamples.some((sample) => sample.sampleId === currentSampleId)
+        : false;
+
+      if (currentSampleId && currentSampleInBatch) {
+        await fetchLabels(currentSampleId, selectedTargetIndex);
+        await fetchMessageLabelCounts(currentSampleId);
+      }
+
+      setAutoLabelSuggestions({});
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
+      queryClient.invalidateQueries({ queryKey: ['labeling-intent-action-status', datasetVersionId] });
+
+      toast.success(
+        `Auto-labeled ${payload.successCount}/${payload.processedCount} samples. Inserted ${payload.insertedCount} labels.`,
+      );
     } catch (err: any) {
-      setError(getErrorMessage(err, 'Message auto-labeling failed'));
+      setError(getErrorMessage(err, 'Batch message auto-labeling failed'));
     } finally {
       setIsAutoLabelingMessages(false);
     }
@@ -919,11 +981,21 @@ export function DataLabelingPanel({
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-t-xl">
               <Tag className="w-4 h-4 text-amber-600" />
               <h3 className="text-sm font-semibold text-gray-900">Add Label</h3>
+              <input
+                type="number"
+                min={1}
+                max={maxBatchCount}
+                value={autoLabelBatchCountInput}
+                onChange={(event) => setAutoLabelBatchCountInput(event.target.value)}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions || !samples.length}
+                className="ml-auto w-16 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-center text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Number of samples to auto-label from the start of the current list"
+              />
               <select
                 value={autoLabelProvider}
                 onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
                 disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions}
-                className="ml-auto rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Choose AI provider for message auto-labeling"
               >
                 <option value="gemini">Gemini</option>
@@ -933,9 +1005,9 @@ export function DataLabelingPanel({
               <button
                 type="button"
                 onClick={handleAutoLabelMessages}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || !currentSample?.sampleId || effectiveLockInteractions}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || !samples.length || effectiveLockInteractions}
                 className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Use AI to suggest hard labels for every message in this conversation"
+                title="Use AI to auto-label the first N samples in the current list"
               >
                 {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                 Auto Labeling
@@ -943,6 +1015,13 @@ export function DataLabelingPanel({
             </div>
 
             <div className="p-3 space-y-3">
+              {batchAutoLabelResult && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <p className="text-xs font-semibold text-amber-800">
+                    Processed {batchAutoLabelResult.processedCount} samples. Success: {batchAutoLabelResult.successCount}. Failed: {batchAutoLabelResult.failureCount}. Inserted labels: {batchAutoLabelResult.insertedCount}.
+                  </p>
+                </div>
+              )}
               {autoLabelSuggestionCount > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">

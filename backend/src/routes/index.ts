@@ -27,7 +27,7 @@ import {
   appendMessageToSession,
   deleteSession
 } from '../controllers/chatSessionController';
-import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate } from '../controllers/clusterController';
+import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate, safeSplit } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
 import { PromptController } from '../controllers/promptController';
 import authRoutes from './authRoutes';
@@ -139,6 +139,7 @@ router.post('/cluster', clusterData);
 router.post('/cluster/filter', clusterFilter);
 router.post('/cluster/remove-noise', removeNoise);
 router.post('/cluster/deduplicate', deduplicate);
+router.post('/cluster/safe-split', safeSplit);
 router.delete('/cluster/cache', deleteClusterCache);
 
 // Config Routes

@@ -64,6 +64,13 @@ export class GpuClient {
     });
   }
 
+  safeSplit(body: Record<string, unknown>) {
+    return fetchJson(`${this.baseUrl}/api/cluster/safe-split`, {
+      method: 'POST',
+      body,
+    });
+  }
+
   clearCache() {
     return fetchJson(`${this.baseUrl}/api/cluster/cache`, {
       method: 'DELETE',

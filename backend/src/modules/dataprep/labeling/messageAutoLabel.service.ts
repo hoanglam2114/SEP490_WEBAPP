@@ -54,6 +54,19 @@ type MessageAutoLabelSaveSuggestion = Omit<MessageAutoLabelSuggestion, 'label'> 
   label: string[] | string;
 };
 
+type BatchSampleInput = {
+  sampleId: string;
+  messages: MessageAutoLabelInput[];
+};
+
+type BatchSampleResult = {
+  sampleId: string;
+  status: 'success' | 'failed' | 'skipped';
+  insertedCount: number;
+  suggestionCount: number;
+  error?: string;
+};
+
 const USER_LABEL_SET = new Set<string>(USER_MESSAGE_LABELS);
 const ASSISTANT_LABEL_SET = new Set<string>(ASSISTANT_MESSAGE_LABELS);
 
@@ -109,6 +122,14 @@ function validLabelsForRole(role: MessageRole, label: unknown): string[] {
 
 function fallbackLabels(role: MessageRole): string[] {
   return [role === 'user' ? 'WAIT_READY' : 'WAITING'];
+}
+
+function clampConcurrency(value: unknown, fallback = 4, max = 8): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.min(parsed, max);
 }
 
 function buildPrompt(messages: MessageAutoLabelInput[]): string {
@@ -304,15 +325,36 @@ export class MessageAutoLabelingService {
   async save(sampleId: string, userId: string, suggestions: MessageAutoLabelSaveSuggestion[], messages: MessageAutoLabelInput[]) {
     await this.assertAutoLabelAccess(sampleId, userId);
     const normalizedMessages = normalizeMessages(messages);
-    const messageByIndex = new Map(normalizedMessages.map((message) => [message.messageIndex, message]));
-
     if (!Array.isArray(suggestions) || !suggestions.length) {
       throw Object.assign(new Error('suggestions is required.'), { statusCode: 400 });
     }
 
+    const docs = await this.buildInsertDocs(sampleId, userId, suggestions, normalizedMessages);
+
+    if (docs.length) {
+      await Label.insertMany(docs, { ordered: false });
+    }
+
+    return { insertedCount: docs.length };
+  }
+
+  private async buildInsertDocs(
+    sampleId: string,
+    userId: string,
+    suggestions: MessageAutoLabelSaveSuggestion[],
+    normalizedMessages: MessageAutoLabelInput[],
+  ): Promise<any[]> {
+    const messageByIndex = new Map(normalizedMessages.map((message) => [message.messageIndex, message]));
     const sampleOid = new mongoose.Types.ObjectId(sampleId);
     const userOid = new mongoose.Types.ObjectId(userId);
-    const docs: any[] = [];
+    const candidates: Array<{
+      key: string;
+      name: string;
+      messageIndex: number;
+      messageRole: MessageRole;
+      targetTextSnapshot: string;
+    }> = [];
+    const seenCandidateKeys = new Set<string>();
 
     for (const suggestion of suggestions) {
       const messageIndex = Number(suggestion?.messageIndex);
@@ -322,42 +364,149 @@ export class MessageAutoLabelingService {
       }
 
       const labels = validLabelsForRole(message.role, suggestion?.label);
-      if (!labels.length) {
-        continue;
-      }
-
       for (const label of labels) {
-        const exists = await Label.exists({
-          sampleId: sampleOid,
-          targetScope: 'message',
-          messageIndex,
-          messageRole: message.role,
-          type: 'hard',
-          name: label,
-        });
-        if (exists) {
+        const key = `${messageIndex}:${message.role}:${label}`;
+        if (seenCandidateKeys.has(key)) {
           continue;
         }
-
-        docs.push({
-          sampleId: sampleOid,
+        seenCandidateKeys.add(key);
+        candidates.push({
+          key,
           name: label,
-          type: 'hard',
-          targetScope: 'message',
           messageIndex,
           messageRole: message.role,
           targetTextSnapshot: message.content.slice(0, 2000),
-          createdBy: userOid,
-          upvotes: [userOid],
-          downvotes: [],
         });
       }
     }
 
-    if (docs.length) {
-      await Label.insertMany(docs, { ordered: false });
+    if (!candidates.length) {
+      return [];
     }
 
-    return { insertedCount: docs.length };
+    const existingLabels = await Label.find({
+      sampleId: sampleOid,
+      targetScope: 'message',
+      type: 'hard',
+      $or: candidates.map((candidate) => ({
+        messageIndex: candidate.messageIndex,
+        messageRole: candidate.messageRole,
+        name: candidate.name,
+      })),
+    })
+      .select('messageIndex messageRole name')
+      .lean();
+
+    const existingKeys = new Set(
+      existingLabels.map((label: any) => `${Number(label.messageIndex)}:${String(label.messageRole)}:${String(label.name).toUpperCase()}`),
+    );
+
+    return candidates
+      .filter((candidate) => !existingKeys.has(candidate.key))
+      .map((candidate) => ({
+        sampleId: sampleOid,
+        name: candidate.name,
+        type: 'hard',
+        targetScope: 'message',
+        messageIndex: candidate.messageIndex,
+        messageRole: candidate.messageRole,
+        targetTextSnapshot: candidate.targetTextSnapshot,
+        createdBy: userOid,
+        upvotes: [userOid],
+        downvotes: [],
+      }));
+  }
+
+  async previewAndSaveBatch(
+    userId: string,
+    samples: BatchSampleInput[],
+    concurrency?: number,
+  ): Promise<{
+    processedCount: number;
+    successCount: number;
+    failureCount: number;
+    insertedCount: number;
+    results: BatchSampleResult[];
+  }> {
+    if (!Array.isArray(samples) || !samples.length) {
+      throw Object.assign(new Error('samples is required.'), { statusCode: 400 });
+    }
+
+    const normalizedConcurrency = clampConcurrency(concurrency);
+    const results: BatchSampleResult[] = new Array(samples.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+      while (true) {
+        const jobIndex = nextIndex;
+        nextIndex += 1;
+        if (jobIndex >= samples.length) {
+          return;
+        }
+
+        const sample = samples[jobIndex];
+        const sampleId = String(sample?.sampleId || '');
+        try {
+          const normalizedMessages = normalizeMessages(sample?.messages || []);
+          if (!sampleId) {
+            results[jobIndex] = {
+              sampleId,
+              status: 'failed',
+              insertedCount: 0,
+              suggestionCount: 0,
+              error: 'sampleId is required.',
+            };
+            continue;
+          }
+          if (!normalizedMessages.length) {
+            results[jobIndex] = {
+              sampleId,
+              status: 'skipped',
+              insertedCount: 0,
+              suggestionCount: 0,
+              error: 'This conversation has no messages.',
+            };
+            continue;
+          }
+
+          await this.assertAutoLabelAccess(sampleId, userId);
+          const rawText = await this.provider.generateContent(buildPrompt(normalizedMessages));
+          const suggestions = parseSuggestions(rawText, normalizedMessages);
+          const docs = await this.buildInsertDocs(sampleId, userId, suggestions, normalizedMessages);
+
+          if (docs.length) {
+            await Label.insertMany(docs, { ordered: false });
+          }
+
+          results[jobIndex] = {
+            sampleId,
+            status: 'success',
+            insertedCount: docs.length,
+            suggestionCount: suggestions.reduce((sum, suggestion) => sum + suggestion.label.length, 0),
+          };
+        } catch (error: any) {
+          results[jobIndex] = {
+            sampleId,
+            status: 'failed',
+            insertedCount: 0,
+            suggestionCount: 0,
+            error: error?.message || 'Batch auto-label failed.',
+          };
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(normalizedConcurrency, samples.length) }, () => worker()),
+    );
+
+    const processedResults = results.filter(Boolean);
+    return {
+      processedCount: processedResults.length,
+      successCount: processedResults.filter((result) => result.status === 'success').length,
+      failureCount: processedResults.filter((result) => result.status === 'failed').length,
+      insertedCount: processedResults.reduce((sum, result) => sum + result.insertedCount, 0),
+      results: processedResults,
+    };
   }
 }

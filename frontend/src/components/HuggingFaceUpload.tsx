@@ -6,10 +6,14 @@ import { ConversionResult } from '../types';
 import toast from 'react-hot-toast';
 
 interface HuggingFaceUploadProps {
-    conversionResult: ConversionResult;
+    conversionResult?: ConversionResult | null;
+    customUpload?: {
+        fileName: string;
+        content: string;
+    } | null;
 }
 
-export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversionResult }) => {
+export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversionResult, customUpload }) => {
     const { uploadedFile } = useAppStore();
     const [token, setToken] = useState('');
     const [repoId, setRepoId] = useState('');
@@ -17,18 +21,25 @@ export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversion
 
     const uploadMutation = useMutation({
         mutationFn: async () => {
-            const { data, filename } = conversionResult;
-            const isJsonl = filename.endsWith('.jsonl');
+            let fileName = customUpload?.fileName || '';
+            let output = customUpload?.content || '';
 
-            // Strip metadata fields like 'cluster', 'groupId', etc. before uploading
-            const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
+            if (!fileName || !output) {
+                if (!conversionResult) {
+                    throw new Error('No dataset available to upload');
+                }
+                const { data, filename } = conversionResult;
+                const isJsonl = filename.endsWith('.jsonl');
 
-            // Regenerate output consistent with backend and download button
-            let output: string;
-            if (isJsonl) {
-                output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
-            } else {
-                output = JSON.stringify(cleanData, null, 2);
+                // Strip metadata fields like 'cluster', 'groupId', etc. before uploading
+                const cleanData = data.map(({ cluster, assignments, clusterLabel, groupId, ...rest }: any) => rest);
+
+                fileName = filename;
+                if (isJsonl) {
+                    output = cleanData.map((item: any) => JSON.stringify(item)).join('\n');
+                } else {
+                    output = JSON.stringify(cleanData, null, 2);
+                }
             }
 
             // Upload to HF Hub
@@ -40,7 +51,7 @@ export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversion
                 body: JSON.stringify({
                     token,
                     repoId,
-                    fileName: filename,
+                    fileName,
                     content: output,
                     isPrivate,
                 }),
@@ -64,7 +75,7 @@ export const HuggingFaceUpload: React.FC<HuggingFaceUploadProps> = ({ conversion
         },
     });
 
-    if (!uploadedFile) {
+    if (!uploadedFile && !customUpload) {
         return null;
     }
 

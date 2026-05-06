@@ -77,4 +77,32 @@ export class MessageAutoLabelingController {
       });
     }
   }
+
+  async batch(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { provider, samples, concurrency } = req.body as {
+        provider?: 'gemini' | 'openai' | 'deepseek';
+        samples?: Array<{
+          sampleId: string;
+          messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+        }>;
+        concurrency?: number;
+      };
+
+      const service = getService(provider);
+      const result = await service.previewAndSaveBatch(ownerId, samples || [], concurrency);
+      res.json(result);
+    } catch (error: any) {
+      console.error('Message auto-label batch error:', error);
+      res.status(error.statusCode || 500).json({
+        error: error.message || 'Message auto-label batch failed',
+      });
+    }
+  }
 }

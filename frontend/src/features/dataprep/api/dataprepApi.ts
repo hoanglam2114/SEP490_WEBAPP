@@ -21,6 +21,7 @@ export const dataprepApi = {
   voteSampleLabel: apiService.voteSampleLabel,
   previewMessageAutoLabels: apiService.previewMessageAutoLabels,
   saveMessageAutoLabels: apiService.saveMessageAutoLabels,
+  previewAndSaveMessageAutoLabelsBatch: apiService.previewAndSaveMessageAutoLabelsBatch,
   previewAutoLabels: apiService.previewAutoLabels,
   saveAutoLabels: apiService.saveAutoLabels,
   clusterVersion: apiService.clusterVersion,
