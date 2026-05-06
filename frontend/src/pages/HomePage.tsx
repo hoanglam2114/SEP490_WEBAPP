@@ -65,8 +65,8 @@ const tools = [
     ),
   },
   {
-    title: 'Dataset Evaluation History',
-    description: 'View past evaluations, manually re-evaluate records, and manage dataset quality.',
+    title: 'Dataset Preparation History',
+    description: 'View past preparation efforts, manually re-evaluate records, and manage dataset quality.',
     path: '/evaluation-history',
     tag: 'History',
     icon: (

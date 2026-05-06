@@ -1,12 +1,15 @@
 import { Loader2, Sparkles, Zap } from 'lucide-react';
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { StepNavigation } from '../../../components/StepNavigation';
 
 export type VisualizationResult = {
   elbow: Array<{ k: number; wcss: number }>;
+  silhouette: Array<{ k: number; silhouette: number }>;
   kDistance: Array<{ rank: number; distance: number }>;
   pointCount: number;
   noiseCount?: number;
+  recommendedK?: number | null;
+  recommendationReason?: string;
 };
 
 type VisualizationPanelProps = {
@@ -40,13 +43,21 @@ export function VisualizationPanel({
   onNext,
   nextDisabled,
 }: VisualizationPanelProps) {
+  const chartData = visualizationResult
+    ? visualizationResult.elbow.map((item) => ({
+      ...item,
+      silhouette: visualizationResult.silhouette.find((entry) => entry.k === item.k)?.silhouette ?? null,
+      isRecommended: visualizationResult.recommendedK === item.k,
+    }))
+    : [];
+
   return (
     <div className="space-y-5">
       <div className="bg-white border border-gray-200 rounded-xl p-5">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Find K</h3>
-            <p className="text-sm text-gray-600">Compute Elbow &amp; K-Distance curves through GPU Service before K-means clustering.</p>
+            <p className="text-sm text-gray-600">Compute Elbow, Silhouette Score, and K-Distance curves through GPU Service before K-means clustering.</p>
           </div>
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
@@ -108,39 +119,115 @@ export function VisualizationPanel({
         <>
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 flex items-center gap-3 text-sm text-blue-800">
             <Sparkles className="w-5 h-5 text-blue-500 flex-shrink-0" />
-            <span>
-              <strong>{visualizationResult.pointCount}</strong> points analyzed
-              {typeof visualizationResult.noiseCount === 'number' && (
-                <>, <strong>{visualizationResult.noiseCount}</strong> noise points filtered by DBSCAN</>
+            <div className="space-y-1">
+              <div>
+                <strong>{visualizationResult.pointCount}</strong> points analyzed
+                {typeof visualizationResult.noiseCount === 'number' && (
+                  <>, <strong>{visualizationResult.noiseCount}</strong> noise points filtered by DBSCAN</>
+                )}
+              </div>
+              {typeof visualizationResult.recommendedK === 'number' && (
+                <div className="text-blue-900">
+                  Recommended K: <strong>{visualizationResult.recommendedK}</strong>
+                  {visualizationResult.recommendationReason ? ` (${visualizationResult.recommendationReason})` : ''}
+                </div>
               )}
-            </span>
+            </div>
           </div>
-          <div className="bg-white border border-gray-200 rounded-xl p-6 h-[600px]">
-            <h4 className="text-base font-bold text-gray-800 mb-4 text-center">Phương pháp Khuỷu tay (Elbow Method) để tìm K tối ưu</h4>
-            <ResponsiveContainer width="100%" height="90%">
-              <LineChart data={visualizationResult.elbow} margin={{ top: 20, right: 30, left: 20, bottom: 25 }}>
-                <CartesianGrid strokeDasharray="5 5" stroke="#ccc" />
+          <div className="bg-white border border-gray-200 rounded-xl p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="text-base font-bold text-gray-800">Elbow Method vs. Silhouette Score</h4>
+                <p className="text-sm text-gray-500">Use the blue curve to spot the elbow and the green curve to confirm the strongest silhouette.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-gray-600">
+                <div className="inline-flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-blue-600" />
+                  <span>Elbow (WCSS)</span>
+                </div>
+                <div className="inline-flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-green-600" />
+                  <span>Silhouette</span>
+                </div>
+                {typeof visualizationResult.recommendedK === 'number' && (
+                  <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-amber-700">
+                    <span className="h-2 w-2 rounded-full bg-amber-500" />
+                    <span>Recommended K = {visualizationResult.recommendedK}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="h-[520px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart
+                data={chartData}
+                margin={{ top: 16, right: 36, left: 16, bottom: 16 }}
+              >
+                <CartesianGrid strokeDasharray="4 4" stroke="#cbd5e1" vertical={false} />
                 <XAxis
                   dataKey="k"
-                  label={{ value: 'Số lượng cụm (K)', position: 'insideBottom', offset: -15 }}
-                  ticks={Array.from({ length: maxK }, (_, i) => i + 1)}
+                  ticks={visualizationResult.elbow.map((item) => item.k)}
+                  tickLine={false}
+                  axisLine={{ stroke: '#cbd5e1' }}
+                  tick={{ fontSize: 12, fill: '#475569' }}
                 />
                 <YAxis
-                  label={{ value: 'WCSS (Inertia)', angle: -90, position: 'insideLeft', offset: 0 }}
+                  yAxisId="wcss"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 12, fill: '#2563eb' }}
+                  label={{ value: 'WCSS', angle: -90, position: 'insideLeft', offset: -4, style: { fill: '#2563eb', fontSize: 12 } }}
+                />
+                <YAxis
+                  yAxisId="silhouette"
+                  orientation="right"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 12, fill: '#16a34a' }}
+                  label={{ value: 'Silhouette', angle: 90, position: 'insideRight', offset: 4, style: { fill: '#16a34a', fontSize: 12 } }}
                 />
                 <Tooltip
-                  contentStyle={{ borderRadius: '8px', border: '1px solid #ccc' }}
+                  contentStyle={{ borderRadius: '12px', border: '1px solid #cbd5e1', boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)' }}
+                  formatter={(value, name) => {
+                    const numericValue = typeof value === 'number' ? value : Number(value ?? 0);
+                    return [
+                      name === 'Elbow (WCSS)' ? numericValue.toFixed(2) : numericValue.toFixed(4),
+                      String(name),
+                    ];
+                  }}
+                  labelFormatter={(label) => `K = ${label}`}
+                />
+                {typeof visualizationResult.recommendedK === 'number' && (
+                  <ReferenceLine
+                    x={visualizationResult.recommendedK}
+                    stroke="#f59e0b"
+                    strokeDasharray="6 6"
+                    label={{ value: `Recommended K = ${visualizationResult.recommendedK}`, position: 'insideTopRight', fill: '#b45309', fontSize: 12 }}
+                  />
+                )}
+                <Line
+                  yAxisId="wcss"
+                  type="monotone"
+                  dataKey="wcss"
+                  name="Elbow (WCSS)"
+                  stroke="#2563eb"
+                  strokeWidth={3}
+                  dot={{ r: 4, fill: '#ffffff', stroke: '#2563eb', strokeWidth: 2 }}
+                  activeDot={{ r: 6, fill: '#2563eb', stroke: '#ffffff', strokeWidth: 2 }}
                 />
                 <Line
-                  type="linear"
-                  dataKey="wcss"
-                  stroke="blue"
-                  strokeWidth={2}
-                  dot={{ r: 5, fill: 'blue', stroke: 'blue' }}
-                  activeDot={{ r: 7 }}
+                  yAxisId="silhouette"
+                  type="monotone"
+                  dataKey="silhouette"
+                  name="Silhouette"
+                  stroke="#16a34a"
+                  strokeWidth={3}
+                  dot={{ r: 4, fill: '#ffffff', stroke: '#16a34a', strokeWidth: 2 }}
+                  activeDot={{ r: 6, fill: '#16a34a', stroke: '#ffffff', strokeWidth: 2 }}
                 />
               </LineChart>
             </ResponsiveContainer>
+            </div>
           </div>
         </>
       )}

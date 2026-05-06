@@ -510,7 +510,7 @@ export const saveEvalResult = async (req: Request, res: Response) => {
         startedAt: result.startedAt ? new Date(result.startedAt) : new Date(),
         completedAt: result.completedAt ? new Date(result.completedAt) : new Date(),
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     const history = await TrainingHistory.findOne({ jobId: result.jobId, ownerId });
@@ -680,7 +680,7 @@ export const pinEvaluation = async (req: Request, res: Response) => {
     const result = await TrainingHistory.findOneAndUpdate(
       { jobId: evalDoc.jobId, ownerId },
       { pinnedEvalId: evalId },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!result) {

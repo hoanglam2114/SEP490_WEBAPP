@@ -34,19 +34,29 @@ import { ShareAssignPanel } from '../features/dataprep/labeling/ShareAssignPanel
 import { ClusterPanel } from '../features/dataprep/preprocessing/ClusterPanel';
 import { ClassificationPanel } from '../features/dataprep/classification/ClassificationPanel';
 import { SubjectDistributionPanel } from '../features/dataprep/classification/SubjectDistributionPanel';
-import { BalanceDatasetPanel } from '../features/dataprep/classification/BalanceDatasetPanel';
+import { RewriteDatasetPanel, type RewriteSampleView, type RewriteTurnDraft } from '../features/dataprep/classification/RewriteDatasetPanel';
 import { CleaningPipelineOptions } from '../features/dataprep/preprocessing/CleaningPipelineOptions';
 import { PostConversionSummary } from '../features/dataprep/preprocessing/PostConversionSummary';
 import { VisualizationPanel, type VisualizationResult } from '../features/dataprep/preprocessing/VisualizationPanel';
 import { SystemPromptStepPanel } from '../features/dataprep/prompt/SystemPromptStepPanel';
+import { SplitGuardPanel } from '../features/dataprep/export/SplitGuardPanel';
 import { useAppStore } from '../hooks/useAppStore';
 import { apiService } from '../services/api';
 import type { ConversionResult } from '../types';
 import { useAuthStore } from '../store/authStore';
 import { ExportPanel } from '../features/dataprep/export/ExportPanel';
-import type { AutoLabelSuggestion, SubjectAutoLabel, ClassificationGroup, ClassifiedSamplesResult, QualityBucket, QualityClassificationResult } from '../services/api';
+import type {
+  AutoLabelSuggestion,
+  SubjectAutoLabel,
+  ClassificationGroup,
+  ClassifiedSamplesResult,
+  QualityBucket,
+  QualityClassificationResult,
+  LabelingIntentActionStatus,
+  SafeSplitResult,
+} from '../services/api';
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 type PreviewMode = 'alpaca' | 'openai';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
@@ -101,6 +111,7 @@ type ClusterStat = {
   count: number;
 };
 
+type AutoLabelSuggestionMap = Partial<Record<AiProvider, AutoLabelSuggestion[]>>;
 type LoadProjectPayload = {
   fileId?: string;
   projectName: string;
@@ -112,6 +123,66 @@ type LoadProjectPayload = {
   ownerId?: string;
   startStep?: Step;
 };
+
+function recommendClusterK(
+  elbow: Array<{ k: number; wcss: number }>,
+  silhouette: Array<{ k: number; silhouette: number }>
+): { recommendedK: number | null; recommendationReason: string } {
+  if (!elbow.length && !silhouette.length) {
+    return { recommendedK: null, recommendationReason: '' };
+  }
+
+  const validSilhouette = silhouette.filter(
+    (item) => Number.isFinite(item.k) && Number.isFinite(item.silhouette)
+  );
+  const bestSilhouette = validSilhouette.reduce<{ k: number; silhouette: number } | null>((best, item) => {
+    if (!best || item.silhouette > best.silhouette) {
+      return item;
+    }
+    return best;
+  }, null);
+
+  const validElbow = elbow.filter((item) => Number.isFinite(item.k) && Number.isFinite(item.wcss));
+  if (!validElbow.length) {
+    return bestSilhouette
+      ? { recommendedK: bestSilhouette.k, recommendationReason: 'best silhouette score' }
+      : { recommendedK: null, recommendationReason: '' };
+  }
+
+  const first = validElbow[0];
+  const last = validElbow[validElbow.length - 1];
+  const dx = last.k - first.k;
+  const dy = last.wcss - first.wcss;
+  const denominator = Math.sqrt(dx * dx + dy * dy) || 1;
+
+  const elbowCandidate = validElbow.reduce<{ k: number; distance: number } | null>((best, item) => {
+    const distance = Math.abs(dy * item.k - dx * item.wcss + last.k * first.wcss - last.wcss * first.k) / denominator;
+    if (!best || distance > best.distance) {
+      return { k: item.k, distance };
+    }
+    return best;
+  }, null);
+
+  if (!bestSilhouette) {
+    return elbowCandidate
+      ? { recommendedK: elbowCandidate.k, recommendationReason: 'elbow point' }
+      : { recommendedK: null, recommendationReason: '' };
+  }
+
+  if (elbowCandidate && Math.abs(bestSilhouette.k - elbowCandidate.k) <= 1) {
+    return {
+      recommendedK: elbowCandidate.k,
+      recommendationReason: 'elbow point confirmed by silhouette',
+    };
+  }
+
+  return {
+    recommendedK: elbowCandidate?.k ?? bestSilhouette.k,
+    recommendationReason: elbowCandidate
+      ? `elbow point prioritized; silhouette peaks at K=${bestSilhouette.k}`
+      : 'best silhouette score',
+  };
+}
 
 function clampScore(value: string | number): number {
   if (typeof value === 'string' && value.trim() === '') {
@@ -333,7 +404,7 @@ const MAIN_PIPELINE_STAGES: MainPipelineStage[] = [
   { id: 'labeling', label: 'Labeling', steps: [5, 6, 7] },
   { id: 'classification', label: 'Classification', steps: [8, 9, 10] },
   { id: 'evaluation', label: 'Evaluation', steps: [11, 12] },
-  { id: 'finish', label: 'Finish', steps: [13, 14] },
+  { id: 'finish', label: 'Finish', steps: [13, 14, 15] },
 ];
 
 const PREPARE_STAGE_RESUME_STEPS: Record<'labeling' | 'classification' | 'evaluation' | 'finish', Step> = {
@@ -353,6 +424,13 @@ function getBackStep(step: Step): Step {
   return (step - 1) as Step;
 }
 
+function getAutoLabelStorageKey(versionId: string | null): string | null {
+  if (!versionId) {
+    return null;
+  }
+  return `dataprep:auto-label-suggestions:${versionId}`;
+}
+
 const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 2, label: 'Clean', group: 'Preprocessing' },
   { id: 3, label: 'Find K', group: 'Preprocessing' },
@@ -362,24 +440,23 @@ const SUBSTEP_PIPELINE: Array<{ id: Step; label: string; group: string }> = [
   { id: 7, label: 'Labeling', group: 'Labeling' },
   { id: 8, label: 'Classification', group: 'Classification' },
   { id: 9, label: 'Distribution', group: 'Classification' },
-  { id: 10, label: 'Balance Dataset', group: 'Classification' },
+  { id: 10, label: 'Rewrite', group: 'Classification' },
   { id: 11, label: 'Evaluation', group: 'Evaluation' },
   { id: 12, label: 'Refine', group: 'Evaluation' },
   { id: 13, label: 'System Prompt', group: 'Finish' },
-  { id: 14, label: 'Train/Test Export', group: 'Finish' },
+  { id: 14, label: 'Split Guard', group: 'Finish' },
+  { id: 15, label: 'Train/Test Export', group: 'Finish' },
 ];
 
 // NOTE: Local visualization helpers (euclideanDistance, vectorMean, computeKMeansWcss,
 // computeElbow, computeKDistance, buildFeatureVectors) have been removed.
 // Step 3 now uses GPU Service API for semantic embedding-based computation.
 
-function shuffle<T>(arr: T[]): T[] {
-  const next = [...arr];
-  for (let i = next.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [next[i], next[j]] = [next[j], next[i]];
+function getPipelineRecordKey(record: any, index: number, mode: PreviewMode): string {
+  if (mode === 'openai') {
+    return String(record?.conversation_id ?? index);
   }
-  return next;
+  return String(record?.id ?? record?.sampleId ?? `alpaca-${index}`);
 }
 
 function sanitizeRecordForDownload(record: any, mode: PreviewMode, systemPromptText?: string): any {
@@ -614,6 +691,50 @@ function buildClusterStateFromData(
   return { rowClusterMap, clusterGroups };
 }
 
+function buildConversionResultFromVersionItems(
+  items: Array<{ sampleKey: string; data: Record<string, any> }>,
+  format: PreviewMode,
+  projectName: string
+): ConversionResult {
+  const data = items.map((item) => {
+    if (format === 'openai') {
+      return {
+        ...item.data,
+        conversation_id: String((item.data as any).conversation_id || item.sampleKey),
+      };
+    }
+    return {
+      ...item.data,
+      id: String((item.data as any).id || item.sampleKey),
+    };
+  });
+
+  return {
+    data,
+    format,
+    output: JSON.stringify(data),
+    filename: `${projectName || 'restored_project'}.json`,
+    stats: {
+      totalConversations: data.length,
+      totalMessages: format === 'openai'
+        ? data.reduce((sum, item) => sum + (Array.isArray((item as any)?.messages) ? (item as any).messages.length : 0), 0)
+        : data.length,
+      totalTokensEstimate: 0,
+    },
+  };
+}
+
+function inferLoadedFormat(
+  items: Array<{ data: Record<string, any> }>,
+  fallback: string
+): PreviewMode {
+  const first = items[0]?.data || {};
+  if (Array.isArray((first as any).messages)) {
+    return 'openai';
+  }
+  return fallback === 'openai' ? 'openai' : 'alpaca';
+}
+
 function buildClusterGroupsFromOperationParams(operationParams: Record<string, any> | null | undefined): ClusterGroup[] {
   const rawClusters = Array.isArray(operationParams?.clusters) ? operationParams.clusters : [];
   return rawClusters
@@ -651,11 +772,70 @@ function serializeVersionItemsForDisplay(
   }));
 }
 
-function StepperHeader({ currentStep, lockedToStep }: { currentStep: Step; lockedToStep?: Step | null }) {
+function StepperHeader({
+  currentStep,
+  lockedToStep,
+  mode = 'default',
+}: {
+  currentStep: Step;
+  lockedToStep?: Step | null;
+  mode?: 'default' | 'owner-labeling' | 'guest-labeling';
+}) {
+  if (mode === 'guest-labeling') {
+    return null;
+  }
+
   const activeMainStage = MAIN_PIPELINE_STAGES.find((stage) => stage.steps.includes(currentStep));
-  const visibleSubsteps = activeMainStage
+  const visibleSubsteps = mode === 'owner-labeling'
+    ? SUBSTEP_PIPELINE.filter((step) => step.id === 6 || step.id === 7)
+    : activeMainStage
     ? SUBSTEP_PIPELINE.filter((step) => activeMainStage.steps.includes(step.id))
     : [];
+  const ownerLabelingActiveIndex = visibleSubsteps.findIndex((step) => step.id === currentStep);
+
+  if (mode === 'owner-labeling') {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold text-slate-900">Labeling Workflow</h2>
+          <p className="text-xs text-slate-500">Owner mode only shows the steps needed to share samples and review labeling.</p>
+        </div>
+        <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
+          <div className="mx-auto flex max-w-3xl items-start justify-center">
+            {visibleSubsteps.map((step, idx) => {
+              const isActive = step.id === currentStep;
+              const isCompleted = ownerLabelingActiveIndex > idx;
+              return (
+                <div key={step.id} className={`flex items-start ${idx !== visibleSubsteps.length - 1 ? 'flex-1' : ''}`}>
+                  <div className="relative flex min-w-[120px] flex-col items-center">
+                    <div
+                      className={`z-10 flex h-11 w-11 items-center justify-center rounded-full border-2 text-sm font-bold shadow-sm ${
+                        isCompleted
+                          ? 'border-emerald-500 bg-emerald-500 text-white'
+                          : isActive
+                            ? 'border-blue-600 bg-blue-50 text-blue-700 ring-4 ring-blue-50/60'
+                            : 'border-slate-300 bg-white text-slate-500'
+                      }`}
+                    >
+                      {isCompleted ? <CheckCircle2 className="h-5 w-5" /> : idx + 1}
+                    </div>
+                    <span className={`mt-2 text-center text-xs font-semibold ${isActive ? 'text-blue-700' : isCompleted ? 'text-emerald-700' : 'text-slate-500'}`}>
+                      {step.label}
+                    </span>
+                  </div>
+                  {idx !== visibleSubsteps.length - 1 && (
+                    <div className="relative mx-[-20px] mt-5 h-[2px] flex-1 bg-slate-200">
+                      <div className={`h-full bg-emerald-500 transition-all duration-500 ${isCompleted ? 'w-full' : 'w-0'}`} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white/90 p-3 shadow-sm">
@@ -929,44 +1109,250 @@ function EvaluateModal({
   );
 }
 
-function AutoLabelModal({
+function IncompleteLabelingModal({
   isOpen,
-  provider,
-  onProviderChange,
+  status,
+  selectedBucket,
+  isSubmitting,
+  onSelectBucket,
   onClose,
   onConfirm,
-  isSubmitting,
 }: {
   isOpen: boolean;
-  provider: AiProvider;
-  onProviderChange: (provider: AiProvider) => void;
+  status: LabelingIntentActionStatus | null;
+  selectedBucket: QualityBucket;
+  isSubmitting?: boolean;
+  onSelectBucket: (bucket: QualityBucket) => void;
   onClose: () => void;
   onConfirm: () => void;
-  isSubmitting?: boolean;
 }) {
+  const bucketOptions: Array<{ value: QualityBucket; title: string; description: string; tone: string }> = [
+    {
+      value: 'Gold',
+      title: 'Gold',
+      description: 'Treat incomplete samples as usable without rewrite.',
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    },
+    {
+      value: 'Rewrite',
+      title: 'Rewrite',
+      description: 'Send incomplete samples to the rewrite review bucket.',
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    },
+    {
+      value: 'Reject',
+      title: 'Reject',
+      description: 'Exclude incomplete samples from the main dataset.',
+      tone: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+  ];
+
   return (
     <ActionModalFrame
       isOpen={isOpen}
-      title="Label with AI"
-      description="Choose a model to assign one subject label to each cluster."
-      confirmText="Confirm Auto Labeling"
+      title="Incomplete Intent-Action labeling"
+      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. Choose how those samples should be bucketed before moving to the next step.`}
+      confirmText="Continue"
       isSubmitting={isSubmitting}
       onClose={onClose}
       onConfirm={onConfirm}
     >
-      <div>
-        <label className="mb-1 block text-sm font-medium text-gray-700">AI Model</label>
-        <select
-          value={provider}
-          onChange={(e) => onProviderChange(e.target.value as AiProvider)}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
-        >
-          <option value="gemini">Gemini</option>
-          <option value="openai">OpenAI</option>
-          <option value="deepseek">Deepseek</option>
-        </select>
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Labeled: <span className="font-semibold">{status?.labeledSamples || 0}</span> / {status?.totalSamples || 0} samples
+      </div>
+
+      <div className="grid gap-3">
+        {bucketOptions.map((option) => {
+          const active = selectedBucket === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onSelectBucket(option.value)}
+              className={`rounded-xl border px-4 py-3 text-left transition-colors ${active ? option.tone : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold">{option.title}</p>
+                  <p className="mt-1 text-xs text-gray-600">{option.description}</p>
+                </div>
+                <span className={`h-4 w-4 rounded-full border ${active ? 'border-indigo-600 bg-indigo-600' : 'border-gray-300 bg-white'}`} />
+              </div>
+            </button>
+          );
+        })}
       </div>
     </ActionModalFrame>
+  );
+}
+
+function PendingRewriteModal({
+  isOpen,
+  pendingCount,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  pendingCount: number;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Rewrite review not finished"
+      description={`There are still ${pendingCount} rewrite sample(s) without a final rewrite decision. You can continue to Evaluation, but those samples will keep their current assistant responses.`}
+      confirmText="Continue to Evaluation"
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Evaluation will use:
+        {' '}
+        <span className="font-semibold">Gold samples</span>
+        {' '}and
+        {' '}
+        <span className="font-semibold">Rewrite samples with any applied local assistant edits</span>.
+        Unreviewed rewrite samples are not blocked, but they are not auto-fixed.
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function BalanceReminderModal({
+  isOpen,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <ActionModalFrame
+      isOpen={isOpen}
+      title="Balance plan not applied"
+      description="You have not applied the balance plan yet. The dataset can still move forward, but subject imbalance and rejected samples will remain unchanged."
+      confirmText="Continue anyway"
+      onClose={onClose}
+      onConfirm={onConfirm}
+    >
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        This is only a reminder. You can go back and apply the balance plan now, or continue to the Rewrite step with the current dataset.
+      </div>
+    </ActionModalFrame>
+  );
+}
+
+function AutoLabelCompareModal({
+  isOpen,
+  providers,
+  leftProvider,
+  rightProvider,
+  onLeftProviderChange,
+  onRightProviderChange,
+  suggestionsByProvider,
+  clusterGroups,
+  onClose,
+}: {
+  isOpen: boolean;
+  providers: AiProvider[];
+  leftProvider: AiProvider;
+  rightProvider: AiProvider;
+  onLeftProviderChange: (provider: AiProvider) => void;
+  onRightProviderChange: (provider: AiProvider) => void;
+  suggestionsByProvider: AutoLabelSuggestionMap;
+  clusterGroups: ClusterGroup[];
+  onClose: () => void;
+}) {
+  if (!isOpen) {
+    return null;
+  }
+
+  const leftMap = new Map((suggestionsByProvider[leftProvider] || []).map((item) => [item.clusterId, item]));
+  const rightMap = new Map((suggestionsByProvider[rightProvider] || []).map((item) => [item.clusterId, item]));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Compare Auto Label Providers</h3>
+            <p className="text-sm text-gray-500">Review label and reason differences before saving.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-4 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Provider A</label>
+            <select
+              value={leftProvider}
+              onChange={(e) => onLeftProviderChange(e.target.value as AiProvider)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
+            >
+              {providers.map((provider) => (
+                <option key={provider} value={provider}>{provider}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Provider B</label>
+            <select
+              value={rightProvider}
+              onChange={(e) => onRightProviderChange(e.target.value as AiProvider)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
+            >
+              {providers.map((provider) => (
+                <option key={provider} value={provider}>{provider}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="max-h-[70vh] overflow-auto px-5 py-4">
+          <table className="min-w-full text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="border-b border-gray-200">
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">Group</th>
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">{leftProvider}</th>
+                <th className="px-3 py-2 text-left font-semibold text-gray-700">{rightProvider}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clusterGroups.map((group) => {
+                const left = leftMap.get(group.groupId);
+                const right = rightMap.get(group.groupId);
+                const isDifferent = left?.label !== right?.label || left?.reason !== right?.reason;
+                return (
+                  <tr key={group.groupId} className={`border-b border-gray-100 align-top ${isDifferent ? 'bg-amber-50/50' : ''}`}>
+                    <td className="px-3 py-3 font-semibold text-gray-800">Group {group.groupId}</td>
+                    <td className="px-3 py-3">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-slate-900">{left?.label || '-'}</div>
+                        <p className="text-xs leading-relaxed text-slate-500">{left?.reason || 'No cached result.'}</p>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-slate-900">{right?.label || '-'}</div>
+                        <p className="text-xs leading-relaxed text-slate-500">{right?.reason || 'No cached result.'}</p>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1552,16 +1938,21 @@ function ConvertedDatasetTable({
                     ? row.conversationPairs
                     : [{ user: row.userText || '-', assistant: row.assistantText || '-' }];
 
-                  return pairs.map((pair, pairIndex) => (
-                    <tr
-                      key={`${row.id}-${pairIndex}`}
-                      className={`align-top ${pairIndex === pairs.length - 1
-                        ? 'border-b-4 border-b-gray-200'
-                        : 'border-b border-b-gray-100'
-                        } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
-                        } ${(rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined' ? 'bg-sky-50' : ''
-                        }`}
-                    >
+                  return pairs.map((pair, pairIndex) => {
+                    const pairRowBackground = pairIndex % 2 === 0 ? 'bg-white' : 'bg-slate-100';
+                    const rowHighlightClass = (rowHighlightMap?.[row.id] || rowHighlightMap?.[row.blockId]) === 'refined'
+                      ? 'bg-sky-50'
+                      : pairRowBackground;
+
+                    return (
+                      <tr
+                        key={`${row.id}-${pairIndex}`}
+                        className={`align-top ${pairIndex === pairs.length - 1
+                          ? 'border-b-4 border-b-gray-200'
+                          : 'border-b border-b-gray-100'
+                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}
+                          } ${rowHighlightClass}`}
+                      >
                       {showSystemColumn && pairIndex === 0 && (
                         <td className="px-4 py-3 align-top" rowSpan={pairs.length}>
                           <p className="whitespace-pre-wrap break-words line-clamp-3 text-gray-700">
@@ -1610,8 +2001,9 @@ function ConvertedDatasetTable({
                           {renderActionMenuCell(row, pairs.length)}
                         </>
                       )}
-                    </tr>
-                  ));
+                      </tr>
+                    );
+                  });
                 })
                 : mode === 'openai'
                   ? visibleRows.flatMap((row, index) => {
@@ -1625,7 +2017,7 @@ function ConvertedDatasetTable({
                         className={`align-top ${pairIndex === pairs.length - 1
                           ? 'border-b-4 border-b-gray-200'
                           : 'border-b border-b-gray-100'
-                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''}`}
+                          } ${index === 0 && pairIndex === 0 ? 'border-t border-t-gray-100' : ''} ${pairIndex % 2 === 0 ? 'bg-white' : 'bg-slate-100'}`}
                       >
                         {showSystemColumn && (
                           <td className="px-4 py-3 align-top">
@@ -2119,13 +2511,15 @@ export function ConversionPage() {
   const [filterThreshold, setFilterThreshold] = useState<number>(0.9);
   const [downloadScoreThreshold, setDownloadScoreThreshold] = useState<number>(8);
   const [downloadTestPercentage, setDownloadTestPercentage] = useState<number>(10);
+  const [splitGuardThreshold, setSplitGuardThreshold] = useState<number>(0.85);
+  const [splitGuardMaxAttempts, setSplitGuardMaxAttempts] = useState<number>(20);
+  const [splitGuardResult, setSplitGuardResult] = useState<SafeSplitResult | null>(null);
   const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
   const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
   const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[]; clusterStats?: ClusterStat[]; avgSimilarity?: number } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
   const [visibleRowsInRefinement, setVisibleRowsInRefinement] = useState<DisplayRow[]>([]);
   const [isEvaluateModalOpen, setIsEvaluateModalOpen] = useState(false);
-  const [isAutoLabelModalOpen, setIsAutoLabelModalOpen] = useState(false);
   const [isRefineModalOpen, setIsRefineModalOpen] = useState(false);
   const [isManualEvalModalOpen, setIsManualEvalModalOpen] = useState(false);
   const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
@@ -2148,8 +2542,12 @@ export function ConversionPage() {
   const [evaluateProvider, setEvaluateProvider] = useState<AiProvider>('gemini');
   const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<AutoLabelSuggestion[]>([]);
+  const [autoLabelSuggestionsByProvider, setAutoLabelSuggestionsByProvider] = useState<AutoLabelSuggestionMap>({});
   const [autoLabelsSaved, setAutoLabelsSaved] = useState(false);
   const [autoLabelFilterGroupId, setAutoLabelFilterGroupId] = useState<number | null>(null);
+  const [isAutoLabelCompareOpen, setIsAutoLabelCompareOpen] = useState(false);
+  const [autoLabelCompareLeft, setAutoLabelCompareLeft] = useState<AiProvider>('gemini');
+  const [autoLabelCompareRight, setAutoLabelCompareRight] = useState<AiProvider>('openai');
   const [refineProvider, setRefineProvider] = useState<AiProvider>('gemini');
   const [refineScoreThreshold, setRefineScoreThreshold] = useState<number>(8);
   const [refineScoreThresholdInput, setRefineScoreThresholdInput] = useState<string>('8');
@@ -2175,7 +2573,20 @@ export function ConversionPage() {
   const [classifiedSamplesResult, setClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
   const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
   const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
+  const [allQualitySamplesResult, setAllQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
   const [balanceApplied, setBalanceApplied] = useState(false);
+  const [rewriteProvider, setRewriteProvider] = useState<AiProvider>('gemini');
+  const [rewriteRows, setRewriteRows] = useState<RewriteSampleView[]>([]);
+  const [rewriteDrafts, setRewriteDrafts] = useState<Record<string, Record<number, RewriteTurnDraft>>>({});
+  const [rewriteApplied, setRewriteApplied] = useState(false);
+  const [isRewriteLoading, setIsRewriteLoading] = useState(false);
+  const [rewriteSource, setRewriteSource] = useState<'backend' | 'local-applied'>('backend');
+  const [isPendingRewriteModalOpen, setIsPendingRewriteModalOpen] = useState(false);
+  const [isBalanceReminderModalOpen, setIsBalanceReminderModalOpen] = useState(false);
+  const [isIncompleteLabelingModalOpen, setIsIncompleteLabelingModalOpen] = useState(false);
+  const [pendingIncompleteBucket, setPendingIncompleteBucket] = useState<QualityBucket>('Rewrite');
+  const [isSavingIncompleteBucket, setIsSavingIncompleteBucket] = useState(false);
+  const [isRestoringParentVersion, setIsRestoringParentVersion] = useState(false);
   const loadHandledRef = useRef<boolean>(false);
   const currentUserId = useMemo(() => {
     const candidate = (user as any)?.id || (user as any)?._id || (user as any)?.userId;
@@ -2206,12 +2617,37 @@ export function ConversionPage() {
     enabled: canManageVersionVisibility,
   });
 
+  const ownerAssignmentsQuery = useQuery({
+    queryKey: ['dataset-version-assignments', currentDatasetVersionId, 'owner-labeling'],
+    queryFn: () => currentDatasetVersionId ? dataprepApi.getDatasetVersionAssignments(currentDatasetVersionId) : Promise.resolve(null),
+    enabled: Boolean(currentDatasetVersionId && isProjectLabelingRoute),
+  });
+
+  const labelingIntentStatusQuery = useQuery({
+    queryKey: ['labeling-intent-action-status', currentDatasetVersionId],
+    queryFn: () => currentDatasetVersionId ? apiService.getLabelingIntentActionStatus(currentDatasetVersionId) : Promise.resolve(null),
+    enabled: Boolean(currentDatasetVersionId && currentStep === 7 && !isGuestMode && !isOwnerManagedCommunityRoute),
+    refetchInterval: currentStep === 7 && currentDatasetVersionId ? 4000 : false,
+    refetchOnWindowFocus: false,
+  });
+
+  const resetRewriteSession = (source: 'backend' | 'local-applied' = 'backend') => {
+    setRewriteRows([]);
+    setRewriteDrafts({});
+    setRewriteApplied(false);
+    setRewriteSource(source);
+  };
+
   useEffect(() => {
+    if (!currentDatasetVersionId && rewriteSource === 'local-applied') {
+      return;
+    }
     setActiveClassificationGroup(null);
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
-  }, [currentDatasetVersionId]);
+    setAllQualitySamplesResult(null);
+  }, [currentDatasetVersionId, rewriteSource]);
 
   useEffect(() => {
     if (!currentDatasetVersionId) {
@@ -2245,6 +2681,47 @@ export function ConversionPage() {
       disposed = true;
     };
   }, [currentDatasetVersionId, isProjectLabelingRoute]);
+
+  useEffect(() => {
+    const storageKey = getAutoLabelStorageKey(currentDatasetVersionId);
+    if (!storageKey) {
+      setAutoLabelSuggestionsByProvider({});
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        setAutoLabelSuggestionsByProvider({});
+        return;
+      }
+      const parsed = JSON.parse(raw) as AutoLabelSuggestionMap;
+      setAutoLabelSuggestionsByProvider(parsed || {});
+    } catch {
+      setAutoLabelSuggestionsByProvider({});
+    }
+  }, [currentDatasetVersionId]);
+
+  useEffect(() => {
+    const storageKey = getAutoLabelStorageKey(currentDatasetVersionId);
+    if (!storageKey) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(autoLabelSuggestionsByProvider));
+    } catch {
+      // Ignore storage quota / availability issues and keep in-memory state only.
+    }
+  }, [autoLabelSuggestionsByProvider, currentDatasetVersionId]);
+
+  useEffect(() => {
+    const nextSuggestions = autoLabelSuggestionsByProvider[autoLabelProvider];
+    if (nextSuggestions && nextSuggestions.length > 0) {
+      setAutoLabelSuggestions(nextSuggestions);
+      return;
+    }
+    setAutoLabelSuggestions([]);
+  }, [autoLabelProvider, autoLabelSuggestionsByProvider]);
 
   const handleToggleVersionVisibility = async () => {
     if (!currentDatasetVersionId || !canManageVersionVisibility || isTogglingVersionPublic) {
@@ -2358,9 +2835,119 @@ export function ConversionPage() {
     return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
   }, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
 
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadRewriteRows = async () => {
+      if (currentStep !== 10 || rewriteSource !== 'backend' || !currentDatasetVersionId) {
+        return;
+      }
+
+      setIsRewriteLoading(true);
+      try {
+        const response = await apiService.getQualityClassifiedSamples(currentDatasetVersionId, 'Rewrite');
+        if (isCancelled) {
+          return;
+        }
+        const rows: RewriteSampleView[] = (response.items || []).map((item, index) => ({
+          rowId: String(item.sampleId),
+          blockLabel: `Conversation ${index + 1}`,
+          turns: (item.turnPairs || []).map((turn) => ({
+            userMessageIndex: Number(turn.userMessageIndex),
+            assistantMessageIndex: Number(turn.assistantMessageIndex),
+            user: String(turn.user || ''),
+            assistant: String(turn.assistant || ''),
+            userLabels: Array.isArray(turn.userLabels) ? turn.userLabels : [],
+            assistantLabels: Array.isArray(turn.assistantLabels) ? turn.assistantLabels : [],
+            expectedActions: Array.isArray(turn.expectedActions) ? turn.expectedActions : [],
+            matched: Boolean(turn.matched),
+          })),
+        })).filter((row) => row.turns.length > 0);
+        setRewriteRows(rows);
+        setRewriteSource('backend');
+      } catch (error) {
+        if (!isCancelled) {
+          setRewriteRows([]);
+          toast.error('Failed to load Rewrite samples.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsRewriteLoading(false);
+        }
+      }
+    };
+
+    loadRewriteRows();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [conversionOptions.removeThinkTags, currentDatasetVersionId, currentStep, previewMode, rewriteSource]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const loadAllQualitySamples = async () => {
+      if (!currentDatasetVersionId || currentStep < 8 || currentStep > 11) {
+        return;
+      }
+      if (!['backend', 'local-applied'].includes(rewriteSource)) {
+        return;
+      }
+
+      try {
+        const result = await apiService.getQualityClassifiedSamples(currentDatasetVersionId);
+        if (!disposed) {
+          setAllQualitySamplesResult(result);
+        }
+      } catch {
+        if (!disposed) {
+          setAllQualitySamplesResult(null);
+        }
+      }
+    };
+
+    loadAllQualitySamples();
+    return () => {
+      disposed = true;
+    };
+  }, [currentDatasetVersionId, currentStep, rewriteSource]);
+
+  const assignmentMapBySampleId = useMemo(() => {
+    const samples = ownerAssignmentsQuery.data?.samples || [];
+    return new Map(
+      samples.map((sample) => [
+        String(sample.sampleId),
+        (sample.assignees || []).map((assignee) => ({
+          id: assignee.id,
+          name: assignee.name,
+          email: assignee.email,
+        })),
+      ])
+    );
+  }, [ownerAssignmentsQuery.data?.samples]);
+
+  const nonRejectQualitySampleIds = useMemo(() => {
+    if (!allQualitySamplesResult?.items?.length) {
+      return null;
+    }
+    return new Set(
+      allQualitySamplesResult.items
+        .filter((item) => item.bucket !== 'Reject')
+        .map((item) => String(item.sampleId || item._id))
+    );
+  }, [allQualitySamplesResult]);
+
   const evaluationRows = useMemo(() => {
+    const filterRows = (rows: DisplayRow[]) => {
+      if (!nonRejectQualitySampleIds) {
+        return rows;
+      }
+      return rows.filter((row) => nonRejectQualitySampleIds.has(String(row.id)) || nonRejectQualitySampleIds.has(String(row.blockId)));
+    };
+
     if (previewMode !== 'openai') {
-      return rowsWithClusterGroups;
+      return filterRows(rowsWithClusterGroups);
     }
 
     const conversations = normalizeOpenAIConversations(conversionResult?.data || []);
@@ -2371,7 +2958,7 @@ export function ConversionPage() {
       }
     });
 
-    return conversations
+    return filterRows(conversations
       .map((conv, index) => {
         const pairs: Array<{ user: string; assistant: string }> = [];
         for (let i = 0; i < conv.messages.length; i += 1) {
@@ -2395,8 +2982,115 @@ export function ConversionPage() {
           conversationPairs: pairs.length ? pairs : [{ user: firstUser || '-', assistant: lastAssistant || '-' }],
           groupId: groupByConversation.get(String(conv.conversation_id)),
         } as DisplayRow;
-      });
-  }, [conversionResult?.data, previewMode, rowsWithClusterGroups]);
+      }));
+  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode, rowsWithClusterGroups]);
+
+  const pendingRewriteSampleCount = useMemo(() => (
+    rewriteRows.filter((row) => row.turns.some((turn) => {
+      if (turn.matched) {
+        return false;
+      }
+      const draft = rewriteDrafts[row.rowId]?.[turn.assistantMessageIndex];
+      return !draft || draft.decision === 'original';
+    })).length
+  ), [rewriteDrafts, rewriteRows]);
+
+  const currentPipelineExportData = useMemo(() => {
+    if (!conversionResult?.data?.length) {
+      return [];
+    }
+
+    if (!nonRejectQualitySampleIds) {
+      return conversionResult.data;
+    }
+
+    if (previewMode === 'openai') {
+      return normalizeOpenAIConversations(conversionResult.data).filter((conv) => (
+        nonRejectQualitySampleIds.has(String(conv.conversation_id))
+      ));
+    }
+
+    return conversionResult.data.filter((item: any, index: number) => {
+      const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
+      return nonRejectQualitySampleIds.has(rowId);
+    });
+  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode]);
+
+  const splitGuardDatasetFingerprint = useMemo(
+    () => JSON.stringify(currentPipelineExportData),
+    [currentPipelineExportData]
+  );
+
+  useEffect(() => {
+    setSplitGuardResult(null);
+  }, [splitGuardDatasetFingerprint, downloadTestPercentage, splitGuardThreshold, splitGuardMaxAttempts]);
+
+  const effectivePromptContent = useMemo(
+    () => String(selectedPromptContent || systemPromptText || '').trim(),
+    [selectedPromptContent, systemPromptText]
+  );
+
+  const lockedSplitPayload = useMemo(() => {
+    if (!splitGuardResult?.resolved || !currentPipelineExportData.length) {
+      return null;
+    }
+
+    const trainIndexSet = new Set(splitGuardResult.trainIndices || []);
+    const testIndexSet = new Set(splitGuardResult.testIndices || []);
+    const trainData: any[] = [];
+    const testData: any[] = [];
+
+    currentPipelineExportData.forEach((record, idx) => {
+      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
+      if (previewMode === 'openai') {
+        payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
+      }
+      if (testIndexSet.has(idx)) {
+        testData.push(payload);
+      } else if (trainIndexSet.has(idx)) {
+        trainData.push(payload);
+      }
+    });
+
+    return { trainData, testData };
+  }, [currentPipelineExportData, effectivePromptContent, previewMode, splitGuardResult]);
+
+  const huggingFaceSplitUpload = useMemo(() => {
+    if (!lockedSplitPayload) {
+      return null;
+    }
+
+    return {
+      fileName: `${projectName.trim() || 'dataset'}_train_test_split.json`,
+      content: JSON.stringify(
+        {
+          train: lockedSplitPayload.trainData,
+          test: lockedSplitPayload.testData,
+          metadata: {
+            projectName: projectName.trim() || 'dataset',
+            datasetVersionId: currentDatasetVersionId || null,
+            systemPrompt: effectivePromptContent || null,
+            systemPromptVersion: selectedSystemPromptVersion || null,
+            threshold: splitGuardResult?.threshold ?? splitGuardThreshold,
+            attempts: splitGuardResult?.attempts ?? 0,
+            conflictCount: splitGuardResult?.conflictCount ?? 0,
+            maxCrossSplitSimilarity: splitGuardResult?.maxCrossSplitSimilarity ?? 0,
+            exportedAt: new Date().toISOString(),
+          },
+        },
+        null,
+        2
+      ),
+    };
+  }, [
+    currentDatasetVersionId,
+    effectivePromptContent,
+    lockedSplitPayload,
+    projectName,
+    selectedSystemPromptVersion,
+    splitGuardResult,
+    splitGuardThreshold,
+  ]);
 
   const buildDatasetVersionPayload = (): {
     projectName: string;
@@ -2593,8 +3287,9 @@ export function ConversionPage() {
   };
 
   const averagedEvaluation = useMemo(() => {
-    const values = Object.values(evaluationMap)
-      .map((entry) => getAveragedScores(normalizeEvaluationEntry(entry), previewMode))
+    const targetKeys = Array.from(new Set(evaluationRows.map((row) => resolveEvaluationKey(row))));
+    const values = targetKeys
+      .map((key) => getAveragedScores(normalizeEvaluationEntry(evaluationMap[key]), previewMode))
       .filter((score): score is EvaluationScores => Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= 0));
     if (!values.length) return null;
     const total = values.reduce<{ accuracy: number; clarity: number; completeness: number; socratic: number; encouragement: number; factuality: number; overall: number }>(
@@ -2620,7 +3315,7 @@ export function ConversionPage() {
       factuality: Number((total.factuality / size).toFixed(2)),
       overall: Number((total.overall / size).toFixed(2)),
     };
-  }, [evaluationMap, previewMode]);
+  }, [evaluationMap, evaluationRows, previewMode]);
 
   const attachClusterStats = (groups: ClusterGroup[] = [], clusterStats?: ClusterStat[]): ClusterGroup[] => {
     if (!Array.isArray(clusterStats) || clusterStats.length === 0) {
@@ -2675,9 +3370,11 @@ export function ConversionPage() {
       setIsCurrentVersionPublic(false);
       setSampleIdMap({});
       setAutoLabelSuggestions([]);
+      setAutoLabelSuggestionsByProvider({});
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       setBalanceApplied(false);
+      resetRewriteSession();
       setVisualizationResult(null);
       setClusterGroups([]);
       setRowClusterMap({});
@@ -2737,9 +3434,13 @@ export function ConversionPage() {
       return dataprepApi.previewAutoLabels(currentDatasetVersionId, provider);
     },
     onSuccess: (response) => {
-      setAutoLabelSuggestions(response.suggestions || []);
+      const nextSuggestions = response.suggestions || [];
+      setAutoLabelSuggestions(nextSuggestions);
+      setAutoLabelSuggestionsByProvider((prev) => ({
+        ...prev,
+        [autoLabelProvider]: nextSuggestions,
+      }));
       setAutoLabelsSaved(false);
-      setIsAutoLabelModalOpen(false);
       toast.success(`Generated labels for ${response.suggestions?.length || 0} clusters.`);
     },
     onError: (error: any) => {
@@ -3015,6 +3716,75 @@ export function ConversionPage() {
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
   });
 
+  const rewriteMutation = useMutation({
+    mutationFn: async (params: { provider: AiProvider; rowId: string }) => {
+      const targetRow = rewriteRows.find((row) => row.rowId === params.rowId);
+      if (!targetRow) {
+        throw new Error('Rewrite sample not found.');
+      }
+
+      const payload = [{ turns: targetRow.turns }];
+
+      const response = await apiService.rewriteDataChunked(payload, params.provider);
+      return { provider: params.provider, response, rowId: params.rowId };
+    },
+    onSuccess: ({ provider, response, rowId }) => {
+      const rewrites = response.items[0]?.rewrites || [];
+      const nextRowDrafts: Record<number, RewriteTurnDraft> = {};
+      rewrites.forEach((rewrite) => {
+        const proposal = String(rewrite.assistant || '').trim();
+        if (!proposal) {
+          return;
+        }
+        nextRowDrafts[rewrite.assistantMessageIndex] = {
+          proposal,
+          editedText: proposal,
+          decision: 'ai',
+        };
+      });
+
+      setRewriteDrafts((prev) => ({
+        ...prev,
+        [rowId]: nextRowDrafts,
+      }));
+      setRewriteApplied(false);
+      const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
+      toast.success(`Generated rewrite proposals for the current sample using ${label}.`);
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error.message || 'Rewrite generation failed.');
+    },
+  });
+
+  const splitGuardMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentPipelineExportData.length) {
+        throw new Error('No data available for split guard.');
+      }
+
+      return apiService.clusterSafeSplit(
+        currentPipelineExportData,
+        downloadTestPercentage,
+        splitGuardThreshold,
+        splitGuardMaxAttempts,
+        42
+      );
+    },
+    onSuccess: (result) => {
+      setSplitGuardResult(result);
+      if (result.resolved) {
+        toast.success(`Safe split generated after ${result.attempts} attempt(s).`);
+      } else {
+        toast.error(
+          `Safe split still has ${result.conflictCount} conflict(s) after ${result.attempts} attempt(s).`
+        );
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error.message || 'Failed to generate safe split.');
+    },
+  });
+
   const clusterMutation = useMutation({
     mutationFn: async () => {
       if (!conversionResult?.data?.length) throw new Error('No converted data to cluster.');
@@ -3039,6 +3809,7 @@ export function ConversionPage() {
       setClusterGroups(groupsWithStats);
       setSelectedClusterIds([]);
       setAutoLabelSuggestions([]);
+      setAutoLabelSuggestionsByProvider({});
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
       toast.success(`Clustered data into ${groupsWithStats.length} groups.`);
@@ -3069,8 +3840,10 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
+    setAllQualitySamplesResult(null);
     const nextMap: Record<string, number> = {};
     if (previewMode === 'openai') {
       const convs = normalizeOpenAIConversations(result.data);
@@ -3119,8 +3892,10 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setSelectedClusterIds([]);
+    setAllQualitySamplesResult(null);
 
     // Restore rowClusterMap from the saved cluster assignments
     const nextMap: Record<string, number> = {};
@@ -3147,12 +3922,14 @@ export function ConversionPage() {
     setCurrentDatasetVersionId(null);
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setEvaluationMap({});
     setRefinedRowIds(new Set());
     setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
+    setAllQualitySamplesResult(null);
     toast.success('Dataset reset to original converted state.');
   };
 
@@ -3164,12 +3941,20 @@ export function ConversionPage() {
     setIsVisualizing(true);
     try {
       const result = await apiService.clusterVisualize(conversionResult.data, maxK, dbscanEps, dbscanMinSamples);
+      const silhouette = Array.isArray(result.silhouette) ? result.silhouette : [];
+      const recommendation = recommendClusterK(result.elbow || [], silhouette);
       setVisualizationResult({
-        elbow: result.elbow,
-        kDistance: result.kDistance,
+        elbow: result.elbow || [],
+        silhouette,
+        kDistance: result.kDistance || [],
         pointCount: result.pointCount,
         noiseCount: result.noiseCount,
+        recommendedK: recommendation.recommendedK,
+        recommendationReason: recommendation.recommendationReason,
       });
+      if (typeof recommendation.recommendedK === 'number') {
+        setClusterK(recommendation.recommendedK);
+      }
       toast.success(`GPU Visualization complete — ${result.pointCount} points analyzed.`);
     } catch (err: any) {
       console.error('Visualize error:', err);
@@ -3229,56 +4014,6 @@ export function ConversionPage() {
     }
   };
 
-  const ensureDatasetVersionForExport = async (): Promise<string | null> => {
-    if (!conversionResult?.data?.length) {
-      return null;
-    }
-
-    if (!currentDatasetVersionId || (selectedPromptId && datasetVersionPromptId !== selectedPromptId)) {
-      try {
-        const payload = buildDatasetVersionPayload();
-        if (payload && payload.data.length) {
-          const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-          const created = await dataprepApi.createDatasetVersion({
-            projectName: payload.projectName,
-            similarityThreshold: payload.similarityThreshold,
-            format: payload.format,
-            data: payload.data,
-            promptId: selectedPromptId,
-            promptContentSnapshot: effectivePromptContent || undefined,
-            projectId: payload.projectId,
-            parentVersionId: payload.parentVersionId,
-            operationType: payload.operationType,
-            operationParams: payload.operationParams,
-            prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.finish,
-          });
-          setCurrentDatasetVersionId(created.datasetVersion._id);
-          setSampleIdMap(created.sampleIdMap || {});
-          setDatasetVersionPromptId(selectedPromptId);
-          return created.datasetVersion._id;
-        }
-      } catch (error: any) {
-        toast.error(error?.response?.data?.error || error?.message || 'Failed to sync prompt linkage before download.');
-        return null;
-      }
-    }
-    return currentDatasetVersionId;
-  };
-
-  const loadExportDatasetDetail = async () => {
-    const datasetVersionId = await ensureDatasetVersionForExport();
-    if (!datasetVersionId) {
-      throw new Error('No dataset version available for export.');
-    }
-
-    const detail = await dataprepApi.getDatasetVersionDetail(
-      datasetVersionId,
-      false, // showRejected = false (excludes REJECT >= 3)
-      isProjectLabelingRoute
-    );
-    return detail;
-  };
-
   const handleApplySubjectBalance = (
     keptItems: ClassifiedSamplesResult['items'],
     removedCount: number
@@ -3330,56 +4065,192 @@ export function ConversionPage() {
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
+    setAllQualitySamplesResult(null);
+    resetRewriteSession();
     setBalanceApplied(true);
     toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
   };
 
-  const handleDownloadTrainTestZip = async () => {
-    let exportData: any[] = [];
-    try {
-      const detail = await loadExportDatasetDetail();
-      exportData = detail.items.map((item: any) => item.data);
-    } catch (err: any) {
-      console.error('Export fetch error:', err);
-      // Fallback to local data if fetch fails (not ideal, but keeps current behavior)
-      exportData = conversionResult?.data || [];
+  const handleRewriteDecisionChange = (rowId: string, assistantMessageIndex: number, decision: 'original' | 'ai' | 'edited') => {
+    setRewriteDrafts((prev) => {
+      const rowDrafts = prev[rowId];
+      const current = rowDrafts?.[assistantMessageIndex];
+      if (!rowDrafts || !current) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [rowId]: {
+          ...rowDrafts,
+          [assistantMessageIndex]: {
+            ...current,
+            decision,
+          },
+        },
+      };
+    });
+    setRewriteApplied(false);
+  };
+
+  const handleRewriteEditChange = (rowId: string, assistantMessageIndex: number, value: string) => {
+    setRewriteDrafts((prev) => {
+      const rowDrafts = prev[rowId];
+      const current = rowDrafts?.[assistantMessageIndex];
+      if (!rowDrafts || !current) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [rowId]: {
+          ...rowDrafts,
+          [assistantMessageIndex]: {
+            ...current,
+            editedText: value,
+            decision: 'edited',
+          },
+        },
+      };
+    });
+    setRewriteApplied(false);
+  };
+
+  const handleApplyRewriteSelections = () => {
+    if (!conversionResult || !rewriteRows.length) {
+      toast.error('No rewrite data available to apply.');
+      return;
     }
 
-    if (!exportData.length) {
+    const selectedTurns = rewriteRows.flatMap((row) => {
+      const rowDrafts = rewriteDrafts[row.rowId] || {};
+      return row.turns
+        .filter((turn) => {
+          const draft = rowDrafts[turn.assistantMessageIndex];
+          return draft && (draft.decision === 'ai' || draft.decision === 'edited');
+        })
+        .map((turn) => ({
+          rowId: row.rowId,
+          assistantMessageIndex: turn.assistantMessageIndex,
+          draft: rowDrafts[turn.assistantMessageIndex],
+        }));
+    });
+
+    if (!selectedTurns.length) {
+      toast.error('Select at least one rewritten assistant turn before applying.');
+      return;
+    }
+
+    setConversionResult((prev) => {
+      if (!prev) {
+        return prev;
+      }
+
+      const nextData = [...prev.data];
+
+      if (previewMode === 'openai') {
+        const conversations = normalizeOpenAIConversations(prev.data || []);
+        const conversationIndexById = new Map<string, number>();
+        conversations.forEach((conversation, index) => conversationIndexById.set(String(conversation.conversation_id), index));
+
+        selectedTurns.forEach(({ rowId, assistantMessageIndex, draft }) => {
+          if (!draft) {
+            return;
+          }
+
+          const targetIndex = conversationIndexById.get(rowId);
+          if (targetIndex === undefined) {
+            return;
+          }
+
+          const record = nextData[targetIndex];
+          if (!Array.isArray(record?.messages)) {
+            return;
+          }
+
+          const finalText = draft.decision === 'edited' ? draft.editedText : draft.proposal;
+          if (!Number.isInteger(assistantMessageIndex) || !record.messages[assistantMessageIndex]) {
+            return;
+          }
+
+          const updatedRecord = {
+            ...record,
+            messages: [...record.messages],
+          };
+          updatedRecord.messages[assistantMessageIndex] = {
+            ...updatedRecord.messages[assistantMessageIndex],
+            content: finalText,
+          };
+
+          nextData[targetIndex] = updatedRecord;
+        });
+      } else {
+        selectedTurns.forEach(({ rowId, draft }) => {
+          if (!draft) {
+            return;
+          }
+
+          const rowIndex = allRows.findIndex((item) => item.id === rowId);
+          if (rowIndex < 0 || !nextData[rowIndex]) {
+            return;
+          }
+
+          nextData[rowIndex] = {
+            ...nextData[rowIndex],
+            output: draft.decision === 'edited' ? draft.editedText : draft.proposal,
+          };
+        });
+      }
+
+      return {
+        ...prev,
+        data: nextData,
+        output: JSON.stringify(nextData),
+      };
+    });
+
+    setOriginalConvertedResult((prev) => prev || conversionResult);
+    setCurrentDatasetVersionId(null);
+    setDatasetVersionPromptId('');
+    setSampleIdMap({});
+    setEvaluationMap({});
+    setRefinedRowIds(new Set());
+    setRefineHistoryMap({});
+    setVisibleRowsInEvaluation([]);
+    setVisibleRowsInRefinement([]);
+    setRewriteRows((prev) => prev.map((row) => {
+      const rowDrafts = rewriteDrafts[row.rowId] || {};
+      return {
+        ...row,
+        turns: row.turns.map((turn) => {
+          const draft = rowDrafts[turn.assistantMessageIndex];
+          if (!draft || (draft.decision !== 'ai' && draft.decision !== 'edited')) {
+            return turn;
+          }
+          return {
+            ...turn,
+            assistant: draft.decision === 'edited' ? draft.editedText : draft.proposal,
+          };
+        }),
+      };
+    }));
+    setRewriteApplied(true);
+    setRewriteSource('local-applied');
+    toast.success(`Applied ${selectedTurns.length} rewritten assistant turns to the working dataset.`);
+  };
+
+  const handleDownloadTrainTestZip = async () => {
+    if (!lockedSplitPayload || !splitGuardResult?.resolved) {
+      toast.error('Generate a safe split before exporting.');
+      return;
+    }
+
+    if (!currentPipelineExportData.length) {
       toast.error('No data available to export.');
       return;
     }
 
-    const totalCount = exportData.length;
-    const allIndices = Array.from({ length: totalCount }, (_, idx) => idx);
-    const shuffled = shuffle(allIndices);
-    const safePercentage = Math.min(100, Math.max(0, downloadTestPercentage));
-    let testCount = Math.round(totalCount * (safePercentage / 100));
-    if (safePercentage > 0 && testCount === 0) {
-      testCount = 1;
-    }
-    if (safePercentage < 100 && testCount === totalCount && totalCount > 0) {
-      testCount = totalCount - 1;
-    }
-
-    const testIndexSet = new Set<number>();
-    shuffled.slice(0, testCount).forEach((idx) => testIndexSet.add(idx));
-
-    const trainData: any[] = [];
-    const testData: any[] = [];
-    const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-
-    exportData.forEach((record, idx) => {
-      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
-      if (previewMode === 'openai') {
-        payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
-      }
-      if (testIndexSet.has(idx)) {
-        testData.push(payload);
-      } else {
-        trainData.push(payload);
-      }
-    });
+    const { trainData, testData } = lockedSplitPayload;
 
     const zip = new JSZip();
     zip.file('train_dataset.json', JSON.stringify(trainData, null, 2));
@@ -3394,6 +4265,10 @@ export function ConversionPage() {
           systemPromptVersion: selectedSystemPromptVersion || null,
           totalTrain: trainData.length,
           totalTest: testData.length,
+          threshold: splitGuardResult.threshold,
+          attempts: splitGuardResult.attempts,
+          conflictCount: splitGuardResult.conflictCount,
+          maxCrossSplitSimilarity: splitGuardResult.maxCrossSplitSimilarity,
           exportedAt: new Date().toISOString(),
         },
         null,
@@ -3402,58 +4277,97 @@ export function ConversionPage() {
     );
     const blob = await zip.generateAsync({ type: 'blob' });
     saveAs(blob, `${projectName.trim() || 'dataset'}_train_test.zip`);
-    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records (test ${safePercentage.toFixed(0)}%).`);
+    toast.success(`Downloaded zip with ${trainData.length} train and ${testData.length} test records.`);
   };
 
   const handleDownloadByScore = async () => {
-    let exportData: any[] = [];
-    let items: any[] = [];
-    try {
-      const detail = await loadExportDatasetDetail();
-      items = detail.items;
-      exportData = items.map((item: any) => item.data);
-    } catch (err: any) {
-      console.error('Export fetch error:', err);
-      toast.error('Failed to fetch dataset detail for scored export.');
+    if (!lockedSplitPayload || !splitGuardResult?.resolved) {
+      toast.error('Generate a safe split before exporting.');
       return;
     }
 
-    if (!items.length) {
+    if (!evaluationRows.length) {
       toast.error('No data available to download.');
       return;
     }
 
-    const qualifiedIndices = items
-      .map((item, idx) => {
-        // Use the aggregated scores from the backend if available, or fall back to evaluationMap
-        const overall = item.results?.overall;
-        if (Number.isFinite(overall) && (overall || 0) >= downloadScoreThreshold) {
-          return idx;
-        }
-        return -1;
-      })
-      .filter((idx) => idx !== -1);
+    const rawRecordByKey = new Map<string, any>();
+    if (previewMode === 'openai') {
+      normalizeOpenAIConversations(conversionResult?.data || []).forEach((conv) => {
+        rawRecordByKey.set(String(conv.conversation_id), conv);
+      });
+    } else {
+      (conversionResult?.data || []).forEach((item: any, index: number) => {
+        const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
+        rawRecordByKey.set(rowId, item);
+      });
+    }
 
-    if (!qualifiedIndices.length) {
+    const qualifiedRows = evaluationRows.filter((row) => {
+      const score = getAveragedScores(normalizeEvaluationEntry(evaluationMap[resolveEvaluationKey(row)]), previewMode);
+      return Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= downloadScoreThreshold);
+    });
+
+    if (!qualifiedRows.length) {
       toast.error(`Không tìm thấy mẫu nào có overall >= ${downloadScoreThreshold.toFixed(1)}.`);
       return;
     }
 
-    const effectivePromptContent = String(selectedPromptContent || systemPromptText || '').trim();
-    const filteredData = qualifiedIndices.map((idx) => {
-      let payload = sanitizeRecordForDownload(exportData[idx], previewMode, effectivePromptContent);
+    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
+    const qualifiedKeySet = new Set(qualifiedRows.map((row) => resolveEvaluationKey(row)));
+
+    const qualifiedTrainData: any[] = [];
+    const qualifiedTestData: any[] = [];
+    const trainIndexSet = new Set(splitGuardResult.trainIndices || []);
+    const testIndexSet = new Set(splitGuardResult.testIndices || []);
+
+    currentPipelineExportData.forEach((record, index) => {
+      const key = getPipelineRecordKey(record, index, previewMode);
+      if (!qualifiedKeySet.has(key)) {
+        return;
+      }
+
+      let payload = sanitizeRecordForDownload(record, previewMode, effectivePromptContent);
       if (previewMode === 'openai') {
         payload = injectSystemPromptIntoConversation(payload, effectivePromptContent);
       }
-      return payload;
+
+      if (testIndexSet.has(index)) {
+        qualifiedTestData.push(payload);
+      } else if (trainIndexSet.has(index)) {
+        qualifiedTrainData.push(payload);
+      }
     });
 
-    const thresholdLabel = downloadScoreThreshold.toFixed(1).replace('.', '_');
-    const blob = new Blob([JSON.stringify(filteredData, null, 2)], {
-      type: 'application/json;charset=utf-8',
-    });
-    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}.json`);
-    toast.success(`Downloaded ${filteredData.length} samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`);
+    const zip = new JSZip();
+    zip.file('train_dataset.json', JSON.stringify(qualifiedTrainData, null, 2));
+    zip.file('test_dataset.json', JSON.stringify(qualifiedTestData, null, 2));
+    zip.file(
+      '_metadata.json',
+      JSON.stringify(
+        {
+          projectName: projectName.trim() || 'dataset',
+          datasetVersionId: currentDatasetVersionId || null,
+          systemPrompt: effectivePromptContent || null,
+          systemPromptVersion: selectedSystemPromptVersion || null,
+          threshold: splitGuardResult.threshold,
+          attempts: splitGuardResult.attempts,
+          conflictCount: splitGuardResult.conflictCount,
+          maxCrossSplitSimilarity: splitGuardResult.maxCrossSplitSimilarity,
+          overallScoreThreshold: downloadScoreThreshold,
+          totalTrain: qualifiedTrainData.length,
+          totalTest: qualifiedTestData.length,
+          exportedAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+    const blob = await zip.generateAsync({ type: 'blob' });
+    saveAs(blob, `${projectName.trim() || 'dataset'}_overall_gte_${thresholdLabel}_split.zip`);
+    toast.success(
+      `Downloaded ${qualifiedTrainData.length + qualifiedTestData.length} split samples with overall >= ${downloadScoreThreshold.toFixed(1)}.`
+    );
   };
 
   const handleOpenManualEvaluate = (row: DisplayRow) => {
@@ -3588,6 +4502,7 @@ export function ConversionPage() {
     setRowClusterMap(restoredClusterState.rowClusterMap);
     setSelectedClusterIds([]);
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setVisibleRowsInEvaluation([]);
@@ -3636,7 +4551,7 @@ export function ConversionPage() {
         const response = await dataprepApi.getPublicProjectLabeling(
           routeProjectId,
           communityShowRejectedSamples,
-          openedFromOwnedCommunityHub
+          false
         );
         if (disposed) {
           return;
@@ -3684,9 +4599,11 @@ export function ConversionPage() {
         setRowClusterMap({});
         setSelectedClusterIds([]);
         setAutoLabelSuggestions([]);
+        setAutoLabelSuggestionsByProvider({});
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
         setBalanceApplied(false);
+        resetRewriteSession();
         setVisibleRowsInEvaluation([]);
         setVisibleRowsInRefinement([]);
         setActiveProjectOwnerId(resolvedOwnerId || (currentUserId || null));
@@ -3763,9 +4680,11 @@ export function ConversionPage() {
     setRowClusterMap({});
     setSelectedClusterIds([]);
     setAutoLabelSuggestions([]);
+    setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
     setBalanceApplied(false);
+    resetRewriteSession();
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setActiveProjectOwnerId(null);
@@ -3781,12 +4700,20 @@ export function ConversionPage() {
   const canMoveFromStep3 = true;
   const canMoveFromStep4 = clusterGroups.length > 0;
   const canMoveFromStep5 = autoLabelsSaved;
+  const availableAutoLabelProviders = useMemo(
+    () => (['gemini', 'openai', 'deepseek'] as AiProvider[]).filter((provider) => {
+      const suggestions = autoLabelSuggestionsByProvider[provider];
+      return Array.isArray(suggestions) && suggestions.length > 0;
+    }),
+    [autoLabelSuggestionsByProvider]
+  );
   const canMoveFromStep8 = !!currentDatasetVersionId;
-  const canMoveFromStep9 = !!currentDatasetVersionId;
+  const canMoveFromStep9 = !!conversionResult;
   const canMoveFromStep10 = !!conversionResult;
   const canMoveFromStep11 = !!conversionResult;
   const canMoveFromStep12 = !!conversionResult;
   const canMoveFromStep13 = !!conversionResult;
+  const canMoveFromStep14 = Boolean(splitGuardResult?.resolved);
 
   const persistPrepareProgress = async (prepareResumeStep: Step): Promise<boolean> => {
     try {
@@ -3817,6 +4744,178 @@ export function ConversionPage() {
     const saved = await persistPrepareProgress(prepareResumeStep);
     if (saved) {
       setCurrentStep(prepareResumeStep);
+    }
+  };
+
+  const handleProceedFromLabelingStep = async () => {
+    if (!currentDatasetVersionId) {
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+      return;
+    }
+
+    const { data: status } = await labelingIntentStatusQuery.refetch();
+    if (!status || status.unlabeledSamples <= 0) {
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+      return;
+    }
+
+    setPendingIncompleteBucket(status.incompleteBucket || 'Rewrite');
+    setIsIncompleteLabelingModalOpen(true);
+  };
+
+  const handleConfirmIncompleteBucket = async () => {
+    if (!currentDatasetVersionId) {
+      setIsIncompleteLabelingModalOpen(false);
+      return;
+    }
+
+    setIsSavingIncompleteBucket(true);
+    try {
+      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, pendingIncompleteBucket);
+      await labelingIntentStatusQuery.refetch();
+      toast.success(result.message || `Incomplete samples will be treated as ${pendingIncompleteBucket}.`);
+      setIsIncompleteLabelingModalOpen(false);
+      await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to save incomplete sample bucket.');
+    } finally {
+      setIsSavingIncompleteBucket(false);
+    }
+  };
+
+  const handleProceedFromRewriteStep = async () => {
+    if (pendingRewriteSampleCount > 0) {
+      setIsPendingRewriteModalOpen(true);
+      return;
+    }
+    await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+  };
+
+  const handleProceedFromDistributionStep = () => {
+    if (!balanceApplied) {
+      setIsBalanceReminderModalOpen(true);
+      return;
+    }
+    setCurrentStep(10);
+  };
+
+  const restoreVersionSession = async (versionId: string, targetStep: Step) => {
+    setIsRestoringParentVersion(true);
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(
+        versionId,
+        false,
+        isProjectLabelingRoute
+      );
+
+      const normalizedFormat: PreviewMode = inferLoadedFormat(detail.items, conversionOptions.format);
+      const restoredResult = buildConversionResultFromVersionItems(
+        detail.items.map((item) => ({ sampleKey: item.sampleKey, data: item.data })),
+        normalizedFormat,
+        detail.datasetVersion.projectName || projectName
+      );
+      const restoredClusterState = buildClusterStateFromData(
+        restoredResult.data,
+        normalizedFormat,
+        conversionOptions.removeThinkTags ?? true
+      );
+      const restoredEvaluationMap = detail.items.reduce<Record<string, RowEvaluationEntry>>((acc, item) => {
+        const evaluations = Array.isArray(item.evaluations)
+          ? item.evaluations.map((entry) => ({
+            evaluatedBy: entry.evaluatedBy,
+            scores: {
+              accuracy: entry.scores?.accuracy ?? null,
+              clarity: entry.scores?.clarity ?? null,
+              completeness: entry.scores?.completeness ?? null,
+              socratic: entry.scores?.socratic ?? null,
+              encouragement: entry.scores?.encouragement ?? null,
+              factuality: entry.scores?.factuality ?? null,
+              overall: entry.scores?.overall ?? null,
+            },
+            reason: entry.reason || '',
+            timestamp: entry.timestamp || new Date().toISOString(),
+          }))
+          : [];
+        if (evaluations.length > 0) {
+          acc[item.sampleKey] = { evaluations };
+        }
+        return acc;
+      }, {});
+      const restoredSampleIdMap = detail.items.reduce<Record<string, string>>((acc, item) => {
+        acc[item.sampleKey] = item.sampleId;
+        return acc;
+      }, {});
+
+      setConversionResult(restoredResult);
+      setOriginalConvertedResult((prev) => prev || restoredResult);
+      setCurrentDatasetVersionId(detail.datasetVersion._id);
+      setDatasetVersionPromptId('');
+      setSampleIdMap(restoredSampleIdMap);
+      setClusterGroups(restoredClusterState.clusterGroups);
+      setRowClusterMap(restoredClusterState.rowClusterMap);
+      setSelectedClusterIds([]);
+      setEvaluationMap(restoredEvaluationMap);
+      setVisibleRowsInEvaluation([]);
+      setVisibleRowsInRefinement([]);
+      setRefinedRowIds(new Set());
+      setRefineHistoryMap({});
+      setManualTargetRow(null);
+      setItemToDelete(null);
+      setIsEvaluateModalOpen(false);
+      setIsRefineModalOpen(false);
+      setIsManualEvalModalOpen(false);
+      setScoreHistoryModalOpen(false);
+      setIsComparingGroups(false);
+      setCompareSlot1(null);
+      setCompareSlot2(null);
+      setRefineComparisonView(null);
+      setActiveClassificationGroup(null);
+      setClassifiedSamplesResult(null);
+      setActiveQualityBucket(null);
+      setQualitySamplesResult(null);
+      setAllQualitySamplesResult(null);
+      resetRewriteSession();
+      setCurrentStep(targetStep);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to restore parent version.');
+    } finally {
+      setIsRestoringParentVersion(false);
+    }
+  };
+
+  const handleBackFromEvaluation = async () => {
+    if (!currentDatasetVersionId) {
+      setCurrentStep(getBackStep(11));
+      return;
+    }
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(currentDatasetVersionId, false, isProjectLabelingRoute);
+      const parentVersionId = detail.datasetVersion.parentVersionId ? String(detail.datasetVersion.parentVersionId) : '';
+      if (!parentVersionId) {
+        setCurrentStep(getBackStep(11));
+        return;
+      }
+      await restoreVersionSession(parentVersionId, 10);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to load evaluation parent version.');
+    }
+  };
+
+  const handleBackFromRefine = async () => {
+    if (!currentDatasetVersionId) {
+      setCurrentStep(getBackStep(12));
+      return;
+    }
+    try {
+      const detail = await dataprepApi.getDatasetVersionDetail(currentDatasetVersionId, false, isProjectLabelingRoute);
+      const parentVersionId = detail.datasetVersion.parentVersionId ? String(detail.datasetVersion.parentVersionId) : '';
+      if (!parentVersionId) {
+        setCurrentStep(getBackStep(12));
+        return;
+      }
+      await restoreVersionSession(parentVersionId, 11);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to load refine parent version.');
     }
   };
 
@@ -3872,20 +4971,38 @@ export function ConversionPage() {
     setAutoLabelsSaved(false);
     setAutoLabelSuggestions((prev) => {
       const existing = prev.find((item) => item.clusterId === clusterId);
-      if (existing) {
-        return prev.map((item) => item.clusterId === clusterId ? { ...item, label } : item);
-      }
-      const group = clusterGroups.find((item) => item.groupId === clusterId);
-      return [
+      const nextSuggestions = existing
+        ? prev.map((item) => item.clusterId === clusterId ? { ...item, label } : item)
+        : [
         ...prev,
         {
           clusterId,
           label,
           reason: 'Manually selected by reviewer.',
-          sampleCount: group?.count || 0,
+          sampleCount: clusterGroups.find((item) => item.groupId === clusterId)?.count || 0,
         },
       ];
+      setAutoLabelSuggestionsByProvider((map) => ({
+        ...map,
+        [autoLabelProvider]: nextSuggestions,
+      }));
+      return nextSuggestions;
     });
+  };
+
+  const handleOpenAutoLabelCompare = () => {
+    if (availableAutoLabelProviders.length < 2) {
+      toast.error('Generate labels from at least two AI providers before comparing.');
+      return;
+    }
+    setAutoLabelCompareLeft((prev) => (availableAutoLabelProviders.includes(prev) ? prev : availableAutoLabelProviders[0]));
+    setAutoLabelCompareRight((prev) => {
+      if (availableAutoLabelProviders.includes(prev) && prev !== autoLabelCompareLeft) {
+        return prev;
+      }
+      return availableAutoLabelProviders.find((provider) => provider !== autoLabelCompareLeft) || availableAutoLabelProviders[1] || availableAutoLabelProviders[0];
+    });
+    setIsAutoLabelCompareOpen(true);
   };
 
   const handleProceedFromSystemPromptStep = async () => {
@@ -4149,13 +5266,11 @@ export function ConversionPage() {
 
   return (
     <div className="space-y-6">
-      <StepperHeader currentStep={currentStep} lockedToStep={isGuestMode ? 7 : null} />
-
-      {isGuestMode && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Guest Mode: only the Labeling substep is available for this project.
-        </div>
-      )}
+      <StepperHeader
+        currentStep={currentStep}
+        lockedToStep={isGuestMode ? 7 : null}
+        mode={isGuestMode ? 'guest-labeling' : isOwnerManagedCommunityRoute ? 'owner-labeling' : 'default'}
+      />
 
       {currentStep === 1 && (
         <div className="space-y-6">
@@ -4234,6 +5349,8 @@ export function ConversionPage() {
           clusterGroups={clusterGroups}
           clusterK={clusterK}
           setClusterK={setClusterK}
+          recommendedK={visualizationResult?.recommendedK}
+          recommendationReason={visualizationResult?.recommendationReason}
           dbscanEps={dbscanEps}
           setDbscanEps={setDbscanEps}
           dbscanMinSamples={dbscanMinSamples}
@@ -4268,10 +5385,13 @@ export function ConversionPage() {
           table={<ConvertedDatasetTable rows={autoLabelFilteredRows} mode={previewMode} />}
           clusterGroups={clusterGroups}
           suggestions={autoLabelSuggestions}
+          provider={autoLabelProvider}
+          onProviderChange={setAutoLabelProvider}
           selectedGroupId={autoLabelFilterGroupId}
           onSelectGroup={setAutoLabelFilterGroupId}
           onChangeLabel={handleChangeAutoLabelSuggestion}
-          onLabelWithAI={() => setIsAutoLabelModalOpen(true)}
+          onLabelWithAI={() => autoLabelPreviewMutation.mutate(autoLabelProvider)}
+          onCompare={handleOpenAutoLabelCompare}
           onSave={() => autoLabelSaveMutation.mutate()}
           onBack={() => setCurrentStep(getBackStep(5))}
           onNext={() => setCurrentStep(6)}
@@ -4299,40 +5419,77 @@ export function ConversionPage() {
       )}
 
       {currentStep === 7 && (
-        <LabelingWorkflowPanel
-          isCommunityRoute={isProjectLabelingRoute}
-          communityCounts={communityCounts}
-          showRejectedSamples={communityShowRejectedSamples}
-          onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
-          labelingPanel={(
-            <DataLabelingPanel
-              samples={allRows.map((row) => ({
-                key: row.id,
-                title: row.blockLabel,
-                sampleId: sampleIdMap[row.id] || sampleIdMap[row.blockId] || (row.id.match(/^[a-f\d]{24}$/i) ? row.id : null),
-                messages: row.conversationPairs
-                  ? row.conversationPairs.flatMap((pair) => [
-                    { role: 'user' as const, content: pair.user },
-                    { role: 'assistant' as const, content: pair.assistant },
-                  ])
-                  : [
-                    { role: 'user' as const, content: row.userText || row.instruction },
-                    { role: 'assistant' as const, content: row.assistantText || row.output },
-                  ],
-              }))}
-              onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
-              onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification)}
-              showBackButton={!isGuestMode}
-              showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
-              nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
-              fromCommunityHub={isProjectLabelingRoute}
-              datasetVersionId={currentDatasetVersionId || undefined}
-              assignmentSubmissionEnabled={isGuestMode}
-              lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
-              lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
-            />
+        <div className="space-y-4">
+          {isGuestMode && (
+            <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">Data Labeling</h2>
+              <p className="mt-1 text-xs text-slate-500">Review assigned conversations and submit your labels.</p>
+            </div>
           )}
-        />
+          {!isGuestMode && !isOwnerManagedCommunityRoute && labelingIntentStatusQuery.data && (
+            <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Intent-Action Coverage</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {labelingIntentStatusQuery.data.labeledSamples} / {labelingIntentStatusQuery.data.totalSamples} samples have complete Intent-Action labels.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">
+                    Complete: {labelingIntentStatusQuery.data.labeledSamples}
+                  </span>
+                  <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700">
+                    Missing: {labelingIntentStatusQuery.data.unlabeledSamples}
+                  </span>
+                  {labelingIntentStatusQuery.data.incompleteBucket && (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">
+                      Default bucket: {labelingIntentStatusQuery.data.incompleteBucket}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          <LabelingWorkflowPanel
+            isCommunityRoute={isProjectLabelingRoute}
+            communityCounts={communityCounts}
+            showRejectedSamples={communityShowRejectedSamples}
+            onToggleRejectedSamples={() => setCommunityShowRejectedSamples((prev) => !prev)}
+            labelingPanel={(
+              <DataLabelingPanel
+                samples={allRows.map((row) => {
+                  const sampleId = sampleIdMap[row.id] || sampleIdMap[row.blockId] || (row.id.match(/^[a-f\d]{24}$/i) ? row.id : null);
+                  return {
+                    key: row.id,
+                    title: row.blockLabel,
+                    sampleId,
+                    assignees: sampleId ? assignmentMapBySampleId.get(String(sampleId)) || [] : [],
+                    messages: row.conversationPairs
+                      ? row.conversationPairs.flatMap((pair) => [
+                        { role: 'user' as const, content: pair.user },
+                        { role: 'assistant' as const, content: pair.assistant },
+                      ])
+                      : [
+                        { role: 'user' as const, content: row.userText || row.instruction },
+                        { role: 'assistant' as const, content: row.assistantText || row.output },
+                      ],
+                  };
+                })}
+                onBack={() => setCurrentStep(isGuestMode ? 7 : getBackStep(7))}
+                onNext={handleProceedFromLabelingStep}
+                showBackButton={!isGuestMode}
+                showNextButton={!isGuestMode && !isOwnerManagedCommunityRoute}
+                nextDisabled={isGuestMode || isOwnerManagedCommunityRoute}
+                fromCommunityHub={isProjectLabelingRoute}
+                datasetVersionId={currentDatasetVersionId || undefined}
+                assignmentSubmissionEnabled={isGuestMode}
+                lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
+                lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
+              />
+            )}
+          />
+        </div>
       )}
 
       {currentStep === 8 && (
@@ -4373,19 +5530,29 @@ export function ConversionPage() {
       {currentStep === 9 && (
         <SubjectDistributionPanel
           versionId={currentDatasetVersionId || ''}
+          alreadyApplied={balanceApplied}
+          onApply={handleApplySubjectBalance}
           onBack={() => setCurrentStep(getBackStep(9))}
-          onNext={() => setCurrentStep(10)}
+          onNext={handleProceedFromDistributionStep}
           nextDisabled={!canMoveFromStep9}
         />
       )}
 
       {currentStep === 10 && (
-        <BalanceDatasetPanel
-          versionId={currentDatasetVersionId || ''}
-          alreadyApplied={balanceApplied}
-          onApply={handleApplySubjectBalance}
+        <RewriteDatasetPanel
+          rows={rewriteRows}
+          provider={rewriteProvider}
+          onProviderChange={setRewriteProvider}
+          drafts={rewriteDrafts}
+          isGenerating={isRewriteLoading || rewriteMutation.isPending}
+          onGenerate={(rowId) => rewriteMutation.mutate({ provider: rewriteProvider, rowId })}
+          onTurnDecisionChange={handleRewriteDecisionChange}
+          onTurnEditChange={handleRewriteEditChange}
+          onApply={handleApplyRewriteSelections}
+          hasApplied={rewriteApplied}
+          pendingSampleCount={pendingRewriteSampleCount}
           onBack={() => setCurrentStep(getBackStep(10))}
-          onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation)}
+          onNext={handleProceedFromRewriteStep}
           nextDisabled={!canMoveFromStep10}
         />
       )}
@@ -4411,9 +5578,9 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
-          onBack={() => setCurrentStep(getBackStep(11))}
+          onBack={handleBackFromEvaluation}
           onNext={() => setCurrentStep(12)}
-          nextDisabled={!canMoveFromStep11}
+          nextDisabled={!canMoveFromStep11 || isRestoringParentVersion}
         />
       )}
 
@@ -4447,9 +5614,9 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
-          onBack={() => setCurrentStep(getBackStep(12))}
+          onBack={handleBackFromRefine}
           onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.finish)}
-          nextDisabled={!canMoveFromStep12}
+          nextDisabled={!canMoveFromStep12 || isRestoringParentVersion}
         />
       )}
 
@@ -4471,6 +5638,24 @@ export function ConversionPage() {
       )}
 
       {currentStep === 14 && (
+        <SplitGuardPanel
+          totalSamples={currentPipelineExportData.length}
+          testPercentage={downloadTestPercentage}
+          setTestPercentage={setDownloadTestPercentage}
+          threshold={splitGuardThreshold}
+          setThreshold={setSplitGuardThreshold}
+          maxAttempts={splitGuardMaxAttempts}
+          setMaxAttempts={setSplitGuardMaxAttempts}
+          result={splitGuardResult}
+          isGenerating={splitGuardMutation.isPending}
+          onGenerate={() => splitGuardMutation.mutate()}
+          onBack={() => setCurrentStep(getBackStep(14))}
+          onNext={() => setCurrentStep(15)}
+          nextDisabled={!canMoveFromStep14}
+        />
+      )}
+
+      {currentStep === 15 && (
         <div className="space-y-5">
           <ConvertedDatasetTable
             rows={evaluationRows}
@@ -4482,14 +5667,14 @@ export function ConversionPage() {
             systemPromptText={systemPromptText}
           />
           <ExportPanel
-            conversionResult={conversionResult}
-            downloadTestPercentage={downloadTestPercentage}
-            setDownloadTestPercentage={setDownloadTestPercentage}
+            splitGuardResult={splitGuardResult}
+            exportSampleCount={currentPipelineExportData.length}
             handleDownloadTrainTestZip={handleDownloadTrainTestZip}
             downloadScoreThreshold={downloadScoreThreshold}
             setDownloadScoreThreshold={setDownloadScoreThreshold}
             handleDownloadByScore={handleDownloadByScore}
-            onBack={() => setCurrentStep(getBackStep(14))}
+            huggingFaceUpload={huggingFaceSplitUpload}
+            onBack={() => setCurrentStep(getBackStep(15))}
           />
         </div>
       )}
@@ -4514,13 +5699,16 @@ export function ConversionPage() {
         isSubmitting={evaluateMutation.isPending}
       />
 
-      <AutoLabelModal
-        isOpen={isAutoLabelModalOpen}
-        provider={autoLabelProvider}
-        onProviderChange={setAutoLabelProvider}
-        onClose={() => setIsAutoLabelModalOpen(false)}
-        onConfirm={() => autoLabelPreviewMutation.mutate(autoLabelProvider)}
-        isSubmitting={autoLabelPreviewMutation.isPending}
+      <AutoLabelCompareModal
+        isOpen={isAutoLabelCompareOpen}
+        providers={availableAutoLabelProviders}
+        leftProvider={autoLabelCompareLeft}
+        rightProvider={autoLabelCompareRight}
+        onLeftProviderChange={setAutoLabelCompareLeft}
+        onRightProviderChange={setAutoLabelCompareRight}
+        suggestionsByProvider={autoLabelSuggestionsByProvider}
+        clusterGroups={clusterGroups}
+        onClose={() => setIsAutoLabelCompareOpen(false)}
       />
 
       <ManualEvaluateModal
@@ -4573,6 +5761,35 @@ export function ConversionPage() {
         isOpen={Boolean(itemToDelete)}
         onClose={() => setItemToDelete(null)}
         onConfirm={handleConfirmDeleteSample}
+      />
+
+      <IncompleteLabelingModal
+        isOpen={isIncompleteLabelingModalOpen}
+        status={labelingIntentStatusQuery.data || null}
+        selectedBucket={pendingIncompleteBucket}
+        isSubmitting={isSavingIncompleteBucket}
+        onSelectBucket={setPendingIncompleteBucket}
+        onClose={() => setIsIncompleteLabelingModalOpen(false)}
+        onConfirm={handleConfirmIncompleteBucket}
+      />
+
+      <BalanceReminderModal
+        isOpen={isBalanceReminderModalOpen}
+        onClose={() => setIsBalanceReminderModalOpen(false)}
+        onConfirm={() => {
+          setIsBalanceReminderModalOpen(false);
+          setCurrentStep(10);
+        }}
+      />
+
+      <PendingRewriteModal
+        isOpen={isPendingRewriteModalOpen}
+        pendingCount={pendingRewriteSampleCount}
+        onClose={() => setIsPendingRewriteModalOpen(false)}
+        onConfirm={async () => {
+          setIsPendingRewriteModalOpen(false);
+          await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+        }}
       />
 
       <ScoreHistoryModal

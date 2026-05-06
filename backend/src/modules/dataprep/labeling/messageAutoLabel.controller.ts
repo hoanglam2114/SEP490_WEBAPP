@@ -16,10 +16,6 @@ function getService(provider?: string) {
   return new MessageAutoLabelingService(new GeminiProvider());
 }
 
-function isCommunityHubRequest(req: Request): boolean {
-  return String(req.query.fromCommunityHub || '').toLowerCase() === 'true';
-}
-
 export class MessageAutoLabelingController {
   async preview(req: Request, res: Response): Promise<void> {
     try {
@@ -36,9 +32,7 @@ export class MessageAutoLabelingController {
       };
 
       const service = getService(provider);
-      const suggestions = await service.preview(sampleId, ownerId, messages || [], {
-        restrictOwnerToUnassigned: isCommunityHubRequest(req),
-      });
+      const suggestions = await service.preview(sampleId, ownerId, messages || []);
 
       res.json({ suggestions });
     } catch (error: any) {
@@ -70,9 +64,7 @@ export class MessageAutoLabelingController {
       };
 
       const service = getService('gemini');
-      const result = await service.save(sampleId, ownerId, suggestions || [], messages || [], {
-        restrictOwnerToUnassigned: isCommunityHubRequest(req),
-      });
+      const result = await service.save(sampleId, ownerId, suggestions || [], messages || []);
 
       res.json({
         message: 'Message auto-labels saved successfully.',
@@ -82,6 +74,34 @@ export class MessageAutoLabelingController {
       console.error('Message auto-label save error:', error);
       res.status(error.statusCode || 500).json({
         error: error.message || 'Message auto-label save failed',
+      });
+    }
+  }
+
+  async batch(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { provider, samples, concurrency } = req.body as {
+        provider?: 'gemini' | 'openai' | 'deepseek';
+        samples?: Array<{
+          sampleId: string;
+          messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+        }>;
+        concurrency?: number;
+      };
+
+      const service = getService(provider);
+      const result = await service.previewAndSaveBatch(ownerId, samples || [], concurrency);
+      res.json(result);
+    } catch (error: any) {
+      console.error('Message auto-label batch error:', error);
+      res.status(error.statusCode || 500).json({
+        error: error.message || 'Message auto-label batch failed',
       });
     }
   }

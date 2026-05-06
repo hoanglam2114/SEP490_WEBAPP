@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { EvaluationSample, EvaluationService, RefinementSample } from '../services/evaluationService';
+import { EvaluationSample, EvaluationService, RefinementSample, RewriteSample } from '../services/evaluationService';
 import { EvaluationHistory } from '../models/EvaluationHistory';
 import { DataPrepProject } from '../models/DataPrepProject';
 import { DatasetVersion } from '../models/DatasetVersion';
@@ -1184,6 +1184,43 @@ export class EvaluationController {
     }
   }
 
+  async rewrite(req: Request, res: Response): Promise<void> {
+    try {
+      const { data, provider } = req.body as {
+        data: RewriteSample[];
+        provider?: 'gemini' | 'openai' | 'deepseek';
+      };
+
+      if (!Array.isArray(data) || data.length === 0) {
+        res.status(400).json({ error: 'Cần cung cấp mảng data để rewrite.' });
+        return;
+      }
+
+      const service = this.getService(provider);
+      const samples = data.map((item) => ({
+        turns: Array.isArray(item?.turns) ? item.turns.map((turn) => ({
+          userMessageIndex: Number(turn?.userMessageIndex),
+          assistantMessageIndex: Number(turn?.assistantMessageIndex),
+          user: String(turn?.user || ''),
+          assistant: String(turn?.assistant || ''),
+          userLabels: Array.isArray(turn?.userLabels) ? turn.userLabels.map((label) => String(label || '')) : [],
+          assistantLabels: Array.isArray(turn?.assistantLabels) ? turn.assistantLabels.map((label) => String(label || '')) : [],
+          expectedActions: Array.isArray(turn?.expectedActions) ? turn.expectedActions.map((label) => String(label || '')) : [],
+          matched: Boolean(turn?.matched),
+        })) : [],
+      }));
+
+      const rewritten = await service.rewriteBatch(samples);
+      res.json({ items: rewritten, rewritten: rewritten.length });
+    } catch (error: any) {
+      console.error('Rewrite error:', error);
+      res.status(500).json({
+        error: 'Rewrite dữ liệu thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async updateDatasetVersionPrepareProgress(req: Request, res: Response): Promise<void> {
     try {
       const ownerId = getAuthUserId(req);
@@ -1208,7 +1245,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { prepareResumeStep } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1265,7 +1302,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { isPublic } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1330,7 +1367,7 @@ export class EvaluationController {
       const updated = await DatasetVersion.findOneAndUpdate(
         { _id: id, ownerId },
         { $set: { sharedWithUserIds } },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {
@@ -1402,7 +1439,14 @@ export class EvaluationController {
           progressMap.set(userId, await calculateAssignmentProgress(version._id, userId));
         })
       );
-      const assignmentBySampleId = new Map(assignments.map((item: any) => [String(item.sampleId), item]));
+      const assignmentsBySampleId = new Map<string, any[]>();
+      assignments.forEach((item: any) => {
+        const key = String(item.sampleId);
+        if (!assignmentsBySampleId.has(key)) {
+          assignmentsBySampleId.set(key, []);
+        }
+        assignmentsBySampleId.get(key)!.push(item);
+      });
       const summaryMap = new Map<string, { user: { id: string; name: string; email: string }; count: number; ranges: string[]; indices: number[] }>();
 
       assignments.forEach((assignment: any) => {
@@ -1450,8 +1494,14 @@ export class EvaluationController {
       });
 
       const sampleRows = samples.map((sample: any, index) => {
-        const assignment = assignmentBySampleId.get(String(sample._id));
-        const user = assignment ? userMap.get(String(assignment.assigneeId)) : null;
+        const itemAssignments = assignmentsBySampleId.get(String(sample._id)) || [];
+        const assignees = itemAssignments
+          .map((a) => {
+            const u = userMap.get(String(a.assigneeId));
+            return u ? { id: String(u._id), name: String(u.name || ''), email: String(u.email || '') } : null;
+          })
+          .filter(Boolean);
+
         const rawPreview = Array.isArray(sample.data?.messages)
           ? sample.data.messages.map((msg: any) => String(msg?.content || '')).join(' ')
           : [sample.data?.instruction, sample.data?.input, sample.data?.output].map((part) => String(part || '')).join(' ');
@@ -1460,9 +1510,9 @@ export class EvaluationController {
           sampleKey: String(sample.sampleId),
           sampleIndex: index + 1,
           preview: rawPreview.trim().slice(0, 180),
-          assignee: user
-            ? { id: String(user._id), name: String(user.name || ''), email: String(user.email || '') }
-            : null,
+          assignees,
+          // Legacy field for back-compat if needed, taking the first one
+          assignee: assignees[0] || null,
         };
       });
 
@@ -1477,8 +1527,8 @@ export class EvaluationController {
         summary,
         totals: {
           totalSamples: samples.length,
-          assigned: assignments.length,
-          unassigned: Math.max(0, samples.length - assignments.length),
+          assigned: new Set(assignments.map((a: any) => String(a.sampleId))).size,
+          unassigned: Math.max(0, samples.length - new Set(assignments.map((a: any) => String(a.sampleId))).size),
         },
       });
     } catch (error: any) {
@@ -1540,31 +1590,6 @@ export class EvaluationController {
 
       const selectedSamples = samples.slice(startIndex - 1, endIndex);
       const selectedSampleIds = selectedSamples.map((sample: any) => sample._id);
-      const conflicts = await DatasetSampleAssignment.find({
-        sampleId: { $in: selectedSampleIds },
-        assigneeId: { $ne: new mongoose.Types.ObjectId(assigneeId) },
-      }).lean();
-
-      if (conflicts.length > 0) {
-        const users = await User.find({ _id: { $in: conflicts.map((item: any) => item.assigneeId) } })
-          .select('_id name email')
-          .lean();
-        const userMap = new Map(users.map((user: any) => [String(user._id), user]));
-        res.status(409).json({
-          error: 'Range này đã có mẫu được gán cho user khác.',
-          conflicts: conflicts.map((item: any) => {
-            const user = userMap.get(String(item.assigneeId));
-            return {
-              sampleIndex: Number(item.sampleIndex),
-              sampleId: String(item.sampleId),
-              assignee: user
-                ? { id: String(user._id), name: String(user.name || ''), email: String(user.email || '') }
-                : null,
-            };
-          }),
-        });
-        return;
-      }
 
       await DatasetSampleAssignment.deleteMany({
         datasetVersionId: version._id,
@@ -1632,11 +1657,43 @@ export class EvaluationController {
         return;
       }
 
+      const affectedAssignments = await DatasetSampleAssignment.find({
+        datasetVersionId: version._id,
+        sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
+      })
+        .select('assigneeId')
+        .lean();
+
       const result = await DatasetSampleAssignment.deleteMany({
         datasetVersionId: version._id,
         sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
       });
       await DatasetAssignmentSubmission.deleteMany({ datasetVersionId: version._id });
+
+      const affectedAssigneeIds = Array.from(
+        new Set(affectedAssignments.map((item: any) => String(item.assigneeId)).filter(Boolean))
+      );
+
+      if (affectedAssigneeIds.length > 0) {
+        const remainingAssignments = await DatasetSampleAssignment.find({
+          datasetVersionId: version._id,
+          assigneeId: { $in: affectedAssigneeIds.map((item) => new mongoose.Types.ObjectId(item)) },
+        })
+          .select('assigneeId')
+          .lean();
+
+        const assigneesWithRemainingAssignments = new Set(
+          remainingAssignments.map((item: any) => String(item.assigneeId)).filter(Boolean)
+        );
+        const assigneesToRemoveFromShared = affectedAssigneeIds.filter((item) => !assigneesWithRemainingAssignments.has(item));
+
+        if (assigneesToRemoveFromShared.length > 0) {
+          await DatasetVersion.updateOne(
+            { _id: version._id, ownerId },
+            { $pull: { sharedWithUserIds: { $in: assigneesToRemoveFromShared.map((item) => new mongoose.Types.ObjectId(item)) } } }
+          );
+        }
+      }
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment.`,
@@ -1679,6 +1736,18 @@ export class EvaluationController {
         datasetVersionId: version._id,
         assigneeId: new mongoose.Types.ObjectId(userId),
       });
+
+      const remainingAssignmentCount = await DatasetSampleAssignment.countDocuments({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      });
+
+      if (remainingAssignmentCount === 0) {
+        await DatasetVersion.updateOne(
+          { _id: version._id, ownerId },
+          { $pull: { sharedWithUserIds: new mongoose.Types.ObjectId(userId) } }
+        );
+      }
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment của user.`,
@@ -1791,7 +1860,7 @@ export class EvaluationController {
             progressSnapshot: progress,
           },
         },
-        { new: true, upsert: true }
+        { returnDocument: 'after', upsert: true }
       ).lean();
 
       res.json({
@@ -1851,7 +1920,7 @@ export class EvaluationController {
             progressSnapshot: progress,
           },
         },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       res.json({
@@ -1955,7 +2024,7 @@ export class EvaluationController {
             updatedAt: new Date(),
           },
         },
-        { new: true }
+        { returnDocument: 'after' }
       ).lean();
 
       if (!updated) {

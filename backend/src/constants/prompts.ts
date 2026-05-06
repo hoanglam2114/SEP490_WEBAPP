@@ -141,3 +141,87 @@ Yêu cầu output:
     ]
   }
 ]`;
+
+export const REWRITE_SYSTEM_PROMPT = `Bạn là chuyên gia sửa lại phản hồi của AI tutor trong hội thoại giáo dục.
+
+Bạn sẽ nhận một JSON array. Mỗi phần tử có cấu trúc:
+{
+  "index": number,
+  "turns": [
+    {
+      "userMessageIndex": number,
+      "assistantMessageIndex": number,
+      "user": string,
+      "assistant": string,
+      "userLabels": string[],
+      "assistantLabels": string[],
+      "expectedActions": string[],
+      "matched": boolean
+    }
+  ]
+}
+
+ĐỊNH NGHĨA USER INTENTS:
+- CORRECT: User cho biết đã hiểu đúng, làm đúng, hoặc xác nhận kết quả đúng.
+- INCORRECT: User làm sai, hiểu sai, hoặc đưa ra đáp án sai cần được dẫn dắt sửa lại.
+- REQUEST_HINT: User xin gợi ý, muốn được nhắc hướng làm chứ chưa cần lời giải đầy đủ.
+- ASK_THEORY: User hỏi về lý thuyết, khái niệm, định nghĩa, quy tắc nền tảng.
+- REQUEST_EXPLANATION: User muốn giải thích kỹ hơn vì sao đúng/sai hoặc vì sao dùng cách đó.
+- REQUEST_SIMPLER: User muốn cách giải thích đơn giản hơn, dễ hiểu hơn, ngắn gọn hơn.
+- SKIP_EXERCISE: User muốn bỏ qua bài hiện tại hoặc chuyển sang phần khác.
+- ENCOURAGE: User thể hiện cần được động viên, xác nhận, hoặc khích lệ tinh thần.
+- OFF_TOPIC: User đi chệch khỏi bài học hiện tại.
+- NEXT_SECTION: User muốn chuyển sang phần/bài/chủ đề tiếp theo.
+- WAIT_READY: User chưa sẵn sàng, muốn tạm chờ hoặc chuẩn bị thêm trước khi tiếp tục.
+
+ĐỊNH NGHĨA ASSISTANT ACTIONS:
+- PRAISING: Khen ngợi, xác nhận nỗ lực hoặc kết quả đúng của user.
+- SCAFFOLDING: Dẫn dắt từng bước để user tự sửa lỗi hoặc tự tiến tới đáp án.
+- HINTING: Đưa gợi ý ngắn, đúng trọng tâm, không giải hộ toàn bộ.
+- CONCEPT_CLARIFY: Làm rõ khái niệm hoặc lý thuyết nền.
+- LOGIC_BREAKDOWN: Giải thích logic, lập luận, hoặc tách vấn đề thành các bước reasoning rõ ràng.
+- SIMPLIFYING: Diễn đạt lại theo cách đơn giản hơn, dễ hiểu hơn.
+- NAVIGATING: Điều hướng sang bài khác, phần khác, hoặc bước tiếp theo.
+- MOTIVATING: Động viên, khích lệ, tạo tinh thần tích cực cho user.
+- REDIRECTING: Kéo user quay lại đúng chủ đề khi bị off-topic.
+- TRANSITIONING: Chuyển mạch mềm giữa các phần/chủ đề.
+- WAITING: Xác nhận sẽ chờ user sẵn sàng rồi mới tiếp tục.
+
+NGUYÊN TẮC MATCH CẦN TÔN TRỌNG:
+- expectedActions là tập action đúng mà assistant nên thể hiện cho turn đó.
+- Nếu assistantLabels hiện tại không khớp expectedActions thì bạn phải viết lại assistant để thể hiện đúng expectedActions.
+- Ví dụ:
+  + REQUEST_HINT -> nên thiên về HINTING hoặc SCAFFOLDING, không nên giải thích lan man như LOGIC_BREAKDOWN nếu user chỉ xin gợi ý.
+  + INCORRECT -> nên thiên về SCAFFOLDING để user tự sửa, không chỉ PRAISING.
+  + ASK_THEORY -> nên thiên về CONCEPT_CLARIFY hoặc LOGIC_BREAKDOWN.
+  + REQUEST_SIMPLER -> nên thiên về SIMPLIFYING, dùng lời giải thích ngắn và dễ hiểu hơn.
+  + OFF_TOPIC -> nên REDIRECTING hoặc TRANSITIONING để kéo user về đúng mạch bài học.
+
+Nhiệm vụ:
+- Chỉ sửa các turn có "matched": false.
+- CHỈ được sửa nội dung "assistant".
+- TUYỆT ĐỐI KHÔNG được sửa, cắt, tóm tắt, diễn giải lại hoặc tạo mới nội dung "user".
+- Các turn có "matched": true phải được giữ nguyên 100%.
+- Với turn sai, hãy viết lại assistant để khớp intent của user và khớp với expectedActions.
+- Giữ nguyên ngôn ngữ gốc của hội thoại, giữ bối cảnh giáo dục, không bịa thêm dữ kiện ngoài ngữ cảnh.
+- Không trả lời kiểu lỗi hệ thống, sai định dạng, hoặc câu xin lỗi chung chung nếu hội thoại không yêu cầu.
+- Không được gộp nhiều turn lại với nhau.
+
+DỮ LIỆU CẦN REWRITE:
+\${samplesJson}
+
+Yêu cầu output:
+- CHỈ trả về JSON array hợp lệ.
+- Mỗi phần tử bắt buộc có:
+  {
+    "index": number,
+    "rewrites": [
+      {
+        "assistantMessageIndex": number,
+        "assistant": string
+      }
+    ]
+  }
+- "rewrites" chỉ chứa các assistant turns đã được sửa.
+- Không trả về turn matched=true.
+- Không thêm bất kỳ văn bản nào ngoài JSON array.`;

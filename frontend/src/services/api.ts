@@ -109,6 +109,7 @@ export type DatasetAssignmentSample = {
   sampleKey: string;
   sampleIndex: number;
   preview: string;
+  assignees: ShareUser[];
   assignee: ShareUser | null;
 };
 
@@ -213,6 +214,16 @@ export type QualityClassificationItem = {
   iar: Array<number | null>;
   criticalFailures: number;
   scorableTurns: number;
+  turnPairs?: Array<{
+    userMessageIndex: number;
+    assistantMessageIndex: number;
+    user: string;
+    assistant: string;
+    userLabels: string[];
+    assistantLabels: string[];
+    expectedActions: string[];
+    matched: boolean;
+  }>;
 };
 
 export type QualityWrongPair = {
@@ -238,6 +249,33 @@ export type QualityClassificationResult = {
   wrongPairs?: QualityWrongPair[];
   rejectTaggedCount?: number;
   items: QualityClassificationItem[];
+};
+
+export type LabelingIntentActionStatus = {
+  totalSamples: number;
+  labeledSamples: number;
+  unlabeledSamples: number;
+  incompleteBucket: QualityBucket | null;
+};
+
+export type SafeSplitConflictPreview = {
+  trainIndex: number;
+  testIndex: number;
+  similarity: number;
+};
+
+export type SafeSplitResult = {
+  resolved: boolean;
+  attempts: number;
+  threshold: number;
+  trainIndices: number[];
+  testIndices: number[];
+  trainCount: number;
+  testCount: number;
+  conflictCount: number;
+  maxCrossSplitSimilarity: number;
+  datasetFingerprint?: string;
+  conflictsPreview?: SafeSplitConflictPreview[];
 };
 
 export const apiService = {
@@ -529,6 +567,57 @@ export const apiService = {
     };
   },
 
+  rewriteData: async (
+    data: Array<{
+      turns: Array<{
+        userMessageIndex: number;
+        assistantMessageIndex: number;
+        user: string;
+        assistant: string;
+        userLabels: string[];
+        assistantLabels: string[];
+        expectedActions: string[];
+        matched: boolean;
+      }>;
+    }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini'
+  ): Promise<{ items: Array<{ rewrites: Array<{ assistantMessageIndex: number; assistant: string }> }>; rewritten: number }> => {
+    const response = await api.post('/evaluate/rewrite', { data, provider });
+    return response.data;
+  },
+
+  rewriteDataChunked: async (
+    data: Array<{
+      turns: Array<{
+        userMessageIndex: number;
+        assistantMessageIndex: number;
+        user: string;
+        assistant: string;
+        userLabels: string[];
+        assistantLabels: string[];
+        expectedActions: string[];
+        matched: boolean;
+      }>;
+    }>,
+    provider: 'gemini' | 'openai' | 'deepseek' = 'gemini',
+    chunkSize = 50
+  ): Promise<{ items: Array<{ rewrites: Array<{ assistantMessageIndex: number; assistant: string }> }>; rewritten: number }> => {
+    if (!Array.isArray(data) || data.length === 0) {
+      return { items: [], rewritten: 0 };
+    }
+
+    if (data.length <= chunkSize) {
+      return apiService.rewriteData(data, provider);
+    }
+
+    const chunks = chunkArray(data, chunkSize);
+    const results = await Promise.all(chunks.map((chunk) => apiService.rewriteData(chunk, provider)));
+    return {
+      items: results.flatMap((item) => item.items || []),
+      rewritten: results.reduce((sum, item) => sum + (item.rewritten || 0), 0),
+    };
+  },
+
   saveEvaluationResults: async (payload: {
     fileId?: string;
     projectName?: string;
@@ -795,6 +884,35 @@ export const apiService = {
     return response.data;
   },
 
+  previewAndSaveMessageAutoLabelsBatch: async (
+    payload: {
+      provider?: 'gemini' | 'openai' | 'deepseek';
+      samples: Array<{
+        sampleId: string;
+        messages: Array<{ messageIndex: number; role: 'user' | 'assistant'; content: string }>;
+      }>;
+      concurrency?: number;
+    },
+    fromCommunityHub = false
+  ): Promise<{
+    processedCount: number;
+    successCount: number;
+    failureCount: number;
+    insertedCount: number;
+    results: Array<{
+      sampleId: string;
+      status: 'success' | 'failed' | 'skipped';
+      insertedCount: number;
+      suggestionCount: number;
+      error?: string;
+    }>;
+  }> => {
+    const response = await api.post('/dataprep/message-auto-label/batch', payload, {
+      params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
+    });
+    return response.data;
+  },
+
   previewAutoLabels: async (
     versionId: string,
     provider: 'gemini' | 'openai' | 'deepseek'
@@ -1010,12 +1128,30 @@ export const apiService = {
     minSamples: number = 6
   ): Promise<{
     elbow: Array<{ k: number; wcss: number }>;
+    silhouette?: Array<{ k: number; silhouette: number }>;
     kDistance: Array<{ rank: number; distance: number }>;
     pointCount: number;
     noiseCount?: number;
   }> =>
     api
       .post('/cluster/visualize', { data, max_k: maxK, eps, min_samples: minSamples })
+      .then((res) => res.data),
+
+  clusterSafeSplit: (
+    data: any[],
+    testPercentage: number,
+    threshold: number,
+    maxAttempts: number,
+    seed = 42
+  ): Promise<SafeSplitResult> =>
+    api
+      .post('/cluster/safe-split', {
+        data,
+        test_percentage: testPercentage,
+        threshold,
+        max_attempts: maxAttempts,
+        seed,
+      })
       .then((res) => res.data),
 
   clusterVersionVisualize: (
@@ -1025,6 +1161,7 @@ export const apiService = {
     minSamples: number = 6
   ): Promise<{
     elbow: Array<{ k: number; wcss: number }>;
+    silhouette?: Array<{ k: number; silhouette: number }>;
     kDistance: Array<{ rank: number; distance: number }>;
     pointCount: number;
     noiseCount?: number;
@@ -1154,6 +1291,19 @@ export const apiService = {
     const response = await api.get(`/dataprep/versions/${versionId}/quality`, {
       params: group ? { group } : undefined,
     });
+    return response.data;
+  },
+
+  getLabelingIntentActionStatus: async (versionId: string): Promise<LabelingIntentActionStatus> => {
+    const response = await api.get(`/dataprep/versions/${versionId}/quality/labeling-status`);
+    return response.data;
+  },
+
+  updateLabelingIncompleteBucket: async (
+    versionId: string,
+    bucket: QualityBucket | null
+  ): Promise<LabelingIntentActionStatus & { message: string }> => {
+    const response = await api.patch(`/dataprep/versions/${versionId}/quality/incomplete-bucket`, { bucket });
     return response.data;
   },
 };

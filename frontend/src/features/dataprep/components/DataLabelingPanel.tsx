@@ -46,6 +46,11 @@ type LabelItem = {
   messageIndex?: number;
   messageRole?: 'user' | 'assistant';
   targetTextSnapshot?: string;
+  creator?: {
+    id: string;
+    name: string;
+    email: string;
+  };
   upvotes?: string[];
   downvotes?: string[];
   score: number;
@@ -68,11 +73,30 @@ type MessageAutoLabelSuggestion = {
   is_correct_logic?: boolean;
 };
 
+type BatchAutoLabelResult = {
+  processedCount: number;
+  successCount: number;
+  failureCount: number;
+  insertedCount: number;
+  results: Array<{
+    sampleId: string;
+    status: 'success' | 'failed' | 'skipped';
+    insertedCount: number;
+    suggestionCount: number;
+    error?: string;
+  }>;
+};
+
 type LabelingSample = {
   key: string;
   title: string;
   sampleId: string | null;
   messages: ChatMessage[];
+  assignees?: Array<{
+    id: string;
+    name: string;
+    email: string;
+  }>;
 };
 
 type DataLabelingStepProps = {
@@ -121,42 +145,44 @@ type HardLabelChip = {
   short: string;
   icon: LucideIcon;
   className: string;
+  description: string;
 };
 
 const DEFAULT_HARD_LABEL_CHIP: HardLabelChip = {
   short: 'LBL',
   icon: Tag,
   className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100',
+  description: 'Nhãn tùy chỉnh',
 };
 
 const HARD_LABEL_CHIPS: Record<string, HardLabelChip> = {
-  REJECT: { short: 'REJ', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100' },
-  ERROR_FORMULAR: { short: 'FORM', icon: AlertTriangle, className: 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100' },
-  USER_SPAM: { short: 'SPAM', icon: Ban, className: 'border-yellow-200 bg-yellow-50 text-yellow-700 hover:bg-yellow-100' },
-  ERROR_RESPONSE: { short: 'RESP', icon: MessageCircle, className: 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100' },
-  ERROR_FORMAT: { short: 'FMT', icon: ListTree, className: 'border-pink-200 bg-pink-50 text-pink-700 hover:bg-pink-100' },
-  CORRECT: { short: 'OK', icon: Check, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
-  INCORRECT: { short: 'NO', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100' },
-  REQUEST_HINT: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100' },
-  ASK_THEORY: { short: 'THEO', icon: BookOpen, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100' },
-  REQUEST_EXPLANATION: { short: 'WHY', icon: HelpCircle, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' },
-  REQUEST_SIMPLER: { short: 'EASY', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100' },
-  SKIP_EXERCISE: { short: 'SKIP', icon: SkipForward, className: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100' },
-  ENCOURAGE: { short: 'ENC', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' },
-  OFF_TOPIC: { short: 'OFF', icon: Ban, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
-  NEXT_SECTION: { short: 'NEXT', icon: ArrowRight, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100' },
-  WAIT_READY: { short: 'WAIT', icon: Clock, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100' },
-  PRAISING: { short: 'PR', icon: Sparkles, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
-  SCAFFOLDING: { short: 'SCAF', icon: ListTree, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100' },
-  HINTING: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100' },
-  CONCEPT_CLARIFY: { short: 'CLR', icon: BookOpen, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' },
-  LOGIC_BREAKDOWN: { short: 'LOG', icon: ListTree, className: 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100' },
-  SIMPLIFYING: { short: 'SIMP', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100' },
-  NAVIGATING: { short: 'NAV', icon: Navigation, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100' },
-  MOTIVATING: { short: 'MOT', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' },
-  REDIRECTING: { short: 'REDIR', icon: RefreshCw, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' },
-  TRANSITIONING: { short: 'TRAN', icon: ArrowRight, className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100' },
-  WAITING: { short: 'WAIT', icon: PauseCircle, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100' },
+  REJECT: { short: 'REJ', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100', description: 'Từ chối hội thoại vì có vấn đề nghiêm trọng' },
+  ERROR_FORMULAR: { short: 'FORM', icon: AlertTriangle, className: 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100', description: 'Lỗi công thức toán học' },
+  USER_SPAM: { short: 'SPAM', icon: Ban, className: 'border-yellow-200 bg-yellow-50 text-yellow-700 hover:bg-yellow-100', description: 'Người dùng spam hoặc nhắn vô nghĩa' },
+  ERROR_RESPONSE: { short: 'RESP', icon: MessageCircle, className: 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100', description: 'Phản hồi của AI có lỗi' },
+  ERROR_FORMAT: { short: 'FMT', icon: ListTree, className: 'border-pink-200 bg-pink-50 text-pink-700 hover:bg-pink-100', description: 'Lỗi định dạng văn bản' },
+  CORRECT: { short: 'OK', icon: Check, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100', description: 'Người dùng trả lời đúng' },
+  INCORRECT: { short: 'NO', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100', description: 'Người dùng trả lời sai' },
+  REQUEST_HINT: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100', description: 'Người dùng yêu cầu gợi ý' },
+  ASK_THEORY: { short: 'THEO', icon: BookOpen, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100', description: 'Người dùng hỏi về lý thuyết' },
+  REQUEST_EXPLANATION: { short: 'WHY', icon: HelpCircle, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100', description: 'Người dùng yêu cầu giải thích chi tiết' },
+  REQUEST_SIMPLER: { short: 'EASY', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100', description: 'Người dùng yêu cầu giải thích đơn giản hơn' },
+  SKIP_EXERCISE: { short: 'SKIP', icon: SkipForward, className: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100', description: 'Người dùng muốn bỏ qua bài tập' },
+  ENCOURAGE: { short: 'ENC', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100', description: 'Người dùng động viên, khen ngợi' },
+  OFF_TOPIC: { short: 'OFF', icon: Ban, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100', description: 'Người dùng nhắn lạc đề' },
+  NEXT_SECTION: { short: 'NEXT', icon: ArrowRight, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100', description: 'Người dùng muốn chuyển sang phần tiếp theo' },
+  WAIT_READY: { short: 'WAIT', icon: Clock, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100', description: 'Người dùng đang chuẩn bị, yêu cầu đợi' },
+  PRAISING: { short: 'PR', icon: Sparkles, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100', description: 'AI khen ngợi người dùng' },
+  SCAFFOLDING: { short: 'SCAF', icon: ListTree, className: 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100', description: 'AI hướng dẫn từng bước (scaffolding)' },
+  HINTING: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100', description: 'AI đưa ra gợi ý' },
+  CONCEPT_CLARIFY: { short: 'CLR', icon: BookOpen, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100', description: 'AI làm rõ khái niệm' },
+  LOGIC_BREAKDOWN: { short: 'LOG', icon: ListTree, className: 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100', description: 'AI phân tích logic bài toán' },
+  SIMPLIFYING: { short: 'SIMP', icon: Minimize2, className: 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100', description: 'AI giải thích đơn giản hơn' },
+  NAVIGATING: { short: 'NAV', icon: Navigation, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100', description: 'AI điều hướng người dùng sang bước tiếp theo' },
+  MOTIVATING: { short: 'MOT', icon: Heart, className: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100', description: 'AI động viên người dùng' },
+  REDIRECTING: { short: 'REDIR', icon: RefreshCw, className: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100', description: 'AI kéo người dùng quay lại chủ đề chính' },
+  TRANSITIONING: { short: 'TRAN', icon: ArrowRight, className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100', description: 'AI chuyển sang chủ đề mới' },
+  WAITING: { short: 'WAIT', icon: PauseCircle, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100', description: 'AI đợi người dùng trả lời' },
 };
 
 function getErrorMessage(error: any, fallback: string): string {
@@ -188,6 +214,11 @@ function normalizeLabel(label: any): LabelItem {
     downvoteCount,
     hasVoted: Boolean(label?.hasVoted ?? userVoteType),
     userVoteType,
+    creator: label?.creator ? {
+      id: String(label.creator.id || ''),
+      name: String(label.creator.name || ''),
+      email: String(label.creator.email || ''),
+    } : undefined,
   };
 }
 
@@ -277,6 +308,8 @@ export function DataLabelingPanel({
   const [isSavingAutoLabels, setIsSavingAutoLabels] = useState(false);
   const [autoLabelProvider, setAutoLabelProvider] = useState<AiProvider>('gemini');
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<Record<number, MessageAutoLabelSuggestion>>({});
+  const [autoLabelBatchCountInput, setAutoLabelBatchCountInput] = useState('1');
+  const [batchAutoLabelResult, setBatchAutoLabelResult] = useState<BatchAutoLabelResult | null>(null);
   const [error, setError] = useState('');
 
   const assignmentStatusQuery = useQuery({
@@ -322,6 +355,12 @@ export function DataLabelingPanel({
   const autoLabelSuggestionCount = Object.keys(autoLabelSuggestions).length;
   const autoLabelSuggestedLabelCount = Object.values(autoLabelSuggestions)
     .reduce((sum, suggestion) => sum + suggestionLabels(suggestion).length, 0);
+  const maxBatchCount = Math.max(samples.length, 1);
+  const parsedBatchCount = Number.parseInt(autoLabelBatchCountInput, 10);
+  const effectiveBatchCount = Math.min(
+    maxBatchCount,
+    Number.isInteger(parsedBatchCount) && parsedBatchCount > 0 ? parsedBatchCount : 1,
+  );
   const assignmentStatus = assignmentStatusQuery.data;
   const assignmentIsLocked = assignmentStatus?.status === 'submitted' || assignmentStatus?.status === 'approved';
   const effectiveLockInteractions = lockInteractions || assignmentIsLocked;
@@ -407,6 +446,19 @@ export function DataLabelingPanel({
     setSoftLabelInput('');
     setAutoLabelSuggestions({});
   }, [currentSample?.sampleId]);
+
+  useEffect(() => {
+    if (!samples.length) {
+      if (autoLabelBatchCountInput !== '1') {
+        setAutoLabelBatchCountInput('1');
+      }
+      return;
+    }
+
+    if (effectiveBatchCount !== parsedBatchCount) {
+      setAutoLabelBatchCountInput(String(effectiveBatchCount));
+    }
+  }, [autoLabelBatchCountInput, effectiveBatchCount, parsedBatchCount, samples.length]);
 
   useEffect(() => {
     if (currentIndex <= samples.length - 1) {
@@ -591,32 +643,59 @@ export function DataLabelingPanel({
   };
 
   const handleAutoLabelMessages = async () => {
-    if (!currentSample?.sampleId) {
-      setError('Cannot auto-label: missing sampleId');
+    if (!samples.length) {
+      setError('Cannot auto-label: there are no samples.');
       return;
     }
-    if (!currentMessagesPayload.length) {
-      setError('Cannot auto-label: this conversation has no messages.');
+
+    const targetSamples = samples
+      .slice(0, effectiveBatchCount)
+      .filter((sample) => sample.sampleId)
+      .map((sample) => ({
+        sampleId: String(sample.sampleId),
+        messages: sample.messages.map((message, index) => ({
+          messageIndex: index,
+          role: message.role,
+          content: message.content,
+        })),
+      }));
+
+    if (!targetSamples.length) {
+      setError('Cannot auto-label: selected samples are missing sampleId.');
       return;
     }
 
     setIsAutoLabelingMessages(true);
     setError('');
+    setBatchAutoLabelResult(null);
 
     try {
-      const payload = await dataprepApi.previewMessageAutoLabels(currentSample.sampleId, {
+      const payload = await dataprepApi.previewAndSaveMessageAutoLabelsBatch({
         provider: autoLabelProvider,
-        messages: currentMessagesPayload,
+        samples: targetSamples,
+        concurrency: 4,
       }, fromCommunityHub);
-      const nextSuggestions = (payload?.suggestions || []).reduce<Record<number, MessageAutoLabelSuggestion>>((acc, suggestion) => {
-        if (Number.isInteger(suggestion.messageIndex)) {
-          acc[Number(suggestion.messageIndex)] = suggestion;
-        }
-        return acc;
-      }, {});
-      setAutoLabelSuggestions(nextSuggestions);
+      setBatchAutoLabelResult(payload);
+
+      const currentSampleId = currentSample?.sampleId;
+      const currentSampleInBatch = currentSampleId
+        ? targetSamples.some((sample) => sample.sampleId === currentSampleId)
+        : false;
+
+      if (currentSampleId && currentSampleInBatch) {
+        await fetchLabels(currentSampleId, selectedTargetIndex);
+        await fetchMessageLabelCounts(currentSampleId);
+      }
+
+      setAutoLabelSuggestions({});
+      queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
+      queryClient.invalidateQueries({ queryKey: ['labeling-intent-action-status', datasetVersionId] });
+
+      toast.success(
+        `Auto-labeled ${payload.successCount}/${payload.processedCount} samples. Inserted ${payload.insertedCount} labels.`,
+      );
     } catch (err: any) {
-      setError(getErrorMessage(err, 'Message auto-labeling failed'));
+      setError(getErrorMessage(err, 'Batch message auto-labeling failed'));
     } finally {
       setIsAutoLabelingMessages(false);
     }
@@ -686,6 +765,28 @@ export function DataLabelingPanel({
               </span>
             </div>
           </div>
+
+          {currentSample && (
+            <div className="border-b border-gray-100 bg-slate-50/70 px-4 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-medium text-slate-500">Assignment</span>
+                {currentSample.assignees && currentSample.assignees.length > 0 ? (
+                  currentSample.assignees.map((item) => (
+                    <span
+                      key={item.id}
+                      className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700"
+                    >
+                      {item.name}
+                    </span>
+                  ))
+                ) : (
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                    Unassigned
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 overflow-auto p-4 space-y-3">
             {!currentSample && (
@@ -827,6 +928,11 @@ export function DataLabelingPanel({
                       <span className={`text-[10px] font-semibold ${scoreColorClass(label.score)}`}>
                         score: {label.score > 0 ? `+${label.score}` : label.score}
                       </span>
+                      {label.creator && (
+                        <span className="text-[10px] text-slate-400 font-medium truncate max-w-[120px]" title={`Created by: ${label.creator.name} (${label.creator.email})`}>
+                          by {label.creator.name}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
@@ -875,11 +981,21 @@ export function DataLabelingPanel({
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-t-xl">
               <Tag className="w-4 h-4 text-amber-600" />
               <h3 className="text-sm font-semibold text-gray-900">Add Label</h3>
+              <input
+                type="number"
+                min={1}
+                max={maxBatchCount}
+                value={autoLabelBatchCountInput}
+                onChange={(event) => setAutoLabelBatchCountInput(event.target.value)}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions || !samples.length}
+                className="ml-auto w-16 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-center text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Number of samples to auto-label from the start of the current list"
+              />
               <select
                 value={autoLabelProvider}
                 onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
                 disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions}
-                className="ml-auto rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Choose AI provider for message auto-labeling"
               >
                 <option value="gemini">Gemini</option>
@@ -889,9 +1005,9 @@ export function DataLabelingPanel({
               <button
                 type="button"
                 onClick={handleAutoLabelMessages}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || !currentSample?.sampleId || effectiveLockInteractions}
+                disabled={isAutoLabelingMessages || isSavingAutoLabels || !samples.length || effectiveLockInteractions}
                 className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Use AI to suggest hard labels for every message in this conversation"
+                title="Use AI to auto-label the first N samples in the current list"
               >
                 {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                 Auto Labeling
@@ -899,6 +1015,13 @@ export function DataLabelingPanel({
             </div>
 
             <div className="p-3 space-y-3">
+              {batchAutoLabelResult && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <p className="text-xs font-semibold text-amber-800">
+                    Processed {batchAutoLabelResult.processedCount} samples. Success: {batchAutoLabelResult.successCount}. Failed: {batchAutoLabelResult.failureCount}. Inserted labels: {batchAutoLabelResult.insertedCount}.
+                  </p>
+                </div>
+              )}
               {autoLabelSuggestionCount > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
@@ -939,7 +1062,7 @@ export function DataLabelingPanel({
                       type="button"
                       disabled={isSavingLabel || !currentSample?.sampleId || effectiveLockInteractions}
                       onClick={() => handleHardLabelVote(hardLabel)}
-                      title={hardLabel}
+                      title={`${hardLabel}: ${chip.description}`}
                       aria-label={`Add hard label ${hardLabel}`}
                       className={`min-w-0 rounded-full border px-2.5 py-1.5 text-[11px] font-bold transition-all disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center justify-center gap-1.5 shadow-sm ${
                         chip.className
@@ -1039,7 +1162,6 @@ export function DataLabelingPanel({
               </p>
               {!assignmentStatus.progress.isComplete && assignmentStatus.progress.missingMessages.length > 0 && (
                 <p className="mt-1 text-xs text-blue-600">
-                  Missing: #{assignmentStatus.progress.missingMessages[0].sampleIndex} message {assignmentStatus.progress.missingMessages[0].messageIndex + 1}
                   {assignmentStatus.progress.missingMessages.length > 1 ? ` (+${assignmentStatus.progress.missingMessages.length - 1} more)` : ''}
                 </p>
               )}

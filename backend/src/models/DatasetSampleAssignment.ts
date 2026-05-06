@@ -22,7 +22,6 @@ const DatasetSampleAssignmentSchema = new Schema<IDatasetSampleAssignment>(
       type: Schema.Types.ObjectId,
       ref: 'ProcessedDatasetItem',
       required: true,
-      unique: true,
       index: true,
     },
     assigneeId: {

@@ -142,6 +142,52 @@ export const deduplicate = async (req: Request, res: Response) => {
 };
 
 /**
+ * POST /api/cluster/safe-split
+ *
+ * Forward request to GPU_SERVICE_URL/api/cluster/safe-split.
+ * GPU service owns embedding, semantic conflict detection, and auto re-splitting.
+ */
+export const safeSplit = async (req: Request, res: Response) => {
+  try {
+    const {
+      data,
+      test_percentage = 10,
+      threshold = 0.85,
+      max_attempts = 20,
+      seed = 42,
+    } = req.body;
+
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      return res.status(400).json({ error: 'Missing or empty data array' });
+    }
+
+    console.log(
+      `[Backend] Safe split ${data.length} items (test_percentage=${test_percentage}, threshold=${threshold}, max_attempts=${max_attempts}, seed=${seed}) → ${getGpuUrl()}/api/cluster/safe-split`
+    );
+
+    const gpuResponse = await getGpuClient().safeSplit({
+      data,
+      test_percentage,
+      threshold,
+      max_attempts,
+      seed,
+    });
+
+    console.log(
+      `[Backend] Safe split response (${gpuResponse.status}): ${JSON.stringify(gpuResponse.data).slice(0, 300)}`
+    );
+
+    return res.status(gpuResponse.status).json(gpuResponse.data);
+  } catch (err: any) {
+    console.error('[Backend] safeSplit error:', err);
+    if (String(err?.message || '').includes('non-JSON')) {
+      return res.status(502).json({ error: err.message });
+    }
+    return res.status(500).json({ error: err.message || 'Failed to generate safe split' });
+  }
+};
+
+/**
  * DELETE /api/cluster/cache
  *
  * Forward request to GPU_SERVICE_URL/api/cluster/cache to clear embedding cache

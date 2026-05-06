@@ -27,7 +27,7 @@ import {
   appendMessageToSession,
   deleteSession
 } from '../controllers/chatSessionController';
-import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate } from '../controllers/clusterController';
+import { clusterData, clusterFilter, deleteClusterCache, clusterVisualize, removeNoise, deduplicate, safeSplit } from '../controllers/clusterController';
 import { ModelRegistryController } from '../controllers/modelRegistryController';
 import { PromptController } from '../controllers/promptController';
 import authRoutes from './authRoutes';
@@ -114,6 +114,7 @@ router.post('/huggingface/upload', (req, res) => hfController.uploadDataset(req,
 // Gemini Evaluation
 router.post('/evaluate', (req, res) => evalController.evaluate(req, res));
 router.post('/evaluate/refine', (req, res) => evalController.refine(req, res));
+router.post('/evaluate/rewrite', (req, res) => evalController.rewrite(req, res));
 router.post('/evaluate/save', (req, res) => evalController.saveEvaluation(req, res));
 router.get('/evaluate/history', authMiddleware, (req, res) => evalController.getEvaluationHistory(req, res));
 router.patch('/evaluate/history/:id', authMiddleware, (req, res) => evalController.updateEvaluationHistory(req, res));
@@ -138,6 +139,7 @@ router.post('/cluster', clusterData);
 router.post('/cluster/filter', clusterFilter);
 router.post('/cluster/remove-noise', removeNoise);
 router.post('/cluster/deduplicate', deduplicate);
+router.post('/cluster/safe-split', safeSplit);
 router.delete('/cluster/cache', deleteClusterCache);
 
 // Config Routes

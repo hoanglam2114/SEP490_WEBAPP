@@ -14,6 +14,8 @@ type ClusterPanelProps = {
   clusterGroups: ClusterGroup[];
   clusterK: number;
   setClusterK: (value: number) => void;
+  recommendedK?: number | null;
+  recommendationReason?: string;
   dbscanEps: number;
   setDbscanEps: (value: number) => void;
   dbscanMinSamples: number;
@@ -41,6 +43,8 @@ export function ClusterPanel({
   clusterGroups,
   clusterK,
   setClusterK,
+  recommendedK,
+  recommendationReason,
   dbscanEps,
   setDbscanEps,
   dbscanMinSamples,
@@ -91,6 +95,12 @@ export function ClusterPanel({
                   onChange={(e) => setClusterK(Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 8)))}
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
                 />
+                {typeof recommendedK === 'number' && (
+                  <p className="mt-2 text-xs text-blue-700">
+                    Recommended K: <span className="font-semibold">{recommendedK}</span>
+                    {recommendationReason ? ` (${recommendationReason})` : ''}
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -131,9 +141,9 @@ export function ClusterPanel({
             <div className="space-y-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
               <div className="flex items-center justify-between">
                 <label className="text-sm font-semibold text-gray-700">Similarity Threshold (for Deduplicate)</label>
-                <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(2)}</span>
+                <span className="text-sm font-mono bg-white px-2 py-0.5 rounded border border-gray-200">{filterThreshold.toFixed(3)}</span>
               </div>
-              <input type="range" min="0" max="1" step="0.01" value={filterThreshold} onChange={(e) => setFilterThreshold(parseFloat(e.target.value))} className="w-full" />
+              <input type="range" min="0.8" max="1" step="0.001" value={filterThreshold} onChange={(e) => setFilterThreshold(parseFloat(e.target.value))} className="w-full" />
               <div className="flex flex-col gap-2">
                 <div className="flex gap-2">
                   <button

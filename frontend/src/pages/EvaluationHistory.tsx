@@ -455,7 +455,7 @@ export const EvaluationHistory: React.FC = () => {
               </svg>
             </button>
             <div>
-              <h1 className="text-xl font-bold text-slate-800">Evaluation History</h1>
+              <h1 className="text-xl font-bold text-slate-800">Preparation History</h1>
               <p className="text-xs text-slate-500">Project {'->'} Dataset Version {'->'} Item detail.</p>
             </div>
           </div>
