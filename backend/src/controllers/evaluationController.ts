@@ -741,6 +741,11 @@ export class EvaluationController {
         itemsByVersion.get(key)!.push(item);
       }
 
+      const visibleCountByVersion = new Map<string, number>();
+      for (const [versionId, versionItems] of itemsByVersion.entries()) {
+        visibleCountByVersion.set(versionId, versionItems.length);
+      }
+
       const versionsByProject = new Map<string, any[]>();
       for (const version of versions as any[]) {
         const versionItemRows = itemsByVersion.get(String(version._id)) || [];
@@ -763,13 +768,14 @@ export class EvaluationController {
         const avgOverall = perSampleAvgOveralls.length
           ? perSampleAvgOveralls.reduce((sum, value) => sum + value, 0) / perSampleAvgOveralls.length
           : null;
+        const visibleSamples = visibleCountByVersion.get(String(version._id)) || 0;
 
         const summary = {
           _id: String(version._id),
           versionName: version.versionName,
           prepareResumeStep: Number((version as any).prepareResumeStep || 5),
           similarityThreshold: version.similarityThreshold,
-          totalSamples: version.totalSamples,
+          totalSamples: visibleSamples,
           createdAt: version.createdAt,
           evaluatedCount,
           avgOverall,
@@ -785,7 +791,8 @@ export class EvaluationController {
       const projects = projectGroups.map((group) => ({
         projectName: String(group.projectName || 'Untitled Project'),
         versionCount: Number(group.versionCount || 0),
-        totalSamples: Number(group.totalSamples || 0),
+        totalSamples: (versionsByProject.get(String(group.projectName || 'Untitled Project')) || [])
+          .reduce((sum, version) => sum + Number(version.totalSamples || 0), 0),
         latestCreatedAt: group.latestCreatedAt,
         versions: versionsByProject.get(String(group.projectName || 'Untitled Project')) || [],
       }));

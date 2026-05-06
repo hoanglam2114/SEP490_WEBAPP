@@ -43,14 +43,22 @@ function metricLabels(scores: ScoreMap): string[] {
   return labels;
 }
 
-function renderScoreSummary(scores: ScoreMap): string {
+function renderScoreSummary(scores: ScoreMap): React.ReactNode {
   const labels = metricLabels(scores);
-  const parts = labels.map((label) => {
-    const value = scores[label as keyof ScoreMap] as number | null | undefined;
-    return `${label}: ${formatValue(value)}`;
-  });
-  parts.push(`overall: ${formatValue(scores.overall)}`);
-  return parts.join(' | ');
+
+  return (
+    <div className="space-y-1 whitespace-nowrap">
+      {labels.map((label) => {
+        const value = scores[label as keyof ScoreMap] as number | null | undefined;
+        return (
+          <div key={label}>
+            {label}: {formatValue(value)}
+          </div>
+        );
+      })}
+      <div>overall: {formatValue(scores.overall)}</div>
+    </div>
+  );
 }
 
 function formatDate(value?: string): string {
@@ -121,7 +129,7 @@ export function ScoreHistoryModal({
                 {evaluations.map((evaluation, index) => (
                   <tr key={`${evaluation.timestamp || 'none'}-${evaluation.evaluatedBy}-${index}`} className="border-t border-gray-100 align-top">
                     <td className="px-3 py-2 text-gray-800 whitespace-nowrap">{evaluation.evaluatedBy || '-'}</td>
-                    <td className="px-3 py-2 text-gray-700 break-words">{renderScoreSummary(evaluation.scores || {})}</td>
+                    <td className="px-3 py-2 text-gray-700 break-words align-top">{renderScoreSummary(evaluation.scores || {})}</td>
                     <td className="px-3 py-2 text-gray-700 break-words whitespace-pre-wrap">{evaluation.reason || '-'}</td>
                     <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{formatDate(evaluation.timestamp)}</td>
                   </tr>

@@ -3708,9 +3708,6 @@ export function ConversionPage() {
           ...prev,
           ...Object.fromEntries(historyEntries),
         }));
-        setCurrentDatasetVersionId(null);
-        setDatasetVersionPromptId('');
-        setSampleIdMap({});
       }
     },
     onError: (error: any) => toast.error(error.response?.data?.error || error.message || 'Refinement failed'),
@@ -4053,12 +4050,6 @@ export function ConversionPage() {
       stats: nextStats,
     });
     setOriginalConvertedResult((prev) => prev || conversionResult);
-    setCurrentDatasetVersionId(null);
-    setDatasetVersionPromptId('');
-    setSampleIdMap({});
-    setEvaluationMap({});
-    setRefinedRowIds(new Set());
-    setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setActiveClassificationGroup(null);
@@ -4210,12 +4201,6 @@ export function ConversionPage() {
     });
 
     setOriginalConvertedResult((prev) => prev || conversionResult);
-    setCurrentDatasetVersionId(null);
-    setDatasetVersionPromptId('');
-    setSampleIdMap({});
-    setEvaluationMap({});
-    setRefinedRowIds(new Set());
-    setRefineHistoryMap({});
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
     setRewriteRows((prev) => prev.map((row) => {
@@ -4400,7 +4385,7 @@ export function ConversionPage() {
         timestamp: item.timestamp,
       }))
     );
-    setScoreHistoryModalTitle(`Lich su diem - ${row.blockLabel}`);
+    setScoreHistoryModalTitle(`Evaluate mark - ${row.blockLabel}`);
     setScoreHistoryModalOpen(true);
   };
 
