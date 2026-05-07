@@ -254,7 +254,6 @@ export const EvaluationHistory: React.FC = () => {
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [projectMinOverallMap, setProjectMinOverallMap] = useState<Record<string, string>>({});
   const [showUnaudited, setShowUnaudited] = useState(false);
-  const [showRejectedSamples, setShowRejectedSamples] = useState(false);
   const [deletedSampleIds, setDeletedSampleIds] = useState<Set<string>>(new Set());
 
   const [scoreHistoryModalOpen, setScoreHistoryModalOpen] = useState(false);
@@ -276,12 +275,11 @@ export const EvaluationHistory: React.FC = () => {
   }, [openActionMenuSampleId]);
 
   const historyQuery = useQuery<EvaluationHistoryResponse>({
-    queryKey: ['evaluation-history', page, projectSearch, showRejectedSamples],
+    queryKey: ['evaluation-history', page, projectSearch],
     queryFn: () => apiService.getEvaluationHistory({
       page,
       limit: 20,
       projectSearch,
-      showRejected: showRejectedSamples,
     }),
   });
 
@@ -300,9 +298,15 @@ export const EvaluationHistory: React.FC = () => {
   );
 
   const versionQuery = useQuery<VersionDetailResponse>({
-    queryKey: ['dataset-version-detail', selectedVersionId, showRejectedSamples],
+    queryKey: ['dataset-version-detail', selectedVersionId],
     enabled: Boolean(selectedVersionId),
-    queryFn: () => dataprepApi.getDatasetVersionDetail(selectedVersionId as string, showRejectedSamples),
+    queryFn: () => dataprepApi.getDatasetVersionDetail(selectedVersionId as string),
+  });
+
+  const qualityQuery = useQuery({
+    queryKey: ['dataset-version-quality', selectedVersionId],
+    enabled: Boolean(selectedVersionId),
+    queryFn: () => apiService.getQualityClassifiedSamples(selectedVersionId as string),
   });
 
   useEffect(() => {
@@ -328,6 +332,29 @@ export const EvaluationHistory: React.FC = () => {
 
   const detailItems = versionQuery.data?.items ?? [];
 
+  const filteredDetailItems = useMemo(() => {
+    if (!detailItems.length) {
+      return [];
+    }
+
+    const qualityItems = qualityQuery.data?.items;
+    if (!qualityItems?.length) {
+      return detailItems;
+    }
+
+    const nonRejectSampleKeys = new Set(
+      qualityItems
+        .filter((item: any) => item.bucket !== 'Reject')
+        .map((item: any) => String(item.sampleId || item._id))
+    );
+
+    if (!nonRejectSampleKeys.size) {
+      return detailItems;
+    }
+
+    return detailItems.filter((item) => nonRejectSampleKeys.has(String(item.sampleKey)));
+  }, [detailItems, qualityQuery.data?.items]);
+
   const filteredProjects = useMemo(() => {
     const needle = normalizeVietnamese(projectSearch);
     if (!needle) return projects;
@@ -335,7 +362,7 @@ export const EvaluationHistory: React.FC = () => {
   }, [projectSearch, projects]);
 
   const visibleItems = useMemo(() => {
-    const baseItems = detailItems.filter((item) => !deletedSampleIds.has(item.sampleId));
+    const baseItems = filteredDetailItems.filter((item) => !deletedSampleIds.has(item.sampleId));
     if (!baseItems.length) return [];
 
     const minOverallRaw = projectMinOverallMap[selectedProjectName || ''] ?? '';
@@ -351,51 +378,64 @@ export const EvaluationHistory: React.FC = () => {
       }
       return Number(overall) >= minOverall;
     });
-  }, [deletedSampleIds, detailItems, projectMinOverallMap, selectedProjectName, showUnaudited]);
+  }, [deletedSampleIds, filteredDetailItems, projectMinOverallMap, selectedProjectName, showUnaudited]);
 
-  const handleContinuePrepare = () => {
-    if (!versionQuery.data?.datasetVersion || !visibleItems.length) {
+  const handleContinuePrepare = async () => {
+    if (!versionQuery.data?.datasetVersion) {
       toast.error('Không có version detail để tiếp tục đánh giá.');
       return;
     }
 
-    const format = visibleItems[0] && isOpenAIData(visibleItems[0].data) ? 'openai' : 'alpaca';
-    const evaluationMap = Object.fromEntries(
-      visibleItems.map((item) => {
-        const evaluations = normalizeItemEvaluations(item).map((entry) => ({
-          evaluatedBy: entry.evaluatedBy,
-          scores: {
-            accuracy: normalizeNullableScore(entry.scores?.accuracy),
-            clarity: normalizeNullableScore(entry.scores?.clarity),
-            completeness: normalizeNullableScore(entry.scores?.completeness),
-            socratic: normalizeNullableScore(entry.scores?.socratic),
-            encouragement: normalizeNullableScore(entry.scores?.encouragement),
-            factuality: normalizeNullableScore(entry.scores?.factuality),
-            overall: normalizeNullableScore(entry.scores?.overall),
+    try {
+      const versionDetail = versionQuery.data;
+      const itemsToLoad = filteredDetailItems.filter((item) => !deletedSampleIds.has(item.sampleId));
+
+      if (!itemsToLoad.length) {
+        toast.error('Không có mẫu dữ liệu hợp lệ để tiếp tục.');
+        return;
+      }
+
+      const format = itemsToLoad[0] && isOpenAIData(itemsToLoad[0].data) ? 'openai' : 'alpaca';
+
+      const evaluationMap = Object.fromEntries(
+        itemsToLoad.map((item) => {
+          const evaluations = normalizeItemEvaluations(item).map((entry) => ({
+            evaluatedBy: entry.evaluatedBy,
+            scores: {
+              accuracy: normalizeNullableScore(entry.scores?.accuracy),
+              clarity: normalizeNullableScore(entry.scores?.clarity),
+              completeness: normalizeNullableScore(entry.scores?.completeness),
+              socratic: normalizeNullableScore(entry.scores?.socratic),
+              encouragement: normalizeNullableScore(entry.scores?.encouragement),
+              factuality: normalizeNullableScore(entry.scores?.factuality),
+              overall: normalizeNullableScore(entry.scores?.overall),
+            },
+            reason: String(entry.reason || entry.scores?.reason || ''),
+            timestamp: entry.timestamp || item.updatedAt || item.createdAt,
+          }));
+
+          return [item.sampleKey, { evaluations }];
+        })
+      );
+
+      navigate('/chatbotconverter', {
+        state: {
+          loadProject: {
+            projectName: versionDetail.datasetVersion.projectName,
+            format,
+            data: format === 'openai'
+              ? itemsToLoad.map((item) => ({ conversation_id: item.sampleKey, messages: item.data.messages || [], cluster: item.data.cluster }))
+              : itemsToLoad.map((item) => ({ id: item.sampleKey, ...item.data })),
+            evaluationMap,
+            datasetVersionId: versionDetail.datasetVersion._id,
+            sampleIdMap: Object.fromEntries(itemsToLoad.map((item) => [item.sampleKey, item.sampleId])),
+            startStep: 11,
           },
-          reason: String(entry.reason || entry.scores?.reason || ''),
-          timestamp: entry.timestamp || item.updatedAt || item.createdAt,
-        }));
-
-        return [item.sampleKey, { evaluations }];
-      })
-    );
-
-    navigate('/chatbotconverter', {
-      state: {
-        loadProject: {
-          projectName: versionQuery.data.datasetVersion.projectName,
-          format,
-          data: format === 'openai'
-            ? visibleItems.map((item) => ({ conversation_id: item.sampleKey, messages: item.data.messages || [], cluster: item.data.cluster }))
-            : visibleItems.map((item) => ({ id: item.sampleKey, ...item.data })),
-          evaluationMap,
-          datasetVersionId: versionQuery.data.datasetVersion._id,
-          sampleIdMap: Object.fromEntries(visibleItems.map((item) => [item.sampleKey, item.sampleId])),
-          startStep: versionQuery.data.datasetVersion.prepareResumeStep || 5,
         },
-      },
-    });
+      });
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Tiếp tục prepare thất bại.');
+    }
   };
 
   const handleDownloadVersion = () => {
@@ -461,7 +501,9 @@ export const EvaluationHistory: React.FC = () => {
           </div>
 
           <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg">
-            {selectedVersion ? selectedVersion.versionName : `${total} projects`}
+            {selectedVersion
+              ? `${visibleItems.length} / ${filteredDetailItems.length || selectedVersion.totalSamples} records`
+              : `${total} projects`}
           </div>
         </div>
       </header>
@@ -511,7 +553,7 @@ export const EvaluationHistory: React.FC = () => {
                       <p className="text-base font-semibold text-slate-900 leading-snug break-words">{project.projectName}</p>
                       <div className="space-y-1 text-xs text-slate-500">
                         <p>{project.versionCount} versions</p>
-                        <p>{project.totalSamples} samples</p>
+                        <p>{project.totalSamples} records</p>
                         <p>Updated: {toDateTime(project.latestCreatedAt)}</p>
                       </div>
                     </div>
@@ -538,7 +580,7 @@ export const EvaluationHistory: React.FC = () => {
                 </button>
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{selectedProject.projectName}</p>
-                  <p className="text-xs text-slate-500">{selectedProject.versionCount} versions • {selectedProject.totalSamples} samples</p>
+                  <p className="text-xs text-slate-500">{selectedProject.versionCount} versions • {selectedProject.totalSamples} records</p>
                 </div>
               </div>
             </div>
@@ -560,7 +602,7 @@ export const EvaluationHistory: React.FC = () => {
                     <span className="text-xs font-semibold px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600">Open</span>
                   </div>
                   <div className="mt-3 space-y-1 text-xs text-slate-500">
-                    <p>{version.totalSamples} samples</p>
+                    <p>{version.totalSamples} records</p>
                     <p>{version.evaluatedCount} evaluated</p>
                     <p>Avg overall: {version.avgOverall === null ? '-' : version.avgOverall.toFixed(2)}</p>
                     <p>Updated: {toDateTime(version.createdAt)}</p>
@@ -632,20 +674,10 @@ export const EvaluationHistory: React.FC = () => {
                 <span>Displaying unevaluated data</span>
               </label>
 
-              <button
-                type="button"
-                onClick={() => setShowRejectedSamples((prev) => !prev)}
-                className={`px-3 py-1.5 text-sm font-semibold rounded-lg border transition-colors ${
-                  showRejectedSamples
-                    ? 'bg-rose-100 text-rose-700 border-rose-300'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                }`}
-              >
-                Show REJECTED samples (3+ votes)
-              </button>
+              {/* Removed "Show REJECTED samples" control - history now syncs with version's quality classification */}
 
               <div className="ml-auto text-xs text-slate-500">
-                Showing {visibleItems.length} / {detailItems.length} records
+                Showing {visibleItems.length} / {filteredDetailItems.length} records
               </div>
             </div>
 
