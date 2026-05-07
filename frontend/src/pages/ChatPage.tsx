@@ -4,15 +4,36 @@ import toast from "react-hot-toast";
 import { apiService } from "../services/api";
 import {
     Menu, Plus, MessageSquare, MoreVertical,
-    Sparkles, ChevronUp,
+    Sparkles, ChevronUp, ChevronDown,
     RotateCcw, Send, ArrowLeft, CheckCircle2,
     Loader2, SplitSquareHorizontal, MonitorSmartphone,
-    AlertCircle, Settings2
+    AlertCircle, Settings2, BookOpen, X, Square, Trash2
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import { getAuthToken } from "../services/authSession";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const BASE_MODEL_OPTIONS = [
+    "Qwen/Qwen3-0.6B",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "unsloth/gpt-oss-20b",
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    "zai-org/GLM-4.7-Flash",
+    "unsloth/GLM-4.7-Flash-GGUF",
+    "stepfun-ai/Step-3.5-Flash",
+    "unsloth/Qwen3-Coder-Next-GGUF",
+    "lightonai/LightOnOCR-2-1B",
+    "unsloth/gpt-oss-20b-GGUF",
+    "Qwen/Qwen3-Coder-Next",
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+    "zai-org/GLM-4.7",
+    "MiniMaxAI/MiniMax-M2.1",
+    "sshleifer/tiny-gpt2",
+];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +80,16 @@ const DEFAULT_PARAMS: InferenceParams = {
     repetitionPenalty: 1.1,
 };
 
+// ─── Saved Prompt type ────────────────────────────────────────────────────────
+
+interface SavedPrompt {
+    _id: string;
+    name: string;
+    version: number;
+    content: string;
+    description?: string;
+}
+
 // ─── Markdown Renderer ────────────────────────────────────────────────────────
 
 const MarkdownRenderer = ({ content }: { content: string }) => (
@@ -104,7 +135,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => (
 
 // ─── Params Summary Bar ───────────────────────────────────────────────────────
 
-function ParamsSummaryBar({ params, onToggleLogs, showLogsActive }: { params: InferenceParams, onToggleLogs?: () => void, showLogsActive?: boolean }) {
+function ParamsSummaryBar({ params }: { params: InferenceParams }) {
     const chips = [
         { label: "Tokens", value: params.maxNewTokens },
         { label: "Temp", value: params.temperature },
@@ -124,71 +155,150 @@ function ParamsSummaryBar({ params, onToggleLogs, showLogsActive }: { params: In
                 </span>
             ))}
             {params.systemPrompt && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-violet-50 text-violet-500 border border-violet-200 px-2 py-0.5 rounded-full max-w-[160px]">
+                <span
+                    className="inline-flex items-center gap-1 text-[11px] font-medium bg-violet-50 text-violet-500 border border-violet-200 px-2 py-0.5 rounded-full max-w-[180px]"
+                    title={params.systemPrompt}
+                >
                     <span className="text-violet-400">Sys</span>
                     <span className="truncate text-violet-700 font-semibold">{params.systemPrompt}</span>
                 </span>
-            )}
-            {onToggleLogs && (
-                <button
-                    onClick={onToggleLogs}
-                    className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border transition-all whitespace-nowrap ml-1
-                        ${showLogsActive
-                            ? "bg-slate-800 text-white border-slate-800"
-                            : "bg-white text-slate-600 border-slate-300 hover:bg-slate-100"}`}
-                >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 6h16M4 12h16M4 18h7" />
-                    </svg>
-                    Logs
-                </button>
             )}
         </div>
     );
 }
 
-// ─── Global Logs Panel ────────────────────────────────────────────────────────
+// ─── Logs Right Panel ─────────────────────────────────────────────────────────
+// Permanent right-side column, collapsible to a narrow strip
 
-function GlobalLogsPanel({ logs, onClose }: { logs: LogEntry[], onClose: () => void }) {
+function LogsSidePanel({
+    logs,
+    onClear,
+    collapsed,
+    onToggleCollapse,
+}: {
+    logs: LogEntry[];
+    onClear: () => void;
+    collapsed: boolean;
+    onToggleCollapse: () => void;
+}) {
     const endRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
-        endRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [logs]);
+        if (!collapsed) endRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [logs, collapsed]);
 
-    return (
-        <div className="absolute bottom-full left-0 right-0 mb-3 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl p-4 z-50 flex flex-col h-64 text-slate-300 font-mono text-[12px] overflow-hidden" style={{ boxShadow: "0 -10px 40px -10px rgba(0,0,0,0.5)" }}>
-            <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-700/80 shrink-0">
-                <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                    <span className="font-bold text-slate-100 uppercase tracking-widest text-[11px]">Inference Logs Console</span>
-                </div>
-                <button onClick={onClose} className="p-1 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white">
-                    <ChevronUp size={14} className="rotate-180" />
+    const typeColor = (t: LogEntry["type"]) =>
+        t === "error" ? "text-red-400" :
+        t === "success" ? "text-emerald-400" :
+        t === "warning" ? "text-amber-400" : "text-slate-300";
+
+    const typeDot = (t: LogEntry["type"]) =>
+        t === "error" ? "bg-red-500" :
+        t === "success" ? "bg-emerald-500" :
+        t === "warning" ? "bg-amber-500" : "bg-slate-500";
+
+    /* ── Collapsed: narrow strip ── */
+    if (collapsed) {
+        return (
+            <div className="w-8 bg-slate-900 border-l border-slate-700 flex flex-col items-center py-3 gap-3 shrink-0">
+                <button
+                    onClick={onToggleCollapse}
+                    className="p-1 text-slate-400 hover:text-white transition-colors"
+                    title="Mở Logs"
+                >
+                    <ChevronUp size={14} className="-rotate-90" />
                 </button>
+                {logs.length > 0 && (
+                    <span className="text-[9px] font-bold text-slate-500 font-mono rotate-90 whitespace-nowrap mt-1">
+                        {logs.length}
+                    </span>
+                )}
+                {/* Dot indicators for latest log type */}
+                {logs.length > 0 && (
+                    <div className={`w-2 h-2 rounded-full ${typeDot(logs[logs.length - 1].type)}`} />
+                )}
             </div>
-            <div className="flex-1 overflow-y-auto space-y-2 pr-2 scroll-smooth" style={{ scrollbarWidth: "thin", scrollbarColor: "#475569 transparent" }}>
+        );
+    }
+
+    /* ── Expanded panel ── */
+    return (
+        <div className="w-64 bg-slate-900 border-l border-slate-700 flex flex-col shrink-0">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-700/80 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                    <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest truncate">
+                        Inference Logs
+                    </span>
+                    {logs.length > 0 && (
+                        <span className="text-[10px] text-slate-600 font-mono shrink-0">{logs.length}</span>
+                    )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                    {logs.length > 0 && (
+                        <button
+                            onClick={onClear}
+                            className="text-[10px] text-slate-500 hover:text-red-400 px-1.5 py-0.5 rounded transition-colors"
+                            title="Xoá logs"
+                        >
+                            Xoá
+                        </button>
+                    )}
+                    <button
+                        onClick={onToggleCollapse}
+                        className="p-1 text-slate-500 hover:text-white hover:bg-slate-800 rounded transition-colors"
+                        title="Thu gọn"
+                    >
+                        <ChevronUp size={12} className="rotate-90" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Log entries */}
+            <div
+                className="flex-1 overflow-y-auto py-2 font-mono"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "#334155 transparent" }}
+            >
                 {logs.length === 0 ? (
-                    <div className="text-slate-500 italic flex h-full items-center justify-center">Chưa có log...</div>
+                    <div className="flex flex-col items-center justify-center h-full gap-2 px-4">
+                        <div className="w-6 h-6 rounded-lg bg-slate-800 flex items-center justify-center">
+                            <svg className="w-3 h-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                            </svg>
+                        </div>
+                        <span className="text-[11px] text-slate-600 italic text-center">Chưa có log</span>
+                    </div>
                 ) : (
-                    logs.map((L, i) => (
-                        <div key={i} className="flex gap-2.5 items-start leading-relaxed">
-                            <span className="text-slate-500 shrink-0 select-none">[{new Date(L.ts).toLocaleTimeString()}]</span>
-                            {L.instanceId && <span className="text-violet-400 font-semibold shrink-0 select-none">[Model {L.instanceId}]</span>}
-                            <div className={`flex-1 min-w-0 ${L.type === 'error' ? 'text-red-400' :
-                                L.type === 'success' ? 'text-emerald-400' :
-                                    L.type === 'warning' ? 'text-amber-400' : 'text-slate-300'
-                                }`}>
-                                <p className="break-words">{L.message}</p>
+                    <div className="space-y-px">
+                        {logs.map((L, i) => (
+                            <div key={i} className="px-3 py-1.5 hover:bg-slate-800/50 transition-colors group">
+                                {/* Time + instance badge row */}
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                    <span className="text-[10px] text-slate-600 shrink-0">
+                                        {new Date(L.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                                    </span>
+                                    {L.instanceId !== undefined && (
+                                        <span className="text-[9px] font-bold text-violet-500 bg-violet-950/60 px-1 rounded shrink-0">
+                                            M{L.instanceId}
+                                        </span>
+                                    )}
+                                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ml-auto ${typeDot(L.type)}`} />
+                                </div>
+                                {/* Message */}
+                                <p className={`text-[11px] leading-relaxed break-words ${typeColor(L.type)}`}>
+                                    {L.message}
+                                </p>
+                                {/* Data payload */}
                                 {L.data && (
-                                    <pre className="text-[10px] mt-1.5 p-2 bg-slate-950/50 rounded-lg text-slate-400 overflow-x-auto whitespace-pre-wrap word-break">
+                                    <pre className="mt-1 text-[10px] text-slate-500 bg-slate-950/60 rounded p-1.5 overflow-x-auto whitespace-pre-wrap border border-slate-800 leading-relaxed">
                                         {JSON.stringify(L.data, null, 2)}
                                     </pre>
                                 )}
                             </div>
-                        </div>
-                    ))
+                        ))}
+                        <div ref={endRef} />
+                    </div>
                 )}
-                <div ref={endRef} />
             </div>
         </div>
     );
@@ -205,12 +315,40 @@ function ParamsDropdown({
     onChange: (p: InferenceParams) => void;
     onClose: () => void;
 }) {
-    const fields: { key: keyof InferenceParams; label: string; placeholder: string; step?: number; type: "number" | "text" }[] = [
-        { key: "maxNewTokens", label: "Max Tokens", placeholder: "512", type: "number" },
-        { key: "temperature", label: "Temperature", placeholder: "0.7", step: 0.1, type: "number" },
-        { key: "topK", label: "Top K", placeholder: "50", type: "number" },
-        { key: "topP", label: "Top P", placeholder: "0.95", step: 0.05, type: "number" },
-        { key: "repetitionPenalty", label: "Repetition Penalty", placeholder: "1.1", step: 0.1, type: "number" },
+    const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+    const [showPromptPicker, setShowPromptPicker] = useState(false);
+    const [loadingPrompts, setLoadingPrompts] = useState(false);
+
+    const fetchSavedPrompts = async () => {
+        if (savedPrompts.length > 0) { setShowPromptPicker(true); return; }
+        setLoadingPrompts(true);
+        try {
+            const token = getAuthToken();
+            const headers: Record<string, string> = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const res = await fetch("/api/dataset-prompts", { headers });
+            if (!res.ok) throw new Error("Không tải được danh sách prompt");
+            const data = await res.json();
+            setSavedPrompts(data.prompts || []);
+            setShowPromptPicker(true);
+        } catch {
+            toast.error("Không tải được danh sách system prompt");
+        } finally {
+            setLoadingPrompts(false);
+        }
+    };
+
+    const fields: {
+        key: keyof InferenceParams;
+        label: string;
+        placeholder: string;
+        step?: number;
+    }[] = [
+        { key: "maxNewTokens", label: "Max Tokens", placeholder: "512" },
+        { key: "temperature", label: "Temperature", placeholder: "0.7", step: 0.1 },
+        { key: "topK", label: "Top K", placeholder: "50" },
+        { key: "topP", label: "Top P", placeholder: "0.95", step: 0.05 },
+        { key: "repetitionPenalty", label: "Rep. Penalty", placeholder: "1.1", step: 0.1 },
     ];
 
     const set = (key: keyof InferenceParams, raw: string) => {
@@ -219,44 +357,123 @@ function ParamsDropdown({
     };
 
     return (
-        <div className="absolute bottom-full left-0 mb-2 z-50 w-80 bg-white border border-slate-200 rounded-2xl shadow-lg shadow-slate-200/60 p-4">
+        <div className="absolute bottom-full left-0 mb-2 z-50 w-[340px] bg-white border border-slate-200 rounded-2xl shadow-xl shadow-slate-200/70 overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between mb-3">
-                <span className="text-[12px] font-bold text-slate-700 uppercase tracking-widest">Tham số Inference</span>
-                <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg transition-colors text-slate-400 hover:text-slate-700">
-                    <ChevronUp size={14} />
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
+                <span className="text-[11px] font-bold text-slate-600 uppercase tracking-widest">
+                    Tham số Inference
+                </span>
+                <button
+                    onClick={onClose}
+                    className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-700"
+                >
+                    <X size={13} />
                 </button>
             </div>
-            <div className="p-4 flex-1 overflow-y-auto"></div>
-            {/* Number fields — 2 cols */}
-            <div className="grid grid-cols-2 gap-2 mb-3">
-                {fields.map(({ key, label, placeholder, step }) => (
-                    <div key={key} className="flex flex-col gap-1">
-                        <label className="text-[11px] font-medium text-slate-400 ml-0.5">{label}</label>
-                        <input
-                            type="number"
-                            step={step}
-                            placeholder={placeholder}
-                            value={params[key]}
-                            onChange={(e) => set(key, e.target.value)}
-                            className="bg-slate-50 border border-slate-200 focus:bg-white focus:border-slate-400 rounded-lg px-2.5 py-1.5 text-[13px] outline-none transition-all"
-                        />
-                    </div>
-                ))}
-            </div>
 
-            {/* System prompt */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-slate-400 ml-0.5">System Prompt</label>
-                <textarea
-                    placeholder="Nhập hướng dẫn cho AI..."
-                    value={params.systemPrompt}
-                    onChange={(e) => onChange({ ...params, systemPrompt: e.target.value })}
-                    className="bg-slate-50 border border-slate-200 focus:bg-white focus:border-slate-400 rounded-lg px-3 py-2 text-[13px] outline-none transition-all resize-none h-16"
-                />
+            <div className="p-4 space-y-4">
+                {/* Number fields — 2 cols */}
+                <div className="grid grid-cols-2 gap-2.5">
+                    {fields.map(({ key, label, placeholder, step }) => (
+                        <div key={key} className="flex flex-col gap-1">
+                            <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide ml-0.5">
+                                {label}
+                            </label>
+                            <input
+                                type="number"
+                                step={step}
+                                placeholder={placeholder}
+                                value={params[key]}
+                                onChange={(e) => set(key, e.target.value)}
+                                className="bg-slate-50 border border-slate-200 focus:bg-white focus:border-slate-400 rounded-lg px-2.5 py-1.5 text-[13px] text-slate-800 outline-none transition-all"
+                            />
+                        </div>
+                    ))}
+                </div>
+
+                {/* System prompt */}
+                <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                            System Prompt
+                        </label>
+                        <button
+                            onClick={fetchSavedPrompts}
+                            disabled={loadingPrompts}
+                            className="flex items-center gap-1 text-[10px] font-semibold text-violet-600 hover:text-violet-800 bg-violet-50 hover:bg-violet-100 border border-violet-200 px-2 py-0.5 rounded-full transition-all disabled:opacity-50"
+                            title="Tải từ lưu trữ Data Prepare"
+                        >
+                            {loadingPrompts ? (
+                                <Loader2 size={9} className="animate-spin" />
+                            ) : (
+                                <BookOpen size={9} />
+                            )}
+                            Tải từ lưu trữ
+                        </button>
+                    </div>
+
+                    {/* Saved prompts picker */}
+                    {showPromptPicker && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden">
+                            <div className="flex items-center justify-between px-2.5 py-1.5 bg-violet-50 border-b border-violet-100">
+                                <span className="text-[10px] font-semibold text-violet-600">Chọn từ lưu trữ</span>
+                                <button
+                                    onClick={() => setShowPromptPicker(false)}
+                                    className="text-violet-400 hover:text-violet-700"
+                                >
+                                    <X size={11} />
+                                </button>
+                            </div>
+                            <div className="max-h-32 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+                                {savedPrompts.length === 0 ? (
+                                    <div className="text-[11px] text-slate-400 italic p-2.5">Chưa có prompt nào được lưu</div>
+                                ) : (
+                                    savedPrompts.map((p) => (
+                                        <button
+                                            key={p._id}
+                                            onClick={() => {
+                                                onChange({ ...params, systemPrompt: p.content });
+                                                setShowPromptPicker(false);
+                                            }}
+                                            className="w-full text-left px-2.5 py-2 hover:bg-violet-50 transition-colors border-b border-slate-100 last:border-0"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-semibold text-slate-700 truncate">
+                                                    {p.name}
+                                                </span>
+                                                <span className="text-[9px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full shrink-0">
+                                                    v{p.version}
+                                                </span>
+                                            </div>
+                                            {p.content && (
+                                                <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-1 leading-relaxed">
+                                                    {p.content}
+                                                </p>
+                                            )}
+                                        </button>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    <textarea
+                        placeholder="Nhập hướng dẫn cho AI hoặc tải từ lưu trữ..."
+                        value={params.systemPrompt}
+                        onChange={(e) => onChange({ ...params, systemPrompt: e.target.value })}
+                        className="bg-slate-50 border border-slate-200 focus:bg-white focus:border-slate-400 rounded-lg px-3 py-2 text-[13px] text-slate-800 outline-none transition-all resize-none h-20"
+                    />
+                    {params.systemPrompt && (
+                        <button
+                            onClick={() => onChange({ ...params, systemPrompt: "" })}
+                            className="self-end text-[10px] text-slate-400 hover:text-red-500 transition-colors"
+                        >
+                            Xoá system prompt
+                        </button>
+                    )}
+                </div>
             </div>
         </div>
-
     );
 }
 
@@ -297,7 +514,6 @@ function ModeSelectScreen({ onSelect }: { onSelect: (mode: "single" | "compare")
 
     return (
         <div className="min-h-screen bg-slate-50 flex flex-col">
-            {/* Top bar */}
             <header className="bg-white border-b border-slate-200">
                 <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -320,7 +536,6 @@ function ModeSelectScreen({ onSelect }: { onSelect: (mode: "single" | "compare")
                 </div>
             </header>
 
-            {/* Content */}
             <div className="max-w-3xl mx-auto px-6 pt-14 pb-10 w-full">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">Inference</p>
                 <h1 className="text-4xl font-bold text-slate-900 leading-tight mb-2">
@@ -380,9 +595,9 @@ interface ChatPanelProps {
     showSidebar?: boolean;
     onSidebarToggle?: (isOpen: boolean) => void;
     externalInput?: { text: string; ts: number } | null;
-    onExternalSend?: (text: string) => void;
     isCompareMode?: boolean;
     onModelLoadedChange?: (loaded: boolean) => void;
+    onIsInferringChange?: (inferring: boolean) => void;
     externalParams?: InferenceParams;
     onLog?: (log: Omit<LogEntry, "ts">) => void;
 }
@@ -394,6 +609,7 @@ function ChatPanel({
     externalInput,
     isCompareMode = false,
     onModelLoadedChange,
+    onIsInferringChange,
     externalParams,
     onLog,
 }: ChatPanelProps) {
@@ -410,8 +626,14 @@ function ChatPanel({
     const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [localInput, setLocalInput] = useState("");
-    // Params: nếu có externalParams (compare mode) thì dùng, không thì dùng local
-    //setLocalParams chỉ để giữ state của params trong single mode, tránh bị reset khi chuyển qua lại giữa compare và single
+    const [isInferring, setIsInferring] = useState(false);
+    const [showUnloadMenu, setShowUnloadMenu] = useState(false);
+    const unloadMenuRef = useRef<HTMLDivElement>(null);
+
+    // Quick model picker dropdown
+    const [showModelPicker, setShowModelPicker] = useState(false);
+    const modelPickerRef = useRef<HTMLDivElement>(null);
+
     const [localParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const params: InferenceParams = externalParams ?? localParams;
 
@@ -419,34 +641,23 @@ function ChatPanel({
     const abortControllerRef = useRef<AbortController | null>(null);
 
     const buildRecentHistory = useCallback((sourceMessages: Message[]): HistoryMessage[] => {
-        const normalizedMessages: HistoryMessage[] = sourceMessages
-            .filter((message) => (message.role === "user" || message.role === "ai") && message.content.trim())
-            .map((message) => ({
-                role: message.role === "ai" ? "assistant" : "user",
-                content: message.content,
-            }));
+        const normalized: HistoryMessage[] = sourceMessages
+            .filter((m) => (m.role === "user" || m.role === "ai") && m.content.trim())
+            .map((m) => ({ role: m.role === "ai" ? "assistant" : "user", content: m.content }));
 
-        const recentPairs: HistoryMessage[][] = [];
-
-        for (let index = 0; index < normalizedMessages.length - 1; index += 1) {
-            const currentMessage = normalizedMessages[index];
-            const nextMessage = normalizedMessages[index + 1];
-
-            if (currentMessage.role === "user" && nextMessage.role === "assistant") {
-                recentPairs.push([currentMessage, nextMessage]);
-                index += 1;
+        const pairs: HistoryMessage[][] = [];
+        for (let i = 0; i < normalized.length - 1; i++) {
+            if (normalized[i].role === "user" && normalized[i + 1].role === "assistant") {
+                pairs.push([normalized[i], normalized[i + 1]]);
+                i++;
             }
         }
-
-        return recentPairs
-            .slice(-5)
-            .flat();
+        return pairs.slice(-5).flat();
     }, []);
 
-    // Notify parent when modelLoaded changes
-    useEffect(() => {
-        onModelLoadedChange?.(modelLoaded);
-    }, [modelLoaded]);
+    useEffect(() => { onModelLoadedChange?.(modelLoaded); }, [modelLoaded]);
+    useEffect(() => { onIsInferringChange?.(isInferring); }, [isInferring]);
+
     const fetchChatSessions = async () => {
         try {
             const sessions = await apiService.getChatSessions();
@@ -470,24 +681,45 @@ function ChatPanel({
         fetchRegistries();
     }, [showSidebar]);
 
+    // Close model picker when clicking outside
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+                setShowModelPicker(false);
+            }
+        };
+        if (showModelPicker) document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    }, [showModelPicker]);
+
+    // Close unload menu when clicking outside
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (unloadMenuRef.current && !unloadMenuRef.current.contains(e.target as Node)) {
+                setShowUnloadMenu(false);
+            }
+        };
+        if (showUnloadMenu) document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    }, [showUnloadMenu]);
+
     const handleRegistryChange = async (registryId: string) => {
         setSelectedRegistryId(registryId);
         if (!registryId) return;
-
         setLoading(true);
         try {
             const response = await fetch(`/api/model-registry/${registryId}/active`);
             if (!response.ok) {
                 const err = await response.json();
-                throw new Error(err.message || 'Không tìm thấy bản Active');
+                throw new Error(err.message || "Không tìm thấy bản Active");
             }
             const activeVersion = await response.json();
             setHfHubId(activeVersion.hfRepoId);
             setLoadError(null);
             onLog?.({
-                message: `Đã tự động chọn bản Active (Use): ${activeVersion.version} (${activeVersion.hfRepoId})`,
+                message: `Đã tự động chọn bản Active: ${activeVersion.version} (${activeVersion.hfRepoId})`,
                 type: "success",
-                instanceId
+                instanceId,
             });
         } catch (error: any) {
             setLoadError(error.message);
@@ -497,163 +729,207 @@ function ChatPanel({
         }
     };
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages, loading]);
+    const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    useEffect(() => { scrollToBottom(); }, [messages, loading]);
 
     const handleLoadSession = async (sessionMeta: any) => {
         try {
             const fullSession = await apiService.getChatSessionById(sessionMeta._id);
             if (fullSession?.messages) {
-                setMessages(fullSession.messages.map((m: any) => ({
-                    role: m.role, content: m.content, model: m.model, responseTime: m.responseTime,
-                })));
+                setMessages(
+                    fullSession.messages.map((m: any) => ({
+                        role: m.role,
+                        content: m.content,
+                        model: m.model,
+                        responseTime: m.responseTime,
+                    }))
+                );
                 setCurrentSessionId(fullSession._id);
                 const lastAi = fullSession.messages.slice().reverse().find((m: any) => m.role === "ai" && m.model);
                 if (lastAi?.model && !hfHubId) setHfHubId(lastAi.model);
             }
-        } catch (error) { console.error("Failed to load session:", error); }
+        } catch (error) {
+            console.error("Failed to load session:", error);
+        }
     };
 
     const handleNewChat = () => { setMessages([]); setCurrentSessionId(null); };
 
-    // const handleStopResponse = () => {
-    //     abortControllerRef.current?.abort();
-    //     abortControllerRef.current = null;
-    //     setLoading(false);
-    // };
+    const sendMessage = useCallback(
+        async (textOverride?: string) => {
+            const text = textOverride ?? "";
+            const isLocal = provider === "local" || provider === "registry";
+            if (!text.trim() || loading) return;
+            if (isLocal && (!hfHubId.trim() || !modelLoaded)) return;
 
-    // sendMessage can be called externally (compare mode) or internally
-    const sendMessage = useCallback(async (textOverride?: string) => {
-        const text = textOverride ?? "";
-        const isLocal = provider === "local" || provider === "registry";
-        if (!text.trim() || loading) return;
-        if (isLocal && (!hfHubId.trim() || !modelLoaded)) return;
+            const abortController = new AbortController();
+            abortControllerRef.current = abortController;
 
-        const abortController = new AbortController();
-        abortControllerRef.current = abortController;
-
-        const userMessage: Message = { role: "user", content: text };
-        const history = buildRecentHistory(messages);
-        setMessages((prev) => [...prev, userMessage]);
-        setLoading(true);
-        onLog?.({
-            message: `Bắt đầu inference...`,
-            type: "info",
-            instanceId,
-            data: {
-                ...(params.systemPrompt ? { systemPrompt: params.systemPrompt } : {}),
-                historyCount: history.length,
-            }
-        });
-
-        const startTime = Date.now();
-        let aiContent = "";
-
-        setMessages((prev) => [...prev, { role: "ai", content: "", model: isLocal ? hfHubId : provider }]);
-
-        try {
-            const options = {
+            const userMessage: Message = { role: "user", content: text };
+            const history = buildRecentHistory(messages);
+            setMessages((prev) => [...prev, userMessage]);
+            setLoading(true);
+            setIsInferring(true);
+            onLog?.({
+                message: `Bắt đầu inference...`,
+                type: "info",
                 instanceId,
-                modelRegistryId: provider === "registry" ? selectedRegistryId : undefined,
-                history,
-                system_prompt: params.systemPrompt || undefined,
-                max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
-                temperature: params.temperature === "" ? undefined : params.temperature,
-                top_k: params.topK === "" ? undefined : params.topK,
-                top_p: params.topP === "" ? undefined : params.topP,
-                repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
-                provider: (provider === "local" || provider === "registry") ? undefined : provider,
-                signal: abortController.signal,
-                onFinalInfo: (info: any) => {
-                    if (info.input_parameters) {
-                        setMessages((prev) => {
-                            const arr = [...prev];
-                            arr[arr.length - 1] = { ...arr[arr.length - 1], parameters: info.input_parameters };
-                            return arr;
-                        });
-                        onLog?.({ message: `Nhận thông số inference (Final Info)`, type: "info", instanceId, data: info.input_parameters });
-                    }
-                }
-            };
+                data: {
+                    ...(params.systemPrompt ? { systemPrompt: params.systemPrompt } : {}),
+                    historyCount: history.length,
+                },
+            });
 
-            await apiService.inferStream(text, hfHubId, options, (chunk: string) => {
-                aiContent += chunk;
+            const startTime = Date.now();
+            let aiContent = "";
+            setMessages((prev) => [...prev, { role: "ai", content: "", model: isLocal ? hfHubId : provider }]);
+
+            try {
+                const options = {
+                    instanceId,
+                    modelRegistryId: provider === "registry" ? selectedRegistryId : undefined,
+                    history,
+                    system_prompt: params.systemPrompt || undefined,
+                    max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
+                    temperature: params.temperature === "" ? undefined : params.temperature,
+                    top_k: params.topK === "" ? undefined : params.topK,
+                    top_p: params.topP === "" ? undefined : params.topP,
+                    repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
+                    provider: provider === "local" || provider === "registry" ? undefined : provider,
+                    signal: abortController.signal,
+                    onFinalInfo: (info: any) => {
+                        if (info.input_parameters) {
+                            setMessages((prev) => {
+                                const arr = [...prev];
+                                arr[arr.length - 1] = { ...arr[arr.length - 1], parameters: info.input_parameters };
+                                return arr;
+                            });
+                            onLog?.({ message: `Tham số inference (Final Info)`, type: "info", instanceId, data: info.input_parameters });
+                        }
+                    },
+                };
+
+                await apiService.inferStream(text, hfHubId, options, (chunk: string) => {
+                    aiContent += chunk;
+                    setMessages((prev) => {
+                        const arr = [...prev];
+                        arr[arr.length - 1] = { ...arr[arr.length - 1], content: aiContent };
+                        return arr;
+                    });
+                });
+
+                const responseTime = (Date.now() - startTime) / 1000;
                 setMessages((prev) => {
                     const arr = [...prev];
-                    arr[arr.length - 1] = { ...arr[arr.length - 1], content: aiContent };
+                    arr[arr.length - 1] = { ...arr[arr.length - 1], responseTime };
                     return arr;
                 });
-            });
+                onLog?.({ message: `Hoàn thành trong ${responseTime.toFixed(2)}s`, type: "success", instanceId });
 
-            const responseTime = (Date.now() - startTime) / 1000;
-            setMessages((prev) => {
-                const arr = [...prev];
-                arr[arr.length - 1] = { ...arr[arr.length - 1], responseTime };
-                return arr;
-            });
-            onLog?.({ message: `Hoàn thành inference trong ${responseTime.toFixed(2)}s`, type: "success", instanceId });
-
-            try {
-                const gpuLogsContent = await apiService.getInferenceLogs(instanceId);
-                if (Array.isArray(gpuLogsContent)) {
-                    const latestLog = gpuLogsContent.filter((l: any) => l.slot_id === instanceId).pop();
-                    if (latestLog && latestLog.input_parameters) {
-                        onLog?.({ message: `Tham số inference thực tế (GPU)`, type: "info", instanceId, data: latestLog.input_parameters });
+                try {
+                    const gpuLogs = await apiService.getInferenceLogs(instanceId);
+                    if (Array.isArray(gpuLogs)) {
+                        const latest = gpuLogs.filter((l: any) => l.slot_id === instanceId).pop();
+                        if (latest?.input_parameters)
+                            onLog?.({ message: `Tham số thực tế (GPU)`, type: "info", instanceId, data: latest.input_parameters });
+                    } else if (gpuLogs?.input_parameters) {
+                        onLog?.({ message: `Tham số thực tế (GPU)`, type: "info", instanceId, data: gpuLogs.input_parameters });
                     }
-                } else if (gpuLogsContent && gpuLogsContent.input_parameters) {
-                    onLog?.({ message: `Tham số inference thực tế (GPU)`, type: "info", instanceId, data: gpuLogsContent.input_parameters });
-                }
-            } catch (err) {
-                console.warn("Failed to fetch exact GPU logs:", err);
-            }
+                } catch { /* ignore */ }
 
-            try {
-                const payload = { userMessage: text, aiMessage: aiContent, model: hfHubId, responseTime };
-                if (currentSessionId) {
-                    await apiService.appendMessageToSession(currentSessionId, payload);
+                try {
+                    const payload = { userMessage: text, aiMessage: aiContent, model: hfHubId, responseTime };
+                    if (currentSessionId) {
+                        await apiService.appendMessageToSession(currentSessionId, payload);
+                    } else {
+                        const newSession = await apiService.createChatSession(payload);
+                        setCurrentSessionId(newSession._id);
+                        fetchChatSessions();
+                    }
+                } catch (err) { console.error("Failed to save session", err); }
+            } catch (error: any) {
+                if (!error.name?.includes("Abort") && !error.message?.includes("aborted")) {
+                    const errorMsg = error.response?.data?.error || error.message;
+                    setLoadError(errorMsg);
+                    toast.error(`Lỗi model: ${errorMsg}`);
+                    setMessages((prev) => {
+                        const arr = [...prev];
+                        arr[arr.length - 1] = { ...arr[arr.length - 1], content: `[Lỗi: ${errorMsg}]` };
+                        return arr;
+                    });
+                    onLog?.({ message: `Lỗi inference: ${error.message}`, type: "error", instanceId });
                 } else {
-                    const newSession = await apiService.createChatSession(payload);
-                    setCurrentSessionId(newSession._id);
-                    fetchChatSessions();
+                    onLog?.({ message: `Inference bị huỷ`, type: "warning", instanceId });
                 }
-            } catch (err) { console.error("Failed to save session", err); }
-
-        } catch (error: any) {
-            if (!error.name?.includes("Abort") && !error.message?.includes("aborted")) {
-                const errorMsg = error.response?.data?.error || error.message;
-                setLoadError(errorMsg); // Hiển thị lỗi lên badge trạng thái
-                toast.error(`Lỗi model: ${errorMsg}`); // Hiển thị toast thông báo
-
-                setMessages((prev) => {
-                    const arr = [...prev];
-                    arr[arr.length - 1] = { ...arr[arr.length - 1], content: `[Lỗi: ${errorMsg}]` };
-                    return arr;
-                });
-                onLog?.({ message: `Lỗi inference: ${error.message}`, type: "error", instanceId });
-            } else {
-                onLog?.({ message: `Inference bị huỷ`, type: "warning", instanceId });
+            } finally {
+                setLoading(false);
+                setIsInferring(false);
+                abortControllerRef.current = null;
             }
-        } finally {
-            setLoading(false);
-            abortControllerRef.current = null;
-        }
-    }, [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId, provider, messages, buildRecentHistory, selectedRegistryId]);
+        },
+        [loading, hfHubId, modelLoaded, instanceId, params, currentSessionId, provider, messages, buildRecentHistory, selectedRegistryId]
+    );
 
-    // Expose sendMessage for compare mode via ref
     const sendMessageRef = useRef(sendMessage);
     useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
 
-    // Listen for external send trigger in compare mode
     useEffect(() => {
         if (externalInput && externalInput.text.trim() !== "") {
             sendMessageRef.current(externalInput.text);
         }
     }, [externalInput?.ts]);
+
+    const handleStopInference = async () => {
+        try {
+            // Abort the fetch stream first (cancels SSE connection)
+            abortControllerRef.current?.abort();
+            // Also signal the GPU service to stop generation
+            await apiService.stopInference(instanceId);
+            onLog?.({ message: `Đã gửi tín hiệu dừng inference (slot ${instanceId})`, type: "warning", instanceId });
+            toast("Đã dừng inference", { icon: "⏹" });
+        } catch {
+            // abort() throws AbortError — normal, ignore
+        }
+    };
+
+    const handleUnloadModel = async (forceReload = false) => {
+        setShowUnloadMenu(false);
+        if (forceReload) {
+            // Reload = unload then load again with same model
+            onLog?.({ message: `Force reload model: ${activeModelId}`, type: "info", instanceId });
+            const modelToReload = activeModelId;
+            setModelLoaded(false);
+            setActiveModelId("");
+            try {
+                await apiService.unloadModel(instanceId);
+                await apiService.loadModel(modelToReload, { instanceId, force_reload: true });
+                setActiveModelId(modelToReload);
+                setModelLoaded(true);
+                toast.success("Reload model thành công!");
+                onLog?.({ message: `Reload model thành công: ${modelToReload}`, type: "success", instanceId });
+            } catch (error: any) {
+                const msg = error.response?.data?.error || error.message;
+                setLoadError(msg);
+                onLog?.({ message: `Lỗi reload model: ${msg}`, type: "error", instanceId });
+                toast.error(`Reload thất bại: ${msg}`);
+            }
+        } else {
+            // Unload only
+            onLog?.({ message: `Đang unload model khỏi GPU slot ${instanceId}...`, type: "info", instanceId });
+            try {
+                await apiService.unloadModel(instanceId);
+                setModelLoaded(false);
+                setActiveModelId("");
+                setLoadError(null);
+                toast.success(`Đã giải phóng GPU slot ${instanceId}`);
+                onLog?.({ message: `Unload thành công, slot ${instanceId} đã được giải phóng`, type: "success", instanceId });
+            } catch (error: any) {
+                const msg = error.response?.data?.error || error.message;
+                onLog?.({ message: `Lỗi unload model: ${msg}`, type: "error", instanceId });
+                toast.error(`Unload thất bại: ${msg}`);
+            }
+        }
+    };
 
     const handleConfirmModel = async () => {
         const isLocalOrRegistry = provider === "local" || provider === "registry";
@@ -661,7 +937,6 @@ function ChatPanel({
             setLoading(true);
             setLoadError(null);
             try {
-                // Validate external model before setting it active
                 await apiService.validateModel(hfHubId, provider);
                 setActiveModelId(hfHubId || "(Default Model)");
                 setModelLoaded(true);
@@ -685,7 +960,7 @@ function ChatPanel({
         setLoadError(null);
         onLog?.({ message: `Bắt đầu load model: ${hfHubId}`, type: "info", instanceId });
         try {
-            const options: any = {
+            await apiService.loadModel(hfHubId, {
                 instanceId,
                 system_prompt: params.systemPrompt || undefined,
                 max_new_tokens: params.maxNewTokens === "" ? undefined : params.maxNewTokens,
@@ -693,9 +968,8 @@ function ChatPanel({
                 top_k: params.topK === "" ? undefined : params.topK,
                 top_p: params.topP === "" ? undefined : params.topP,
                 repetition_penalty: params.repetitionPenalty === "" ? undefined : params.repetitionPenalty,
-                provider: "local" //Registry cũng sử dụng GPU service cục bộ
-            };
-            await apiService.loadModel(hfHubId, options);
+                provider: "local",
+            });
             setActiveModelId(hfHubId);
             setModelLoaded(true);
             toast.success("Model đã được tải thành công!");
@@ -710,39 +984,51 @@ function ChatPanel({
         }
     };
 
-    // const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    //     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); }
-    // };
-
     // ── Model status badge ──
     const ModelStatus = () => {
-        if (loading && !modelLoaded) return (
-            <div className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-                <Loader2 size={12} className="animate-spin" />
-                <span>Đang tải model...</span>
-            </div>
-        );
-        if (loadError) return (
-            <div className="flex items-center gap-2 text-[12px] text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl shadow-sm animate-in fade-in slide-in-from-top-1">
-                <AlertCircle size={14} className="shrink-0" />
-                <span className="font-medium">Lỗi: {loadError}</span>
-            </div>
-        );
-        if (modelLoaded) return (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full shadow-sm">
-                <CheckCircle2 size={12} />
-                <span className="font-medium truncate max-w-[150px]">Active: {activeModelId}</span>
-            </div>
-        );
+        if (loading && !modelLoaded)
+            return (
+                <div className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>Đang tải...</span>
+                </div>
+            );
+        if (loadError)
+            return (
+                <div className="flex items-center gap-2 text-[12px] text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl shadow-sm">
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span className="font-medium truncate max-w-[180px]" title={loadError}>Lỗi: {loadError}</span>
+                </div>
+            );
+        if (modelLoaded)
+            return (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full shadow-sm">
+                    <CheckCircle2 size={12} />
+                    <span className="font-medium truncate max-w-[150px]">Active: {activeModelId}</span>
+                </div>
+            );
         return null;
+    };
+
+    // ── Sidebar session item helpers ──
+    const getSessionMeta = (session: any) => {
+        const msgs: any[] = session.messages || [];
+        const lastAi = msgs.slice().reverse().find((m: any) => m.role === "ai");
+        const lastUser = msgs.slice().reverse().find((m: any) => m.role === "user");
+        return {
+            model: lastAi?.model,
+            preview: lastUser?.content?.trim().split("\n")[0]?.slice(0, 55),
+        };
     };
 
     return (
         <div className="flex h-full bg-white overflow-hidden">
             {/* Sidebar */}
             {showSidebar && (
-                <div className={`flex flex-col bg-slate-50 border-r border-slate-200 transition-[width] duration-300 ${isSidebarOpen ? "w-64" : "w-14"} shrink-0 hidden md:flex`}>
-                    <div className="flex items-center justify-between p-3 mb-4 border-b border-slate-200">
+                <div
+                    className={`flex flex-col bg-slate-50 border-r border-slate-200 transition-[width] duration-300 ${isSidebarOpen ? "w-64" : "w-14"} shrink-0 hidden md:flex`}
+                >
+                    <div className="flex items-center justify-between p-3 mb-2 border-b border-slate-200">
                         <button
                             onClick={() => { const s = !isSidebarOpen; setSidebarOpen(s); onSidebarToggle?.(s); }}
                             className="p-2 hover:bg-slate-200 rounded-xl transition-colors"
@@ -758,23 +1044,54 @@ function ChatPanel({
                             </button>
                         )}
                     </div>
+
                     {isSidebarOpen && (
-                        <div className="flex-1 overflow-y-auto px-2">
-                            <p className="text-[11px] text-slate-400 uppercase tracking-widest font-semibold px-2 mb-2">Lịch sử</p>
+                        <div className="flex-1 overflow-y-auto px-2 pb-4">
+                            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold px-2 mb-2">
+                                Lịch sử
+                            </p>
                             <div className="flex flex-col gap-0.5">
                                 {chatSessions.length === 0 ? (
                                     <div className="text-xs text-slate-400 px-3 py-2 italic">Chưa có lịch sử</div>
-                                ) : chatSessions.map((session, i) => (
-                                    <button
-                                        key={session._id || i}
-                                        onClick={() => handleLoadSession(session)}
-                                        className={`flex items-center gap-2 p-2.5 rounded-xl transition-colors text-xs w-full text-left truncate
-                                            ${currentSessionId === session._id ? "bg-slate-800 text-white" : "hover:bg-slate-200 text-slate-600"}`}
-                                    >
-                                        <MessageSquare size={13} className="shrink-0 ml-0.5" />
-                                        <span className="truncate">{session.title}</span>
-                                    </button>
-                                ))}
+                                ) : (
+                                    chatSessions.map((session, i) => {
+                                        const { model, preview } = getSessionMeta(session);
+                                        const isActive = currentSessionId === session._id;
+                                        return (
+                                            <button
+                                                key={session._id || i}
+                                                onClick={() => handleLoadSession(session)}
+                                                className={`flex flex-col gap-0.5 p-2.5 rounded-xl transition-colors text-left w-full
+                                                    ${isActive
+                                                        ? "bg-slate-800 text-white"
+                                                        : "hover:bg-slate-200 text-slate-700"
+                                                    }`}
+                                            >
+                                                {/* Title row */}
+                                                <div className="flex items-center gap-1.5">
+                                                    <MessageSquare size={11} className={`shrink-0 ${isActive ? "text-slate-300" : "text-slate-400"}`} />
+                                                    <span className={`text-[12px] font-semibold truncate ${isActive ? "text-white" : "text-slate-700"}`}>
+                                                        {session.title}
+                                                    </span>
+                                                </div>
+                                                {/* Model badge */}
+                                                {model && (
+                                                    <span className={`self-start text-[9px] font-mono px-1.5 py-0.5 rounded-full truncate max-w-full
+                                                        ${isActive ? "bg-slate-700 text-slate-300" : "bg-slate-100 text-slate-500"}`}>
+                                                        {model.split("/").pop()}
+                                                    </span>
+                                                )}
+                                                {/* Preview */}
+                                                {preview && (
+                                                    <span className={`text-[10px] truncate leading-relaxed
+                                                        ${isActive ? "text-slate-400" : "text-slate-400"}`}>
+                                                        {preview}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })
+                                )}
                             </div>
                         </div>
                     )}
@@ -783,90 +1100,191 @@ function ChatPanel({
 
             {/* Main panel */}
             <div className="flex-1 flex flex-col relative min-w-0">
-                {/* Panel header */}
-                <div className="border-b border-slate-200 bg-white px-4 py-3">
-                    <div className="flex items-center gap-2">
+                {/* Panel header — model loader */}
+                <div className="border-b border-slate-200 bg-white px-4 py-3 shrink-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {/* Provider select */}
                         <select
                             value={provider}
                             onChange={(e) => {
-                                const newProvider = e.target.value;
-                                setProvider(newProvider);
-                                setModelLoaded(newProvider !== "local" && newProvider !== "registry");
+                                const v = e.target.value;
+                                setProvider(v);
+                                setModelLoaded(v !== "local" && v !== "registry");
                                 setLoadError(null);
-                                if (newProvider === "registry" && registries.length > 0) {
-                                    handleRegistryChange(registries[0]._id);
-                                }
+                                if (v === "registry" && registries.length > 0) handleRegistryChange(registries[0]._id);
                             }}
-                            className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all"
+                            className="bg-slate-50 border border-slate-200 text-[13px] text-slate-800 outline-none px-3 py-2 rounded-xl focus:border-slate-400 transition-all shrink-0"
                         >
                             <option value="local">Manual ID</option>
                             <option value="registry">Model Registry</option>
                             <option value="openrouter">OpenRouter</option>
                         </select>
 
+                        {/* Model input / registry select */}
                         {provider === "registry" ? (
-                            <div className="flex-1 relative">
+                            <div className="flex-1 min-w-0">
                                 <select
                                     value={selectedRegistryId}
                                     onChange={(e) => handleRegistryChange(e.target.value)}
                                     className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
-                                            focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:opacity-60
-                                            ${loadError ? "border-red-200" : "border-slate-200"}`}
+                                        focus:bg-white focus:border-slate-400 disabled:opacity-60
+                                        ${loadError ? "border-red-200" : "border-slate-200"}`}
                                     disabled={loading}
                                 >
                                     <option value="">Chọn Model Registry...</option>
-                                    {registries.map(r => (
+                                    {registries.map((r) => (
                                         <option key={r._id} value={r._id}>{r.name}</option>
                                     ))}
                                 </select>
                             </div>
                         ) : (
-                            <div className="flex-1 relative">
+                            <div className="flex-1 min-w-0 relative" ref={modelPickerRef}>
                                 <input
                                     type="text"
-                                    className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none px-4 py-2 rounded-xl transition-all
-                                            focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
-                                            ${loadError ? "border-red-200" : "border-slate-200"}`}
+                                    className={`w-full bg-slate-50 border text-[13px] text-slate-800 outline-none pl-4 pr-9 py-2 rounded-xl transition-all
+                                        focus:bg-white focus:border-slate-400 focus:ring-2 focus:ring-slate-100 placeholder-slate-400 disabled:opacity-60
+                                        ${loadError ? "border-red-200" : "border-slate-200"}`}
                                     placeholder={
                                         provider === "local"
-                                            ? (isCompareMode ? `Model ${instanceId}: VD: org/model-name` : "Nhập Hugging Face Hub ID")
+                                            ? isCompareMode
+                                                ? `Model ${instanceId}: VD: org/model-name`
+                                                : "Nhập Hugging Face Hub ID"
                                             : "Model ID (tùy chọn, VD: openai/gpt-4o)"
                                     }
                                     value={hfHubId}
-                                    onChange={(e) => { setHfHubId(e.target.value); if (provider === "local") setModelLoaded(false); setLoadError(null); }}
+                                    onChange={(e) => {
+                                        setHfHubId(e.target.value);
+                                        if (provider === "local") setModelLoaded(false);
+                                        setLoadError(null);
+                                    }}
                                     disabled={loading}
                                 />
+                                {/* Quick-select chevron */}
+                                {provider === "local" && (
+                                    <button
+                                        onClick={() => setShowModelPicker((p) => !p)}
+                                        className={`absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg transition-all
+                                            ${showModelPicker ? "bg-slate-200 text-slate-700" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"}`}
+                                        title="Chọn nhanh model base"
+                                        tabIndex={-1}
+                                    >
+                                        <ChevronDown size={14} />
+                                    </button>
+                                )}
+
+                                {/* Model picker dropdown */}
+                                {showModelPicker && provider === "local" && (
+                                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg shadow-slate-200/60 z-50 overflow-hidden">
+                                        <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
+                                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                                                Base Model Options
+                                            </span>
+                                        </div>
+                                        <div
+                                            className="max-h-52 overflow-y-auto"
+                                            style={{ scrollbarWidth: "thin", scrollbarColor: "#cbd5e1 transparent" }}
+                                        >
+                                            {BASE_MODEL_OPTIONS.map((m) => (
+                                                <button
+                                                    key={m}
+                                                    onClick={() => {
+                                                        setHfHubId(m);
+                                                        setModelLoaded(false);
+                                                        setLoadError(null);
+                                                        setShowModelPicker(false);
+                                                    }}
+                                                    className={`w-full text-left px-3 py-2 text-[12px] font-mono transition-colors hover:bg-slate-50 flex items-center gap-2
+                                                        ${hfHubId === m ? "bg-slate-800 text-white" : "text-slate-700"}`}
+                                                >
+                                                    <span className="truncate">{m}</span>
+                                                    {hfHubId === m && <CheckCircle2 size={11} className="shrink-0 ml-auto" />}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
 
+                        {/* Load button */}
                         <button
                             onClick={handleConfirmModel}
-                            disabled={(provider === "local" && !hfHubId.trim()) || (provider === "registry" && !hfHubId.trim()) || loading || ((provider === "local" || provider === "registry") && modelLoaded)}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border
-                                    ${modelLoaded && (provider === "local" || provider === "registry")
+                            disabled={
+                                (provider === "local" && !hfHubId.trim()) ||
+                                (provider === "registry" && !hfHubId.trim()) ||
+                                loading ||
+                                ((provider === "local" || provider === "registry") && modelLoaded)
+                            }
+                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 border shrink-0
+                                ${modelLoaded && (provider === "local" || provider === "registry")
                                     ? "bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default"
                                     : loading
                                         ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
                                         : "bg-slate-800 hover:bg-slate-700 text-white border-slate-800 disabled:opacity-40"
                                 }`}
                         >
-                            {loading && !modelLoaded ? "Tải..." : modelLoaded && (provider === "local" || provider === "registry") ? "✓ Sẵn sàng" : provider !== "local" && provider !== "registry" ? "Sử dụng API" : "Load"}
+                            {loading && !modelLoaded
+                                ? "Tải..."
+                                : modelLoaded && (provider === "local" || provider === "registry")
+                                    ? "✓ Sẵn sàng"
+                                    : provider !== "local" && provider !== "registry"
+                                        ? "Sử dụng API"
+                                        : "Load"}
                         </button>
+
+                        {/* Unload / Reload dropdown — only when model is loaded on local/registry */}
+                        {modelLoaded && (provider === "local" || provider === "registry") && (
+                            <div className="relative shrink-0" ref={unloadMenuRef}>
+                                <button
+                                    onClick={() => setShowUnloadMenu((v) => !v)}
+                                    className={`p-2 rounded-xl border text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all
+                                        ${showUnloadMenu ? "bg-slate-100 border-slate-300" : "bg-white border-slate-200"}`}
+                                    title="Unload / Reload model"
+                                >
+                                    <ChevronDown size={14} />
+                                </button>
+                                {showUnloadMenu && (
+                                    <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden">
+                                        <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
+                                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                                                GPU Slot {instanceId}
+                                            </span>
+                                        </div>
+                                        <button
+                                            onClick={() => handleUnloadModel(true)}
+                                            className="w-full text-left px-3 py-2.5 text-[12px] font-medium text-slate-700 hover:bg-amber-50 hover:text-amber-700 flex items-center gap-2 transition-colors"
+                                        >
+                                            <RotateCcw size={13} />
+                                            Force Reload
+                                        </button>
+                                        <button
+                                            onClick={() => handleUnloadModel(false)}
+                                            className="w-full text-left px-3 py-2.5 text-[12px] font-medium text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
+                                        >
+                                            <Trash2 size={13} />
+                                            Unload khỏi GPU
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         <ModelStatus />
                     </div>
                 </div>
 
                 {/* Messages */}
-                <div className="flex-1 overflow-y-auto px-4 pb-6 pt-4 scroll-smooth" id={`chat-${instanceId}`}>
+                <div
+                    className="flex-1 overflow-y-auto px-4 pb-6 pt-4 scroll-smooth"
+                    id={`chat-${instanceId}`}
+                >
                     {messages.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-center px-4">
                             <div className="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center mb-4">
                                 <Sparkles size={22} className="text-white" />
                             </div>
                             <p className="text-slate-400 text-sm font-medium">
-                                {modelLoaded
-                                    ? "Model đã sẵn sàng. Hãy bắt đầu chat!"
-                                    : "Load model để bắt đầu hội thoại"}
+                                {modelLoaded ? "Model đã sẵn sàng. Hãy bắt đầu chat!" : "Load model để bắt đầu hội thoại"}
                             </p>
                             {isCompareMode && !modelLoaded && (
                                 <p className="text-xs text-slate-300 mt-1">Nhập Model {instanceId} ID ở trên</p>
@@ -899,7 +1317,7 @@ function ChatPanel({
                                                         </button>
                                                         <span className="text-[11px] text-slate-400 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">
                                                             {msg.responseTime.toFixed(2)}s
-                                                            {msg.model && !isCompareMode && ` • ${msg.model}`}
+                                                            {msg.model && !isCompareMode && ` • ${msg.model.split("/").pop()}`}
                                                         </span>
                                                     </div>
                                                 )}
@@ -915,7 +1333,11 @@ function ChatPanel({
                                     </div>
                                     <div className="flex items-center gap-1.5">
                                         {[0, 0.15, 0.3].map((delay, i) => (
-                                            <span key={i} className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: `${delay}s` }} />
+                                            <span
+                                                key={i}
+                                                className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"
+                                                style={{ animationDelay: `${delay}s` }}
+                                            />
                                         ))}
                                     </div>
                                 </div>
@@ -925,11 +1347,13 @@ function ChatPanel({
                     )}
                 </div>
 
-                {/* Local Input Bar for Compare Mode */}
+                {/* Compare mode local input */}
                 {isCompareMode && (
                     <div className="bg-white border-t border-slate-100 p-3 shrink-0">
-                        <div className={`flex items-end gap-2 bg-slate-50 border rounded-xl px-3 py-1.5 transition-all
-                            ${modelLoaded ? "border-slate-300 focus-within:border-slate-400 focus-within:bg-white" : "border-slate-200 opacity-60"}`}>
+                        <div
+                            className={`flex items-end gap-2 bg-slate-50 border rounded-xl px-3 py-1.5 transition-all
+                                ${modelLoaded ? "border-slate-300 focus-within:border-slate-400 focus-within:bg-white" : "border-slate-200 opacity-60"}`}
+                        >
                             <textarea
                                 value={localInput}
                                 onChange={(e) => {
@@ -952,13 +1376,23 @@ function ChatPanel({
                                 style={{ minHeight: "32px" }}
                                 disabled={!modelLoaded || loading}
                             />
-                            <button
-                                onClick={() => { if (localInput.trim() && modelLoaded && !loading) { sendMessage(localInput); setLocalInput(""); } }}
-                                disabled={!localInput.trim() || !modelLoaded || loading}
-                                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 mb-0.5"
-                            >
-                                <Send size={14} />
-                            </button>
+                            {isInferring ? (
+                                <button
+                                    onClick={handleStopInference}
+                                    className="p-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-all shrink-0 active:scale-95 mb-0.5"
+                                    title="Dừng inference"
+                                >
+                                    <Square size={14} />
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => { if (localInput.trim() && modelLoaded && !loading) { sendMessage(localInput); setLocalInput(""); } }}
+                                    disabled={!localInput.trim() || !modelLoaded || loading}
+                                    className="p-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 mb-0.5"
+                                >
+                                    <Send size={14} />
+                                </button>
+                            )}
                         </div>
                     </div>
                 )}
@@ -980,14 +1414,15 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
     const [input, setInput] = useState("");
     const [sendTrigger, setSendTrigger] = useState<{ text: string; ts: number } | null>(null);
     const [panelModelLoaded, setPanelModelLoaded] = useState(false);
+    const [panelIsInferring, setPanelIsInferring] = useState(false);
     const [params, setParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const [showSettings, setShowSettings] = useState(false);
     const settingsRef = useRef<HTMLDivElement>(null);
     const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [showLogs, setShowLogs] = useState(false);
+    const [logsCollapsed, setLogsCollapsed] = useState(false);
 
     const handleLog = useCallback((log: Omit<LogEntry, "ts">) => {
-        setLogs(prev => [...prev, { ...log, ts: Date.now() }]);
+        setLogs((prev) => [...prev, { ...log, ts: Date.now() }]);
     }, []);
 
     const handleSend = () => {
@@ -1000,12 +1435,9 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
     };
 
-    // Close dropdown when clicking outside
     useEffect(() => {
         const handler = (e: MouseEvent) => {
-            if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-                setShowSettings(false);
-            }
+            if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setShowSettings(false);
         };
         if (showSettings) document.addEventListener("mousedown", handler);
         return () => document.removeEventListener("mousedown", handler);
@@ -1031,12 +1463,11 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                 </div>
             </header>
 
-            {/* Main Area */}
+            {/* Main area: [chat+input] | [logs right panel] */}
             <div className="flex-1 flex overflow-hidden">
-                {/* Center Content */}
-                <div className="flex-1 flex flex-col min-w-0">
 
-                    {/* Panel */}
+                {/* Center: chat panel + input bar */}
+                <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                     <div className="flex-1 overflow-hidden">
                         <ChatPanel
                             instanceId={1}
@@ -1044,14 +1475,14 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                             externalInput={sendTrigger}
                             isCompareMode={false}
                             onModelLoadedChange={setPanelModelLoaded}
+                            onIsInferringChange={setPanelIsInferring}
                             externalParams={params}
                             onLog={handleLog}
                         />
                     </div>
 
-                    {/* Unified input bar */}
-                    <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0 relative">
-                        {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
+                    {/* Input bar */}
+                    <div className="bg-white border-t border-slate-200 px-4 py-3 shrink-0">
                         <div className="max-w-[800px] mx-auto">
                             {!panelModelLoaded && (
                                 <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-2">
@@ -1060,17 +1491,12 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                                 </div>
                             )}
 
-                            {/* Params summary */}
-                            <ParamsSummaryBar
-                                params={params}
-                                onToggleLogs={() => setShowLogs(!showLogs)}
-                                showLogsActive={showLogs}
-                            />
+                            <ParamsSummaryBar params={params} />
 
-                            <div className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
-                        ${panelModelLoaded ? "border-slate-300 focus-within:border-slate-500 focus-within:bg-white" : "border-slate-200 opacity-60"}`}>
-
-                                {/* Settings button */}
+                            <div
+                                className={`relative flex items-end gap-2 bg-slate-50 border rounded-2xl px-3 py-2 transition-all
+                                    ${panelModelLoaded ? "border-slate-300 focus-within:border-slate-500 focus-within:bg-white" : "border-slate-200 opacity-60"}`}
+                            >
                                 <div className="relative shrink-0" ref={settingsRef}>
                                     <button
                                         onClick={() => setShowSettings(!showSettings)}
@@ -1102,23 +1528,40 @@ function SingleChatPage({ onBack }: { onBack: () => void }) {
                                     className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1.5 px-1"
                                     rows={1}
                                     style={{ minHeight: "36px" }}
-                                    disabled={!panelModelLoaded}
+                                    disabled={!panelModelLoaded || panelIsInferring}
                                 />
-                                <button
-                                    onClick={handleSend}
-                                    disabled={!input.trim() || !panelModelLoaded}
-                                    className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95"
-                                >
-                                    <Send size={15} />
-                                </button>
+                                {panelIsInferring ? (
+                                    <button
+                                        onClick={async () => {
+                                            try { await apiService.stopInference(1); toast("Đã dừng inference", { icon: "⏹" }); } catch { /* ignore */ }
+                                        }}
+                                        className="p-2 bg-red-500 hover:bg-red-600 text-white rounded-xl transition-all shrink-0 active:scale-95"
+                                        title="Dừng inference"
+                                    >
+                                        <Square size={15} />
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={handleSend}
+                                        disabled={!input.trim() || !panelModelLoaded}
+                                        className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95"
+                                    >
+                                        <Send size={15} />
+                                    </button>
+                                )}
                             </div>
                             <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng</p>
                         </div>
                     </div>
                 </div>
-                {/* Right Sidebar */}
-                <ParamsDropdown params={params} onChange={setParams} onClose={() => { }} />
 
+                {/* Right: Logs side panel */}
+                <LogsSidePanel
+                    logs={logs}
+                    onClear={() => setLogs([])}
+                    collapsed={logsCollapsed}
+                    onToggleCollapse={() => setLogsCollapsed((v) => !v)}
+                />
             </div>
         </div>
     );
@@ -1130,36 +1573,45 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
     const [input, setInput] = useState("");
     const [model1Loaded, setModel1Loaded] = useState(false);
     const [model2Loaded, setModel2Loaded] = useState(false);
+    const [model1Inferring, setModel1Inferring] = useState(false);
+    const [model2Inferring, setModel2Inferring] = useState(false);
     const [sendTrigger, setSendTrigger] = useState<{ text: string; ts: number } | null>(null);
     const [params, setParams] = useState<InferenceParams>(DEFAULT_PARAMS);
     const [showSettings, setShowSettings] = useState(false);
     const settingsRef = useRef<HTMLDivElement>(null);
     const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [showLogs, setShowLogs] = useState(false);
+    const [logsCollapsed, setLogsCollapsed] = useState(false);
 
     const handleLog = useCallback((log: Omit<LogEntry, "ts">) => {
-        setLogs(prev => [...prev, { ...log, ts: Date.now() }]);
+        setLogs((prev) => [...prev, { ...log, ts: Date.now() }]);
     }, []);
 
     const bothLoaded = model1Loaded && model2Loaded;
+    const eitherInferring = model1Inferring || model2Inferring;
 
     const handleSend = () => {
         if (!input.trim() || !bothLoaded) return;
-        const text = input;
-        setSendTrigger({ text, ts: Date.now() });
+        setSendTrigger({ text: input, ts: Date.now() });
         setInput("");
+    };
+
+    const handleStopBoth = async () => {
+        try {
+            await Promise.allSettled([
+                apiService.stopInference(1),
+                apiService.stopInference(2),
+            ]);
+            toast("Đã dừng cả 2 model", { icon: "⏹" });
+        } catch { /* ignore */ }
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
     };
 
-    // Close dropdown when clicking outside
     useEffect(() => {
         const handler = (e: MouseEvent) => {
-            if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-                setShowSettings(false);
-            }
+            if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setShowSettings(false);
         };
         if (showSettings) document.addEventListener("mousedown", handler);
         return () => document.removeEventListener("mousedown", handler);
@@ -1181,18 +1633,21 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                             <span className="text-sm font-bold text-slate-800">Compare 2 Models</span>
                         </div>
                     </div>
-                    {/* Load status */}
+
+                    {/* Model load status badges */}
                     <div className="flex items-center gap-2">
-                        <div className={`flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-full border
-                            ${model1Loaded ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-50 text-slate-400 border-slate-200"}`}>
-                            {model1Loaded ? <CheckCircle2 size={11} /> : <Loader2 size={11} className="opacity-40" />}
-                            Model 1
-                        </div>
-                        <div className={`flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-full border
-                            ${model2Loaded ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-50 text-slate-400 border-slate-200"}`}>
-                            {model2Loaded ? <CheckCircle2 size={11} /> : <Loader2 size={11} className="opacity-40" />}
-                            Model 2
-                        </div>
+                        {[
+                            { label: "Model 1", loaded: model1Loaded },
+                            { label: "Model 2", loaded: model2Loaded },
+                        ].map(({ label, loaded }) => (
+                            <div
+                                key={label}
+                                className={`flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-full border ${loaded ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-slate-50 text-slate-400 border-slate-200"}`}
+                            >
+                                {loaded ? <CheckCircle2 size={11} /> : <Loader2 size={11} className="opacity-40" />}
+                                {label}
+                            </div>
+                        ))}
                         {bothLoaded && (
                             <div className="flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-full bg-slate-800 text-white">
                                 <Sparkles size={11} />
@@ -1203,12 +1658,13 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                 </div>
             </header>
 
-            {/* Main Area */}
+            {/* Main area: [two panels + input] | [logs right panel] */}
             <div className="flex-1 flex overflow-hidden">
-                {/* Center Content */}
-                <div className="flex-1 flex flex-col min-w-0">
 
-                    {/* Two panels */}
+                {/* Center: two chat panels stacked above input bar */}
+                <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+                    {/* Two chat panels side by side */}
                     <div className="flex-1 flex gap-px overflow-hidden">
                         <div className="flex-1 overflow-hidden bg-white border-r border-slate-200">
                             <ChatPanel
@@ -1217,6 +1673,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                                 isCompareMode={true}
                                 externalInput={sendTrigger}
                                 onModelLoadedChange={setModel1Loaded}
+                                onIsInferringChange={setModel1Inferring}
                                 externalParams={params}
                                 onLog={handleLog}
                             />
@@ -1228,6 +1685,7 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                                 isCompareMode={true}
                                 externalInput={sendTrigger}
                                 onModelLoadedChange={setModel2Loaded}
+                                onIsInferringChange={setModel2Inferring}
                                 externalParams={params}
                                 onLog={handleLog}
                             />
@@ -1235,36 +1693,28 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                     </div>
 
                     {/* Unified input bar */}
-                    <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0 relative">
-                        {showLogs && <GlobalLogsPanel logs={logs} onClose={() => setShowLogs(false)} />}
-
+                    <div className="bg-white border-t border-slate-200 px-6 py-3 shrink-0">
                         {!bothLoaded && (
                             <div className="flex items-center gap-2 text-xs mb-2 text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
                                 <AlertCircle size={13} />
                                 {!model1Loaded && !model2Loaded
                                     ? "Vui lòng load cả 2 model trước khi chat."
-                                    : !model1Loaded ? "Đang chờ Model 1 load xong..."
+                                    : !model1Loaded
+                                        ? "Đang chờ Model 1 load xong..."
                                         : "Đang chờ Model 2 load xong..."}
                             </div>
                         )}
 
-                        {/* Params summary — shared cho cả 2 */}
-                        <ParamsSummaryBar
-                            params={params}
-                            onToggleLogs={() => setShowLogs(!showLogs)}
-                            showLogsActive={showLogs}
-                        />
+                        <ParamsSummaryBar params={params} />
 
-                        <div className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all
-                    ${bothLoaded ? "border-slate-300 focus-within:border-slate-600 focus-within:bg-white shadow-sm" : "border-slate-200 opacity-50"}`}>
-
+                        <div
+                            className={`flex items-end gap-3 bg-slate-50 border rounded-2xl px-4 py-2.5 transition-all ${bothLoaded ? "border-slate-300 focus-within:border-slate-600 focus-within:bg-white shadow-sm" : "border-slate-200 opacity-50"}`}
+                        >
                             {/* Settings button */}
                             <div className="relative shrink-0" ref={settingsRef}>
                                 <button
                                     onClick={() => setShowSettings(!showSettings)}
-                                    className={`p-2 rounded-xl transition-all border ${showSettings
-                                        ? "bg-slate-800 text-white border-slate-800"
-                                        : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
+                                    className={`p-2 rounded-xl transition-all border ${showSettings ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-400 border-slate-200 hover:border-slate-300 hover:text-slate-600"}`}
                                     title="Tham số Inference (áp dụng cho cả 2 model)"
                                 >
                                     <Settings2 size={15} />
@@ -1290,23 +1740,41 @@ function CompareChatPage({ onBack }: { onBack: () => void }) {
                                 className="flex-1 bg-transparent outline-none resize-none text-[14px] text-slate-800 placeholder-slate-400 py-1"
                                 rows={1}
                                 style={{ minHeight: "36px" }}
-                                disabled={!bothLoaded}
+                                disabled={!bothLoaded || eitherInferring}
                             />
-                            <button
-                                onClick={handleSend}
-                                disabled={!input.trim() || !bothLoaded}
-                                className="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 flex items-center gap-2"
-                            >
-                                <Send size={15} />
-                                <span className="text-xs font-semibold hidden sm:block">Gửi đến cả 2</span>
-                            </button>
+                            {eitherInferring ? (
+                                <button
+                                    onClick={handleStopBoth}
+                                    className="p-2.5 bg-red-500 hover:bg-red-600 text-white rounded-xl transition-all shrink-0 active:scale-95 flex items-center gap-2"
+                                    title="Dừng cả 2 model"
+                                >
+                                    <Square size={15} />
+                                    <span className="text-xs font-semibold hidden sm:block">Dừng</span>
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={handleSend}
+                                    disabled={!input.trim() || !bothLoaded}
+                                    className="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 active:scale-95 flex items-center gap-2"
+                                >
+                                    <Send size={15} />
+                                    <span className="text-xs font-semibold hidden sm:block">Gửi đến cả 2</span>
+                                </button>
+                            )}
                         </div>
-                        <p className="text-[11px] text-slate-300 text-center mt-1.5">Enter để gửi • Shift+Enter xuống dòng • Tham số áp dụng cho cả 2 model</p>
+                        <p className="text-[11px] text-slate-300 text-center mt-1.5">
+                            Enter để gửi • Shift+Enter xuống dòng • Tham số áp dụng cho cả 2 model
+                        </p>
                     </div>
                 </div>
-                {/* Right Sidebar */}
-                <ParamsDropdown params={params} onChange={setParams} onClose={() => { }} />
 
+                {/* Right: Logs side panel */}
+                <LogsSidePanel
+                    logs={logs}
+                    onClear={() => setLogs([])}
+                    collapsed={logsCollapsed}
+                    onToggleCollapse={() => setLogsCollapsed((v) => !v)}
+                />
             </div>
         </div>
     );

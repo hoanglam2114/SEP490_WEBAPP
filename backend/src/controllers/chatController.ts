@@ -688,6 +688,70 @@ export const loadModel = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
+export const stopInference = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const slotId = parseInt(req.params.slotId);
+    if (isNaN(slotId) || slotId < 1) {
+      res.status(400).json({ error: 'slotId không hợp lệ' });
+      return;
+    }
+
+    const targetUrl = getGpuUrl(slotId);
+    console.log(`[stopInference] Sending stop signal to slot ${slotId}, url=${targetUrl}`);
+
+    const response = await fetch(`${targetUrl}/api/infer/stop/${slotId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      }
+    });
+
+    if (!response.ok) {
+      const errorData: any = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Lỗi từ GPU service: ${response.statusText}`);
+    }
+
+    const data: any = await response.json();
+    res.json(data);
+  } catch (error: any) {
+    console.error('Stop Inference Proxy Error:', error);
+    res.status(500).json({ error: error.message || 'Có lỗi khi gửi tín hiệu dừng inference' });
+  }
+};
+
+export const unloadModel = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const slotId = parseInt(req.params.slotId);
+    if (isNaN(slotId) || slotId < 1) {
+      res.status(400).json({ error: 'slotId không hợp lệ' });
+      return;
+    }
+
+    const targetUrl = getGpuUrl(slotId);
+    console.log(`[unloadModel] Unloading slot ${slotId}, url=${targetUrl}`);
+
+    const response = await fetch(`${targetUrl}/api/model/unload/${slotId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      }
+    });
+
+    if (!response.ok) {
+      const errorData: any = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Lỗi từ GPU service: ${response.statusText}`);
+    }
+
+    const data: any = await response.json();
+    res.json(data);
+  } catch (error: any) {
+    console.error('Unload Model Proxy Error:', error);
+    res.status(500).json({ error: error.message || 'Có lỗi khi unload model' });
+  }
+};
+
 export const getInferenceLogs = async (req: Request, res: Response): Promise<void> => {
   try {
     const { inference_id, instanceId } = req.query;

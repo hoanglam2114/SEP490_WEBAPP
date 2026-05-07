@@ -402,6 +402,16 @@ export const apiService = {
     return response.data;
   },
 
+  stopInference: async (slotId: number) => {
+    const response = await api.post(`/infer/stop/${slotId}`);
+    return response.data;
+  },
+
+  unloadModel: async (slotId: number) => {
+    const response = await api.post(`/model/unload/${slotId}`);
+    return response.data;
+  },
+
   validateModel: async (model: string, provider: string) => {
     const response = await api.post("/chat/validate-model", { model, provider });
     return response.data;

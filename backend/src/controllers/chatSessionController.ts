@@ -12,7 +12,7 @@ export const getSessions = async (req: Request, res: Response): Promise<void> =>
     }
 
     const limit = parseInt(req.query.limit as string) || 30;
-    const sessions = await ChatSession.find({ ownerId }, { messages: 0 }) // Exclude messages for list view to save bandwidth
+    const sessions = await ChatSession.find({ ownerId }, { 'messages': { $slice: -2 } }) // Return last 2 messages for sidebar preview
       .sort({ updatedAt: -1 })
       .limit(limit);
       

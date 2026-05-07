@@ -19,7 +19,7 @@ import {
   deleteTrainingHistory,
   getDistinctBaseModels,
 } from '../controllers/trainingHistoryController';
-import { chatWithAI, inferWithAI, chatWithAIStream, inferWithAIStream, saveChatHistory, getChatHistory, loadModel, getInferenceLogs, validateModel } from '../controllers/chatController';
+import { chatWithAI, inferWithAI, chatWithAIStream, inferWithAIStream, saveChatHistory, getChatHistory, loadModel, getInferenceLogs, validateModel, stopInference, unloadModel } from '../controllers/chatController';
 import {
   getSessions,
   getSessionById,
@@ -97,6 +97,8 @@ router.post('/infer/stream', inferWithAIStream);
 router.post('/chat/validate-model', validateModel);
 router.get('/infer/logs', getInferenceLogs);
 router.post('/model/load', loadModel);
+router.post('/infer/stop/:slotId', stopInference);
+router.post('/model/unload/:slotId', unloadModel);
 router.post('/chat/history', saveChatHistory);
 router.get('/chat/history', getChatHistory);
 
