@@ -28,7 +28,7 @@ export const useAppStore = create<AppState>((set) => ({
       let nextFormat = state.conversionOptions.format;
       if (file?.fileType === 'lesson') {
         nextFormat = 'alpaca';
-      } else if (file?.fileType === 'openai_messages') {
+      } else if (file?.fileType === 'openai_messages' || file?.fileType === 'chat') {
         nextFormat = 'openai';
       }
 

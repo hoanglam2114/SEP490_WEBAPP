@@ -8,10 +8,12 @@ import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmissi
 
 const HARD_LABELS = [
   'REJECT',
-  'ERROR_FORMULAR',
-  'USER_SPAM',
-  'ERROR_RESPONSE',
-  'ERROR_FORMAT',
+  'MATH',
+  'PHYSICAL',
+  'CHEMISTRY',
+  'LITERATURE',
+  'BIOLOGY',
+  'OUT_OF_SCOPE',
   'CORRECT',
   'INCORRECT',
   'REQUEST_HINT',
@@ -289,6 +291,12 @@ function formatLabel(label: any, userId: string) {
   };
 }
 
+function hasAnyVotes(label: any): boolean {
+  const upvoteCount = Array.isArray(label?.upvotes) ? label.upvotes.length : 0;
+  const downvoteCount = Array.isArray(label?.downvotes) ? label.downvotes.length : 0;
+  return upvoteCount > 0 || downvoteCount > 0;
+}
+
 // ─── GET /labels/:sampleId ────────────────────────────────────────────────────
 
 export const getLabelsBySample = async (req: Request, res: Response): Promise<void> => {
@@ -332,7 +340,8 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       .sort({ createdAt: -1 })
       .lean();
 
-    const result = labels.map((label) => formatLabel(label, userId));
+    const visibleLabels = labels.filter((label) => hasAnyVotes(label));
+    const result = visibleLabels.map((label) => formatLabel(label, userId));
 
     res.status(200).json({ labels: result });
   } catch (error: any) {
@@ -512,6 +521,22 @@ export const voteLabel = async (req: Request, res: Response): Promise<void> => {
         label.downvotes.push(userOid);
         label.upvotes = label.upvotes.filter((id) => !id.equals(userOid));
       }
+    }
+
+    const hasVotesAfterToggle = label.upvotes.length > 0 || label.downvotes.length > 0;
+    if (!hasVotesAfterToggle) {
+      await Label.deleteOne({ _id: label._id });
+      res.status(200).json({
+        label: null,
+        deleted: true,
+        deletedLabelId: String(label._id),
+        upvoteCount: 0,
+        downvoteCount: 0,
+        score: 0,
+        hasVoted: false,
+        userVoteType: null,
+      });
+      return;
     }
 
     await label.save();

@@ -50,6 +50,7 @@ type DatasetVersionDetailResponse = {
     _id: string;
     projectId?: string | null;
     parentVersionId?: string | null;
+    createdFromVersionId?: string | null;
     versionNo?: number | null;
     projectName: string;
     versionName: string;
@@ -58,6 +59,7 @@ type DatasetVersionDetailResponse = {
     operationType?: string;
     operationParams?: Record<string, any>;
     prepareResumeStep?: number;
+    checkpointResumeStep?: number;
     similarityThreshold: number;
     totalSamples: number;
     createdAt: string;
@@ -66,6 +68,8 @@ type DatasetVersionDetailResponse = {
     _id: string;
     sampleId: string;
     sampleKey: string;
+    sourceSampleId?: string | null;
+    rootSampleKey?: string | null;
     data: Record<string, any>;
     evaluatedBy: 'manual' | 'gemini' | 'openai' | 'deepseek' | 'none';
     results: {
@@ -656,7 +660,16 @@ export const apiService = {
     projectName: string;
     projectId?: string;
     parentVersionId?: string;
-    operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+    operationType?:
+      | 'upload'
+      | 'clean'
+      | 'cluster'
+      | 'labeling_base'
+      | 'classification_balanced'
+      | 'evaluation_filtered'
+      | 'refine_approved'
+      | 'manual_edit'
+      | 'legacy';
     operationParams?: Record<string, any>;
     prepareResumeStep?: number;
     similarityThreshold: number;
@@ -689,6 +702,81 @@ export const apiService = {
     sampleIdMap: Record<string, string>;
   }> => {
     const response = await api.post('/dataprep/versions', payload);
+    return response.data;
+  },
+
+  createClassificationBalanceCheckpoint: async (versionId: string, payload: {
+    format: 'openai' | 'alpaca';
+    data: Array<Record<string, any>>;
+    operationParams?: Record<string, any>;
+  }): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      parentVersionId?: string | null;
+      versionNo?: number | null;
+      projectName: string;
+      versionName: string;
+      operationType?: string;
+      operationParams?: Record<string, any>;
+      prepareResumeStep?: number;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    sampleIdMap: Record<string, string>;
+  }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/checkpoints/classification-balance`, payload);
+    return response.data;
+  },
+
+  createEvaluationFilterCheckpoint: async (versionId: string, payload: {
+    format: 'openai' | 'alpaca';
+    data: Array<Record<string, any>>;
+    operationParams?: Record<string, any>;
+  }): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      parentVersionId?: string | null;
+      versionNo?: number | null;
+      projectName: string;
+      versionName: string;
+      operationType?: string;
+      operationParams?: Record<string, any>;
+      prepareResumeStep?: number;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    sampleIdMap: Record<string, string>;
+  }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/checkpoints/evaluation-filter`, payload);
+    return response.data;
+  },
+
+  createRefineAcceptCheckpoint: async (versionId: string, payload: {
+    format: 'openai' | 'alpaca';
+    data: Array<Record<string, any>>;
+    operationParams?: Record<string, any>;
+  }): Promise<{
+    message: string;
+    datasetVersion: {
+      _id: string;
+      parentVersionId?: string | null;
+      versionNo?: number | null;
+      projectName: string;
+      versionName: string;
+      operationType?: string;
+      operationParams?: Record<string, any>;
+      prepareResumeStep?: number;
+      similarityThreshold: number;
+      totalSamples: number;
+      createdAt: string;
+    };
+    sampleIdMap: Record<string, string>;
+  }> => {
+    const response = await api.post(`/dataprep/versions/${versionId}/checkpoints/refine-accept`, payload);
     return response.data;
   },
 
@@ -985,10 +1073,12 @@ export const apiService = {
       versions: Array<{
         _id: string;
         versionName: string;
+        operationType?: string;
         similarityThreshold: number;
         totalSamples: number;
         createdAt: string;
         prepareResumeStep?: number;
+        checkpointResumeStep?: number;
         evaluatedCount: number;
         avgOverall: number | null;
       }>;

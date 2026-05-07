@@ -2,6 +2,9 @@ import { apiService } from '../../../services/api';
 
 export const dataprepApi = {
   createDatasetVersion: apiService.createDatasetVersion,
+  createClassificationBalanceCheckpoint: apiService.createClassificationBalanceCheckpoint,
+  createEvaluationFilterCheckpoint: apiService.createEvaluationFilterCheckpoint,
+  createRefineAcceptCheckpoint: apiService.createRefineAcceptCheckpoint,
   updateDatasetVersionPrepareProgress: apiService.updateDatasetVersionPrepareProgress,
   getDatasetVersionDetail: apiService.getDatasetVersionDetail,
   deleteDatasetVersionItem: apiService.deleteDatasetVersionItem,

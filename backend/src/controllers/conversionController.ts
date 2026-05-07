@@ -152,7 +152,7 @@ export class ConversionController {
         };
       } else if (stored.metadata.fileType === 'openai_messages') {
         // If input is already OpenAI messages, we can pass through or convert to other formats
-        if (options.format === 'openai') {
+        if (options.format === 'openai' || options.format === 'alpaca') {
           result = {
             data: stored.data,
             format: 'openai',
@@ -160,17 +160,6 @@ export class ConversionController {
               totalConversations: stored.data.length,
               totalMessages: stored.metadata.messageCount,
               totalTokensEstimate: conversionService.estimateTokens(JSON.stringify(stored.data))
-            }
-          };
-        } else if (options.format === 'alpaca') {
-          const alpacaData = conversionService.openAIToAlpaca(stored.data, options);
-          result = {
-            data: alpacaData,
-            format: 'alpaca',
-            stats: {
-              totalConversations: alpacaData.length,
-              totalMessages: alpacaData.length,
-              totalTokensEstimate: conversionService.estimateTokens(JSON.stringify(alpacaData))
             }
           };
         } else {
@@ -186,7 +175,12 @@ export class ConversionController {
           };
         }
       } else {
+        if (options.format === 'alpaca') {
+          const forcedOptions = { ...options, format: 'openai' as const };
+          result = conversionService.convert(stored.data as MongoDBMessage[], forcedOptions);
+        } else {
         result = conversionService.convert(stored.data as MongoDBMessage[], options);
+        }
       }
 
       // === PIPELINE LÀM SẠCH DỮ LIỆU (nếu được bật) ===

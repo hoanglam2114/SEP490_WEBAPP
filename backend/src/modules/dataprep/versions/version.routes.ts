@@ -6,6 +6,9 @@ const controller = new DataPrepVersionController();
 
 router.post('/', (req, res) => controller.createVersion(req, res));
 router.get('/:id', (req, res) => controller.getVersion(req, res));
+router.post('/:id/checkpoints/classification-balance', (req, res) => controller.createClassificationBalanceCheckpoint(req, res));
+router.post('/:id/checkpoints/evaluation-filter', (req, res) => controller.createEvaluationFilterCheckpoint(req, res));
+router.post('/:id/checkpoints/refine-accept', (req, res) => controller.createRefineAcceptCheckpoint(req, res));
 router.patch('/:id/prepare-progress', (req, res) => controller.updatePrepareProgress(req, res));
 router.patch('/:id/visibility', (req, res) => controller.updateVisibility(req, res));
 router.patch('/:id/share', (req, res) => controller.updateSharing(req, res));

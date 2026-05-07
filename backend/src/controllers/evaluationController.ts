@@ -14,7 +14,8 @@ import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
 import { getAuthUserId } from '../utils/auth';
 import { getHardRejectedSampleIds } from '../utils/labelFilters';
-import { EvalFormat, inferFormatFromRow, resolveSampleKey, normalizeEvaluationData } from '../utils/evalUtils';
+import { EvalFormat, inferFormatFromRow } from '../utils/evalUtils';
+import { versionService, type DatasetOperationType } from '../modules/dataprep/versions/version.service';
 
 type EvaluationScorePayload = {
   accuracy?: number | null;
@@ -74,6 +75,31 @@ function normalizeProjectName(input?: string): string {
 function buildEvaluationSummary(results: any) {
   const overall = Number(results?.overall);
   return Number.isFinite(overall) ? overall : null;
+}
+
+function resolveCheckpointResumeStep(operationType?: DatasetOperationType | string, prepareResumeStep?: unknown): number {
+  switch (String(operationType || '')) {
+    case 'upload':
+      return 2;
+    case 'clean':
+      return 3;
+    case 'cluster':
+    case 'labeling_base':
+      return 5;
+    case 'classification_balanced':
+      return 10;
+    case 'evaluation_filtered':
+      return 11;
+    case 'refine_approved':
+      return 13;
+    default: {
+      const parsed = Number(prepareResumeStep);
+      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 15) {
+        return parsed;
+      }
+      return 5;
+    }
+  }
 }
 
 function getEvaluationTimestamp(entry: any): number {
@@ -389,7 +415,7 @@ export class EvaluationController {
       const { projectName, similarityThreshold, format, data, promptId, promptContentSnapshot } = req.body as {
         projectId?: string;
         parentVersionId?: string;
-        operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+        operationType?: DatasetOperationType;
         operationParams?: Record<string, unknown>;
         sourceType?: 'chat' | 'lesson';
         projectName?: string;
@@ -414,143 +440,45 @@ export class EvaluationController {
         : 0.9;
       const requestedProjectId =
         typeof req.body?.projectId === 'string' && mongoose.Types.ObjectId.isValid(req.body.projectId)
-          ? new mongoose.Types.ObjectId(req.body.projectId)
+          ? req.body.projectId
           : undefined;
       const requestedParentVersionId =
         typeof req.body?.parentVersionId === 'string' && mongoose.Types.ObjectId.isValid(req.body.parentVersionId)
-          ? new mongoose.Types.ObjectId(req.body.parentVersionId)
+          ? req.body.parentVersionId
           : undefined;
-      const requestedOperationType = (req.body?.operationType || 'legacy') as
-        | 'upload'
-        | 'clean'
-        | 'cluster'
-        | 'refine_approved'
-        | 'manual_edit'
-        | 'legacy';
+      const requestedOperationType = (req.body?.operationType || 'legacy') as DatasetOperationType;
       const requestedPrepareResumeStep = Number(req.body?.prepareResumeStep);
       const prepareResumeStep = Number.isInteger(requestedPrepareResumeStep)
         ? Math.min(14, Math.max(1, requestedPrepareResumeStep))
         : 5;
       const normalizedSourceType = req.body?.sourceType === 'lesson' ? 'lesson' : 'chat';
-
-      const existingProject = requestedProjectId
-        ? await DataPrepProject.findOne({ _id: requestedProjectId, ownerId }).lean()
-        : await DataPrepProject.findOne({ ownerId, name: normalizedProjectName, isArchived: { $ne: true } })
-            .sort({ createdAt: -1 })
-            .lean();
-
-      const project = existingProject
-        ? existingProject
-        : await DataPrepProject.create({
-            ownerId,
-            name: normalizedProjectName,
-            sourceType: normalizedSourceType,
-          });
-
-      const versionCount = project?._id
-        ? await DatasetVersion.countDocuments({ projectId: project._id })
-        : await DatasetVersion.countDocuments({ ownerId, projectName: normalizedProjectName });
-      const nextVersionNo = versionCount + 1;
-      const versionName = `Version ${nextVersionNo}`;
-
-      const normalizedPromptId =
-        typeof promptId === 'string' && mongoose.Types.ObjectId.isValid(promptId)
-          ? new mongoose.Types.ObjectId(promptId)
-          : undefined;
       const normalizedPromptSnapshot = String(promptContentSnapshot || '').trim();
 
-      const datasetVersion = await DatasetVersion.create({
-        projectId: project._id,
+      const created = await versionService.createVersion({
         ownerId,
+        projectId: requestedProjectId,
         projectName: normalizedProjectName,
         parentVersionId: requestedParentVersionId,
-        createdFromVersionId: requestedParentVersionId,
-        versionNo: nextVersionNo,
-        versionName,
         operationType: requestedOperationType,
         operationParams: req.body?.operationParams,
         prepareResumeStep,
         similarityThreshold: threshold,
-        totalSamples: data.length,
-        promptId: normalizedPromptId,
+        format: normalizedFormat,
+        data,
+        promptId: typeof promptId === 'string' ? promptId : undefined,
         promptContentSnapshot: normalizedPromptSnapshot || undefined,
+        sourceType: normalizedSourceType,
       });
-
-      await DataPrepProject.updateOne(
-        { _id: project._id },
-        {
-          $set: {
-            latestVersionId: datasetVersion._id,
-          },
-          $setOnInsert: {
-            rootVersionId: datasetVersion._id,
-          },
-        }
-      );
-
-      if (!project.rootVersionId) {
-        await DataPrepProject.updateOne(
-          { _id: project._id, rootVersionId: { $exists: false } },
-          { $set: { rootVersionId: datasetVersion._id } }
-        );
-      }
-
-      const operations = data
-        .map((row, index) => {
-          const rawData = (row && typeof row === 'object' && 'data' in row && row.data) ? row.data : row;
-          const sampleKey = String((row as any)?.sourceKey || resolveSampleKey(rawData as Record<string, any>, index));
-          const normalizedData = normalizeEvaluationData(normalizedFormat, rawData as Record<string, any>);
-          if (!normalizedData) {
-            return null;
-          }
-
-          return {
-            updateOne: {
-              filter: {
-                datasetVersionId: datasetVersion._id,
-                sampleId: sampleKey,
-              },
-              update: {
-                $set: {
-                  datasetVersionId: datasetVersion._id,
-                  sampleId: sampleKey,
-                  data: normalizedData,
-                },
-                $setOnInsert: {
-                  createdAt: new Date(),
-                },
-              },
-              upsert: true,
-            },
-          };
-        })
-        .filter(Boolean);
-
-      if (operations.length === 0) {
-        res.status(400).json({ error: 'Không có mẫu hợp lệ để tạo dataset version.' });
-        return;
-      }
-
-      await ProcessedDatasetItem.bulkWrite(operations as any[], { ordered: false });
-
-      const createdItems = await ProcessedDatasetItem.find({ datasetVersionId: datasetVersion._id })
-        .sort({ createdAt: 1 })
-        .lean();
-
-      const sampleIdMap = createdItems.reduce<Record<string, string>>((acc, item: any) => {
-        acc[String(item.sampleId)] = String(item._id);
-        return acc;
-      }, {});
 
       res.status(201).json({
         message: 'Đã tạo dataset version thành công.',
         project: {
-          _id: String(project._id),
-          name: project.name,
-          sourceType: project.sourceType,
+          _id: String(created.project._id),
+          name: created.project.name,
+          sourceType: created.project.sourceType,
         },
-        datasetVersion,
-        sampleIdMap,
+        datasetVersion: created.datasetVersion,
+        sampleIdMap: created.sampleIdMap,
       });
     } catch (error: any) {
       console.error('Create dataset version error:', error);
@@ -773,7 +701,9 @@ export class EvaluationController {
         const summary = {
           _id: String(version._id),
           versionName: version.versionName,
+          operationType: version.operationType || 'legacy',
           prepareResumeStep: Number((version as any).prepareResumeStep || 5),
+          checkpointResumeStep: resolveCheckpointResumeStep(version.operationType, (version as any).prepareResumeStep),
           similarityThreshold: version.similarityThreshold,
           totalSamples: visibleSamples,
           createdAt: version.createdAt,
@@ -1149,6 +1079,8 @@ export class EvaluationController {
           _id: String(item._id),
           sampleId: String(item._id),
           sampleKey: item.sampleId,
+          sourceSampleId: item.sourceSampleId ? String(item.sourceSampleId) : null,
+          rootSampleKey: item.rootSampleKey ? String(item.rootSampleKey) : String(item.sampleId),
           data: item.data,
           evaluatedBy: latest?.evaluatedBy || 'none',
           results: history.length ? average : { overall: null, reason: '' },
@@ -1168,6 +1100,7 @@ export class EvaluationController {
           _id: String(version._id),
           projectId: version.projectId ? String(version.projectId) : null,
           parentVersionId: version.parentVersionId ? String(version.parentVersionId) : null,
+          createdFromVersionId: version.createdFromVersionId ? String(version.createdFromVersionId) : null,
           versionNo: version.versionNo ?? null,
           projectName: version.projectName,
           versionName: version.versionName,
@@ -1176,6 +1109,7 @@ export class EvaluationController {
           operationType: version.operationType || 'legacy',
           operationParams: version.operationParams || {},
           prepareResumeStep: Number((version as any).prepareResumeStep || 5),
+          checkpointResumeStep: resolveCheckpointResumeStep(version.operationType, (version as any).prepareResumeStep),
           similarityThreshold: version.similarityThreshold,
           totalSamples: version.totalSamples,
           createdAt: version.createdAt,

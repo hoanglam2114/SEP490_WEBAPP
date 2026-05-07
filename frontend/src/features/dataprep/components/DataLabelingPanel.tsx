@@ -29,7 +29,6 @@ import {
   Navigation,
   RefreshCw,
   PauseCircle,
-  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react';
 import { dataprepApi } from '../api/dataprepApi';
@@ -113,7 +112,7 @@ type DataLabelingStepProps = {
   lockReason?: string;
 };
 
-const CONVERSATION_HARD_LABELS = ['REJECT', 'ERROR_FORMULAR', 'USER_SPAM', 'ERROR_RESPONSE', 'ERROR_FORMAT'] as const;
+const CONVERSATION_HARD_LABELS = ['REJECT', 'MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY', 'OUT_OF_SCOPE'] as const;
 const USER_MESSAGE_HARD_LABELS = [
   'CORRECT',
   'INCORRECT',
@@ -157,10 +156,12 @@ const DEFAULT_HARD_LABEL_CHIP: HardLabelChip = {
 
 const HARD_LABEL_CHIPS: Record<string, HardLabelChip> = {
   REJECT: { short: 'REJ', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100', description: 'Từ chối hội thoại vì có vấn đề nghiêm trọng' },
-  ERROR_FORMULAR: { short: 'FORM', icon: AlertTriangle, className: 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100', description: 'Lỗi công thức toán học' },
-  USER_SPAM: { short: 'SPAM', icon: Ban, className: 'border-yellow-200 bg-yellow-50 text-yellow-700 hover:bg-yellow-100', description: 'Người dùng spam hoặc nhắn vô nghĩa' },
-  ERROR_RESPONSE: { short: 'RESP', icon: MessageCircle, className: 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100', description: 'Phản hồi của AI có lỗi' },
-  ERROR_FORMAT: { short: 'FMT', icon: ListTree, className: 'border-pink-200 bg-pink-50 text-pink-700 hover:bg-pink-100', description: 'Lỗi định dạng văn bản' },
+  MATH: { short: 'MATH', icon: BookOpen, className: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100', description: 'Hội thoại thuộc môn Toán' },
+  PHYSICAL: { short: 'PHYS', icon: Navigation, className: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100', description: 'Hội thoại thuộc môn Vật lý' },
+  CHEMISTRY: { short: 'CHEM', icon: Sparkles, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100', description: 'Hội thoại thuộc môn Hóa học' },
+  LITERATURE: { short: 'LIT', icon: MessageSquare, className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100', description: 'Hội thoại thuộc môn Ngữ văn' },
+  BIOLOGY: { short: 'BIO', icon: Heart, className: 'border-lime-200 bg-lime-50 text-lime-700 hover:bg-lime-100', description: 'Hội thoại thuộc môn Sinh học' },
+  OUT_OF_SCOPE: { short: 'OOS', icon: Ban, className: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100', description: 'Hội thoại ngoài 5 nhóm môn chính' },
   CORRECT: { short: 'OK', icon: Check, className: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100', description: 'Người dùng trả lời đúng' },
   INCORRECT: { short: 'NO', icon: X, className: 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100', description: 'Người dùng trả lời sai' },
   REQUEST_HINT: { short: 'HINT', icon: Lightbulb, className: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100', description: 'Người dùng yêu cầu gợi ý' },
@@ -184,6 +185,60 @@ const HARD_LABEL_CHIPS: Record<string, HardLabelChip> = {
   TRANSITIONING: { short: 'TRAN', icon: ArrowRight, className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:bg-fuchsia-100', description: 'AI chuyển sang chủ đề mới' },
   WAITING: { short: 'WAIT', icon: PauseCircle, className: 'border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100', description: 'AI đợi người dùng trả lời' },
 };
+
+const LABEL_GUIDE_SECTIONS: Array<{
+  title: string;
+  subtitle: string;
+  labels: Array<{ name: string; definition: string; pairWith?: string[] }>;
+}> = [
+  {
+    title: 'Conversation Labels',
+    subtitle: 'Nhãn ở mức toàn bộ hội thoại.',
+    labels: [
+      { name: 'REJECT', definition: 'Dùng khi toàn bộ hội thoại không nên đi tiếp trong pipeline vì chất lượng hoặc phạm vi không phù hợp.' },
+      { name: 'MATH', definition: 'Hội thoại thuộc môn Toán.', pairWith: ['REQUEST_HINT + HINTING', 'ASK_THEORY + CONCEPT_CLARIFY'] },
+      { name: 'PHYSICAL', definition: 'Hội thoại thuộc môn Vật lý.', pairWith: ['REQUEST_EXPLANATION + LOGIC_BREAKDOWN'] },
+      { name: 'CHEMISTRY', definition: 'Hội thoại thuộc môn Hóa học.', pairWith: ['ASK_THEORY + CONCEPT_CLARIFY'] },
+      { name: 'LITERATURE', definition: 'Hội thoại thuộc môn Ngữ văn.', pairWith: ['REQUEST_EXPLANATION + SIMPLIFYING'] },
+      { name: 'BIOLOGY', definition: 'Hội thoại thuộc môn Sinh học.', pairWith: ['ASK_THEORY + CONCEPT_CLARIFY'] },
+      { name: 'OUT_OF_SCOPE', definition: 'Hội thoại không thuộc 5 nhóm môn chính hoặc không đủ rõ để gán subject.' },
+    ],
+  },
+  {
+    title: 'User Intent Labels',
+    subtitle: 'Nhãn cho message của user.',
+    labels: [
+      { name: 'CORRECT', definition: 'User trả lời đúng hoặc đi đúng hướng.' },
+      { name: 'INCORRECT', definition: 'User trả lời sai hoặc suy luận lệch.', pairWith: ['SCAFFOLDING', 'HINTING'] },
+      { name: 'REQUEST_HINT', definition: 'User xin gợi ý thay vì lời giải hoàn chỉnh.', pairWith: ['HINTING'] },
+      { name: 'ASK_THEORY', definition: 'User hỏi khái niệm, định nghĩa hoặc kiến thức nền.', pairWith: ['CONCEPT_CLARIFY'] },
+      { name: 'REQUEST_EXPLANATION', definition: 'User muốn giải thích chi tiết hơn.', pairWith: ['LOGIC_BREAKDOWN', 'SIMPLIFYING'] },
+      { name: 'REQUEST_SIMPLER', definition: 'User muốn cách nói đơn giản, dễ hiểu hơn.', pairWith: ['SIMPLIFYING'] },
+      { name: 'SKIP_EXERCISE', definition: 'User muốn bỏ qua bài hiện tại.', pairWith: ['TRANSITIONING', 'NAVIGATING'] },
+      { name: 'ENCOURAGE', definition: 'User thể hiện thái độ tích cực, động viên hoặc khen.' , pairWith: ['PRAISING', 'MOTIVATING'] },
+      { name: 'OFF_TOPIC', definition: 'User nói lệch khỏi chủ đề học tập.', pairWith: ['REDIRECTING'] },
+      { name: 'NEXT_SECTION', definition: 'User muốn chuyển sang phần hoặc bài tiếp theo.', pairWith: ['TRANSITIONING', 'NAVIGATING'] },
+      { name: 'WAIT_READY', definition: 'User chưa sẵn sàng, muốn tạm dừng hoặc chuẩn bị thêm.', pairWith: ['WAITING'] },
+    ],
+  },
+  {
+    title: 'Assistant Action Labels',
+    subtitle: 'Nhãn cho message của assistant.',
+    labels: [
+      { name: 'PRAISING', definition: 'AI khen ngợi hoặc ghi nhận nỗ lực của user.', pairWith: ['CORRECT', 'ENCOURAGE'] },
+      { name: 'SCAFFOLDING', definition: 'AI chia nhỏ bài toán thành từng bước để user tự làm.', pairWith: ['INCORRECT'] },
+      { name: 'HINTING', definition: 'AI đưa gợi ý ngắn thay vì nói đáp án trực tiếp.', pairWith: ['REQUEST_HINT', 'INCORRECT'] },
+      { name: 'CONCEPT_CLARIFY', definition: 'AI làm rõ khái niệm hoặc lý thuyết.', pairWith: ['ASK_THEORY'] },
+      { name: 'LOGIC_BREAKDOWN', definition: 'AI phân tích logic hoặc quy trình giải.', pairWith: ['REQUEST_EXPLANATION'] },
+      { name: 'SIMPLIFYING', definition: 'AI diễn đạt lại theo cách đơn giản hơn.', pairWith: ['REQUEST_SIMPLER', 'REQUEST_EXPLANATION'] },
+      { name: 'NAVIGATING', definition: 'AI điều hướng user sang bước hoặc phần tiếp theo.', pairWith: ['NEXT_SECTION', 'SKIP_EXERCISE'] },
+      { name: 'MOTIVATING', definition: 'AI động viên để user tiếp tục.', pairWith: ['ENCOURAGE', 'INCORRECT'] },
+      { name: 'REDIRECTING', definition: 'AI kéo hội thoại quay về đúng chủ đề.', pairWith: ['OFF_TOPIC'] },
+      { name: 'TRANSITIONING', definition: 'AI chủ động chuyển sang bài hoặc phần mới.', pairWith: ['NEXT_SECTION', 'SKIP_EXERCISE'] },
+      { name: 'WAITING', definition: 'AI tạm dừng và chờ user sẵn sàng hoặc phản hồi.', pairWith: ['WAIT_READY'] },
+    ],
+  },
+];
 
 function getErrorMessage(error: any, fallback: string): string {
   return error?.response?.data?.error
@@ -310,6 +365,7 @@ export function DataLabelingPanel({
   const [autoLabelSuggestions, setAutoLabelSuggestions] = useState<Record<number, MessageAutoLabelSuggestion>>({});
   const [autoLabelBatchCountInput, setAutoLabelBatchCountInput] = useState('1');
   const [batchAutoLabelResult, setBatchAutoLabelResult] = useState<BatchAutoLabelResult | null>(null);
+  const [isUserGuideOpen, setIsUserGuideOpen] = useState(false);
   const [error, setError] = useState('');
 
   const assignmentStatusQuery = useQuery({
@@ -355,7 +411,8 @@ export function DataLabelingPanel({
   const autoLabelSuggestionCount = Object.keys(autoLabelSuggestions).length;
   const autoLabelSuggestedLabelCount = Object.values(autoLabelSuggestions)
     .reduce((sum, suggestion) => sum + suggestionLabels(suggestion).length, 0);
-  const maxBatchCount = Math.max(samples.length, 1);
+  const remainingSampleCount = Math.max(samples.length - currentIndex, 0);
+  const maxBatchCount = Math.max(remainingSampleCount, 1);
   const parsedBatchCount = Number.parseInt(autoLabelBatchCountInput, 10);
   const effectiveBatchCount = Math.min(
     maxBatchCount,
@@ -458,7 +515,7 @@ export function DataLabelingPanel({
     if (effectiveBatchCount !== parsedBatchCount) {
       setAutoLabelBatchCountInput(String(effectiveBatchCount));
     }
-  }, [autoLabelBatchCountInput, effectiveBatchCount, parsedBatchCount, samples.length]);
+  }, [autoLabelBatchCountInput, currentIndex, effectiveBatchCount, parsedBatchCount, samples.length]);
 
   useEffect(() => {
     if (currentIndex <= samples.length - 1) {
@@ -557,8 +614,15 @@ export function DataLabelingPanel({
       const nextLabel = payload?.label;
 
       if (!nextLabel) {
-        setLabels(previousLabels);
-        await fetchLabels(currentSample?.sampleId || '');
+        if (payload?.deleted) {
+          setLabels((prev) => prev.filter((item) => item._id !== labelId));
+          if (currentSample?.sampleId) {
+            await fetchMessageLabelCounts(currentSample.sampleId);
+          }
+        } else {
+          setLabels(previousLabels);
+          await fetchLabels(currentSample?.sampleId || '');
+        }
         return;
       }
 
@@ -649,7 +713,7 @@ export function DataLabelingPanel({
     }
 
     const targetSamples = samples
-      .slice(0, effectiveBatchCount)
+      .slice(currentIndex, currentIndex + effectiveBatchCount)
       .filter((sample) => sample.sampleId)
       .map((sample) => ({
         sampleId: String(sample.sampleId),
@@ -1012,6 +1076,15 @@ export function DataLabelingPanel({
                 {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                 Auto Labeling
               </button>
+              <button
+                type="button"
+                onClick={() => setIsUserGuideOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 shadow-sm hover:bg-sky-50"
+                title="Open labeling guide"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                User Guide
+              </button>
             </div>
 
             <div className="p-3 space-y-3">
@@ -1215,6 +1288,68 @@ export function DataLabelingPanel({
           )}
         </div>
       </div>
+
+      {isUserGuideOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Labeling User Guide</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Reference for manual intent-action labeling, with definitions and common intent-action pairings.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsUserGuideOpen(false)}
+                className="rounded-lg border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="max-h-[calc(85vh-80px)] overflow-auto px-6 py-5 space-y-6">
+              {LABEL_GUIDE_SECTIONS.map((section) => (
+                <section key={section.title} className="space-y-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900">{section.title}</h4>
+                    <p className="text-xs text-slate-500">{section.subtitle}</p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {section.labels.map((item) => {
+                      const chip = HARD_LABEL_CHIPS[item.name] || DEFAULT_HARD_LABEL_CHIP;
+                      const Icon = chip.icon;
+                      return (
+                        <div key={item.name} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-bold ${chip.className}`}>
+                              <Icon className="h-3.5 w-3.5" />
+                              {item.name}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm text-slate-700">{item.definition}</p>
+                          {item.pairWith && item.pairWith.length > 0 && (
+                            <div className="mt-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Good pairings</p>
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {item.pairWith.map((pair) => (
+                                  <span key={pair} className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">
+                                    {pair}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

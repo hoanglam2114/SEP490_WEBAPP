@@ -10,6 +10,8 @@ export function PostConversionSummary({ result }: PostConversionSummaryProps) {
     return null;
   }
 
+  const convertedRecordCount = Array.isArray(result.data) ? result.data.length : 0;
+
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
       <div className="bg-green-50 px-4 py-3 border-b border-green-100 flex items-center text-green-800">
@@ -20,11 +22,11 @@ export function PostConversionSummary({ result }: PostConversionSummaryProps) {
       <div className="p-4 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm text-gray-700">
           <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
-            <div className="text-gray-500 text-xs">Total Units</div>
-            <div className="font-semibold text-gray-900">{result.stats.totalConversations.toLocaleString()}</div>
+            <div className="text-gray-500 text-xs">Converted Records</div>
+            <div className="font-semibold text-gray-900">{convertedRecordCount.toLocaleString()}</div>
           </div>
           <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
-            <div className="text-gray-500 text-xs">Total Messages</div>
+            <div className="text-gray-500 text-xs">Source Messages</div>
             <div className="font-semibold text-gray-900">{result.stats.totalMessages.toLocaleString()}</div>
           </div>
         </div>

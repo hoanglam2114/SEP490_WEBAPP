@@ -124,6 +124,14 @@ type LoadProjectPayload = {
   startStep?: Step;
 };
 
+type PipelineWorkingSession = {
+  baseVersionId: string | null;
+  hiddenSampleKeys: string[];
+  acceptedRewriteRowIds: string[];
+  pendingRefineRowIds: string[];
+  lastCommittedVersionId: string | null;
+};
+
 function recommendClusterK(
   elbow: Array<{ k: number; wcss: number }>,
   silhouette: Array<{ k: number; silhouette: number }>
@@ -1112,46 +1120,21 @@ function EvaluateModal({
 function IncompleteLabelingModal({
   isOpen,
   status,
-  selectedBucket,
   isSubmitting,
-  onSelectBucket,
   onClose,
   onConfirm,
 }: {
   isOpen: boolean;
   status: LabelingIntentActionStatus | null;
-  selectedBucket: QualityBucket;
   isSubmitting?: boolean;
-  onSelectBucket: (bucket: QualityBucket) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const bucketOptions: Array<{ value: QualityBucket; title: string; description: string; tone: string }> = [
-    {
-      value: 'Gold',
-      title: 'Gold',
-      description: 'Treat incomplete samples as usable without rewrite.',
-      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    },
-    {
-      value: 'Rewrite',
-      title: 'Rewrite',
-      description: 'Send incomplete samples to the rewrite review bucket.',
-      tone: 'border-amber-200 bg-amber-50 text-amber-700',
-    },
-    {
-      value: 'Reject',
-      title: 'Reject',
-      description: 'Exclude incomplete samples from the main dataset.',
-      tone: 'border-rose-200 bg-rose-50 text-rose-700',
-    },
-  ];
-
   return (
     <ActionModalFrame
       isOpen={isOpen}
       title="Incomplete Intent-Action labeling"
-      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. Choose how those samples should be bucketed before moving to the next step.`}
+      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. If you continue, those samples will be moved to Reject before entering the next step.`}
       confirmText="Continue"
       isSubmitting={isSubmitting}
       onClose={onClose}
@@ -1161,26 +1144,11 @@ function IncompleteLabelingModal({
         Labeled: <span className="font-semibold">{status?.labeledSamples || 0}</span> / {status?.totalSamples || 0} samples
       </div>
 
-      <div className="grid gap-3">
-        {bucketOptions.map((option) => {
-          const active = selectedBucket === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => onSelectBucket(option.value)}
-              className={`rounded-xl border px-4 py-3 text-left transition-colors ${active ? option.tone : 'border-gray-200 bg-white hover:bg-gray-50'}`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-bold">{option.title}</p>
-                  <p className="mt-1 text-xs text-gray-600">{option.description}</p>
-                </div>
-                <span className={`h-4 w-4 rounded-full border ${active ? 'border-indigo-600 bg-indigo-600' : 'border-gray-300 bg-white'}`} />
-              </div>
-            </button>
-          );
-        })}
+      <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+        <p className="font-semibold">Action on continue: Reject incomplete samples</p>
+        <p className="mt-1 text-xs text-rose-700">
+          This keeps the pipeline moving forward, but all unlabeled samples will be excluded from the main accepted dataset.
+        </p>
       </div>
     </ActionModalFrame>
   );
@@ -2515,6 +2483,13 @@ export function ConversionPage() {
   const [splitGuardMaxAttempts, setSplitGuardMaxAttempts] = useState<number>(20);
   const [splitGuardResult, setSplitGuardResult] = useState<SafeSplitResult | null>(null);
   const [currentDatasetVersionId, setCurrentDatasetVersionId] = useState<string | null>(null);
+  const [pipelineWorkingSession, setPipelineWorkingSession] = useState<PipelineWorkingSession>({
+    baseVersionId: null,
+    hiddenSampleKeys: [],
+    acceptedRewriteRowIds: [],
+    pendingRefineRowIds: [],
+    lastCommittedVersionId: null,
+  });
   const [sampleIdMap, setSampleIdMap] = useState<Record<string, string>>({});
   const [clusteredResult, setClusteredResult] = useState<{ data: any[]; assignments: number[]; groups: ClusterGroup[]; clusterStats?: ClusterStat[]; avgSimilarity?: number } | null>(null);
   const [visibleRowsInEvaluation, setVisibleRowsInEvaluation] = useState<DisplayRow[]>([]);
@@ -2574,17 +2549,13 @@ export function ConversionPage() {
   const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
   const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
   const [allQualitySamplesResult, setAllQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
-  const [balanceApplied, setBalanceApplied] = useState(false);
   const [rewriteProvider, setRewriteProvider] = useState<AiProvider>('gemini');
   const [rewriteRows, setRewriteRows] = useState<RewriteSampleView[]>([]);
   const [rewriteDrafts, setRewriteDrafts] = useState<Record<string, Record<number, RewriteTurnDraft>>>({});
-  const [rewriteApplied, setRewriteApplied] = useState(false);
   const [isRewriteLoading, setIsRewriteLoading] = useState(false);
-  const [rewriteSource, setRewriteSource] = useState<'backend' | 'local-applied'>('backend');
   const [isPendingRewriteModalOpen, setIsPendingRewriteModalOpen] = useState(false);
   const [isBalanceReminderModalOpen, setIsBalanceReminderModalOpen] = useState(false);
   const [isIncompleteLabelingModalOpen, setIsIncompleteLabelingModalOpen] = useState(false);
-  const [pendingIncompleteBucket, setPendingIncompleteBucket] = useState<QualityBucket>('Rewrite');
   const [isSavingIncompleteBucket, setIsSavingIncompleteBucket] = useState(false);
   const [isRestoringParentVersion, setIsRestoringParentVersion] = useState(false);
   const loadHandledRef = useRef<boolean>(false);
@@ -2631,17 +2602,20 @@ export function ConversionPage() {
     refetchOnWindowFocus: false,
   });
 
-  const resetRewriteSession = (source: 'backend' | 'local-applied' = 'backend') => {
+  const hasBalancedWorkingSet = pipelineWorkingSession.hiddenSampleKeys.length > 0;
+  const hasAppliedRewriteSelections = pipelineWorkingSession.acceptedRewriteRowIds.length > 0;
+  const rewriteSource: 'backend' | 'local-applied' = hasAppliedRewriteSelections ? 'local-applied' : 'backend';
+
+  const resetRewriteSession = () => {
     setRewriteRows([]);
     setRewriteDrafts({});
-    setRewriteApplied(false);
-    setRewriteSource(source);
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      acceptedRewriteRowIds: [],
+    }));
   };
 
   useEffect(() => {
-    if (!currentDatasetVersionId && rewriteSource === 'local-applied') {
-      return;
-    }
     setActiveClassificationGroup(null);
     setClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
@@ -2824,6 +2798,18 @@ export function ConversionPage() {
     [rowsWithClusterGroups]
   );
 
+  const hiddenBalancedSampleKeySet = useMemo(
+    () => new Set(pipelineWorkingSession.hiddenSampleKeys),
+    [pipelineWorkingSession.hiddenSampleKeys]
+  );
+
+  const balancedVisibleRows = useMemo(() => {
+    if (!hiddenBalancedSampleKeySet.size) {
+      return rowsWithClusterGroups;
+    }
+    return rowsWithClusterGroups.filter((row) => !hiddenBalancedSampleKeySet.has(resolveEvaluationKey(row)));
+  }, [hiddenBalancedSampleKeySet, rowsWithClusterGroups]);
+
   const classificationFilteredRows = useMemo(() => {
     const sourceItems = qualitySamplesResult?.items || classifiedSamplesResult?.items;
     if (!sourceItems) return [];
@@ -2864,7 +2850,6 @@ export function ConversionPage() {
           })),
         })).filter((row) => row.turns.length > 0);
         setRewriteRows(rows);
-        setRewriteSource('backend');
       } catch (error) {
         if (!isCancelled) {
           setRewriteRows([]);
@@ -3099,7 +3084,7 @@ export function ConversionPage() {
     data: Array<{ sourceKey: string; data: Record<string, any> }>;
     projectId?: string;
     parentVersionId?: string;
-    operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+    operationType?: 'upload' | 'clean' | 'cluster' | 'labeling_base' | 'classification_balanced' | 'evaluation_filtered' | 'refine_approved' | 'manual_edit' | 'legacy';
     operationParams?: Record<string, any>;
     prepareResumeStep?: Step;
   } | null => {
@@ -3134,10 +3119,10 @@ export function ConversionPage() {
       };
     });
 
-    let operationType: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy' = 'legacy';
+    let operationType: 'upload' | 'clean' | 'cluster' | 'labeling_base' | 'classification_balanced' | 'evaluation_filtered' | 'refine_approved' | 'manual_edit' | 'legacy' = 'legacy';
     if (currentStep <= 2) operationType = 'upload';
     else if (currentStep === 3) operationType = 'clean';
-    else if (currentStep === 4) operationType = 'cluster';
+    else if (currentStep === 4) operationType = 'labeling_base';
     else if (currentStep >= 5) operationType = 'manual_edit';
 
     return {
@@ -3164,6 +3149,37 @@ export function ConversionPage() {
       prepareResumeStep: PREPARE_STAGE_RESUME_STEPS.labeling,
     };
   };
+
+  const serializeRowsForCheckpoint = (rows: DisplayRow[]): Array<{ sourceKey: string; data: Record<string, any> }> => (
+    rows.map((row) => {
+      if (previewMode === 'openai') {
+        const messages = (row.conversationPairs || []).flatMap((pair) => ([
+          { role: 'user', content: String(pair.user || '') },
+          { role: 'assistant', content: String(pair.assistant || '') },
+        ])).filter((message) => String(message.content || '').trim() !== '');
+
+        return {
+          sourceKey: resolveEvaluationKey(row),
+          data: {
+            messages,
+            conversation_id: row.blockId,
+            ...(Number.isFinite(row.groupId) ? { cluster: row.groupId } : {}),
+          },
+        };
+      }
+
+      return {
+        sourceKey: resolveEvaluationKey(row),
+        data: {
+          instruction: row.instruction,
+          input: row.input,
+          output: row.output,
+          id: row.id,
+          ...(Number.isFinite(row.groupId) ? { cluster: row.groupId } : {}),
+        },
+      };
+    })
+  );
 
   const ensureSampleIdMapForKeys = async (keys: string[]): Promise<Record<string, string>> => {
     const nextMap = { ...sampleIdMap };
@@ -3202,6 +3218,11 @@ export function ConversionPage() {
 
     const created = await dataprepApi.createDatasetVersion(payload);
     setCurrentDatasetVersionId(created.datasetVersion._id);
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      baseVersionId: created.datasetVersion._id,
+      lastCommittedVersionId: created.datasetVersion._id,
+    }));
     setSampleIdMap(created.sampleIdMap || {});
 
     return { ...nextMap, ...(created.sampleIdMap || {}) };
@@ -3317,6 +3338,27 @@ export function ConversionPage() {
     };
   }, [evaluationMap, evaluationRows, previewMode]);
 
+  const evaluationProgress = useMemo(() => {
+    const targetKeys = Array.from(new Set(evaluationRows.map((row) => resolveEvaluationKey(row))));
+    const completed = targetKeys.filter((key) => {
+      const score = getAveragedScores(normalizeEvaluationEntry(evaluationMap[key]), previewMode);
+      return Boolean(score && Number.isFinite(score.overall) && (score.overall as number) >= 0);
+    }).length;
+
+    return {
+      completed,
+      total: targetKeys.length,
+    };
+  }, [evaluationMap, evaluationRows, previewMode]);
+
+  const refineProgress = useMemo(() => {
+    const completed = evaluationRows.filter((row) => refinedRowIds.has(row.id)).length;
+    return {
+      completed,
+      total: evaluationRows.length,
+    };
+  }, [evaluationRows, refinedRowIds]);
+
   const attachClusterStats = (groups: ClusterGroup[] = [], clusterStats?: ClusterStat[]): ClusterGroup[] => {
     if (!Array.isArray(clusterStats) || clusterStats.length === 0) {
       return groups;
@@ -3373,7 +3415,13 @@ export function ConversionPage() {
       setAutoLabelSuggestionsByProvider({});
       setAutoLabelsSaved(false);
       setAutoLabelFilterGroupId(null);
-      setBalanceApplied(false);
+      setPipelineWorkingSession({
+        baseVersionId: null,
+        hiddenSampleKeys: [],
+        acceptedRewriteRowIds: [],
+        pendingRefineRowIds: [],
+        lastCommittedVersionId: null,
+      });
       resetRewriteSession();
       setVisualizationResult(null);
       setClusterGroups([]);
@@ -3412,6 +3460,13 @@ export function ConversionPage() {
       }
       setActiveProjectOwnerId(currentUserId || null);
       setCurrentDatasetVersionId(response.datasetVersion._id);
+      setPipelineWorkingSession({
+        baseVersionId: response.datasetVersion._id,
+        hiddenSampleKeys: [],
+        acceptedRewriteRowIds: [],
+        pendingRefineRowIds: [],
+        lastCommittedVersionId: response.datasetVersion._id,
+      });
       setIsCurrentVersionPublic(Boolean(response?.datasetVersion?.isPublic));
       setSampleIdMap(response.sampleIdMap || {});
       setDatasetVersionPromptId('');
@@ -3695,6 +3750,10 @@ export function ConversionPage() {
         }
       });
       setRefinedRowIds(refinedIds);
+      setPipelineWorkingSession((prev) => ({
+        ...prev,
+        pendingRefineRowIds: Array.from(refinedIds),
+      }));
 
       return { count: actuallyRefinedCount, provider: params.provider, nextRefineHistoryMap };
     },
@@ -3744,7 +3803,10 @@ export function ConversionPage() {
         ...prev,
         [rowId]: nextRowDrafts,
       }));
-      setRewriteApplied(false);
+      setPipelineWorkingSession((prev) => ({
+        ...prev,
+        acceptedRewriteRowIds: prev.acceptedRewriteRowIds.filter((id) => id !== rowId),
+      }));
       const label = provider === 'openai' ? 'OpenAI' : provider === 'deepseek' ? 'Deepseek' : 'Gemini';
       toast.success(`Generated rewrite proposals for the current sample using ${label}.`);
     },
@@ -3835,6 +3897,13 @@ export function ConversionPage() {
     }
 
     setCurrentDatasetVersionId(null);
+    setPipelineWorkingSession({
+      baseVersionId: null,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: null,
+    });
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
     setAutoLabelSuggestionsByProvider({});
@@ -3887,6 +3956,13 @@ export function ConversionPage() {
     setConversionResult((prev) => (prev ? { ...prev, data: clusteredResult.data } : null));
     setClusterGroups(clusteredResult.groups);
     setCurrentDatasetVersionId(null);
+    setPipelineWorkingSession({
+      baseVersionId: null,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: null,
+    });
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
     setAutoLabelSuggestionsByProvider({});
@@ -3917,6 +3993,13 @@ export function ConversionPage() {
     setClusterGroups([]);
     setRowClusterMap({});
     setCurrentDatasetVersionId(null);
+    setPipelineWorkingSession({
+      baseVersionId: null,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: null,
+    });
     setSampleIdMap({});
     setAutoLabelSuggestions([]);
     setAutoLabelSuggestionsByProvider({});
@@ -4015,51 +4098,34 @@ export function ConversionPage() {
     keptItems: ClassifiedSamplesResult['items'],
     removedCount: number
   ) => {
-    if (!conversionResult || !keptItems.length) {
+    if (!rowsWithClusterGroups.length || !keptItems.length) {
       toast.error('No balanced data available to apply.');
       return;
     }
 
-    const nextData = keptItems.map((item) => {
-      const data = { ...(item.data || {}) };
-      if (previewMode === 'openai') {
-        return {
-          ...data,
-          conversation_id: String((data as any).conversation_id || item.sampleId),
-        };
-      }
+    const keepKeySet = new Set(keptItems.map((item) => String(item.sampleId)));
+    const hiddenSampleKeys = rowsWithClusterGroups
+      .map((row) => resolveEvaluationKey(row))
+      .filter((key) => !keepKeySet.has(key));
 
-      return {
-        ...data,
-        id: String((data as any).id || item.sampleId),
-      };
-    });
-
-    const nextStats = {
-      ...conversionResult.stats,
-      totalConversations: nextData.length,
-      totalMessages: previewMode === 'openai'
-        ? normalizeOpenAIConversations(nextData).reduce((sum, conv) => sum + (Array.isArray(conv.messages) ? conv.messages.length : 0), 0)
-        : nextData.length,
-    };
-
-    setConversionResult({
-      ...conversionResult,
-      data: nextData,
-      output: JSON.stringify(nextData),
-      stats: nextStats,
-    });
-    setOriginalConvertedResult((prev) => prev || conversionResult);
-    setVisibleRowsInEvaluation([]);
-    setVisibleRowsInRefinement([]);
-    setActiveClassificationGroup(null);
-    setClassifiedSamplesResult(null);
-    setActiveQualityBucket(null);
-    setQualitySamplesResult(null);
-    setAllQualitySamplesResult(null);
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      baseVersionId: prev.baseVersionId || currentDatasetVersionId,
+      hiddenSampleKeys,
+      acceptedRewriteRowIds: [],
+    }));
     resetRewriteSession();
-    setBalanceApplied(true);
     toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
+  };
+
+  const handleResetBalancedWorkingSet = () => {
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+    }));
+    resetRewriteSession();
+    toast.success('Balanced working set reset to the current base version.');
   };
 
   const handleRewriteDecisionChange = (rowId: string, assistantMessageIndex: number, decision: 'original' | 'ai' | 'edited') => {
@@ -4081,7 +4147,10 @@ export function ConversionPage() {
         },
       };
     });
-    setRewriteApplied(false);
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      acceptedRewriteRowIds: prev.acceptedRewriteRowIds.filter((id) => id !== rowId),
+    }));
   };
 
   const handleRewriteEditChange = (rowId: string, assistantMessageIndex: number, value: string) => {
@@ -4104,7 +4173,10 @@ export function ConversionPage() {
         },
       };
     });
-    setRewriteApplied(false);
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      acceptedRewriteRowIds: prev.acceptedRewriteRowIds.filter((id) => id !== rowId),
+    }));
   };
 
   const handleApplyRewriteSelections = () => {
@@ -4219,8 +4291,13 @@ export function ConversionPage() {
         }),
       };
     }));
-    setRewriteApplied(true);
-    setRewriteSource('local-applied');
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      acceptedRewriteRowIds: Array.from(new Set([
+        ...prev.acceptedRewriteRowIds,
+        ...selectedTurns.map((turn) => turn.rowId),
+      ])),
+    }));
     toast.success(`Applied ${selectedTurns.length} rewritten assistant turns to the working dataset.`);
   };
 
@@ -4482,6 +4559,13 @@ export function ConversionPage() {
     setRefineHistoryMap({});
     setSystemPromptText('');
     setCurrentDatasetVersionId(payload.datasetVersionId || null);
+    setPipelineWorkingSession({
+      baseVersionId: payload.datasetVersionId || null,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: payload.datasetVersionId || null,
+    });
     setSampleIdMap(payload.sampleIdMap || {});
     setClusterGroups(restoredClusterState.clusterGroups);
     setRowClusterMap(restoredClusterState.rowClusterMap);
@@ -4572,6 +4656,13 @@ export function ConversionPage() {
         setRefineHistoryMap({});
         setSystemPromptText('');
         setCurrentDatasetVersionId(payload.datasetVersionId || null);
+        setPipelineWorkingSession({
+          baseVersionId: payload.datasetVersionId || null,
+          hiddenSampleKeys: [],
+          acceptedRewriteRowIds: [],
+          pendingRefineRowIds: [],
+          lastCommittedVersionId: payload.datasetVersionId || null,
+        });
         setIsCurrentVersionPublic(true);
         setSampleIdMap(resolvedSampleIdMap);
         setCommunityLoadedRejectedMode(Boolean(payload.showRejected));
@@ -4587,7 +4678,13 @@ export function ConversionPage() {
         setAutoLabelSuggestionsByProvider({});
         setAutoLabelsSaved(false);
         setAutoLabelFilterGroupId(null);
-        setBalanceApplied(false);
+        setPipelineWorkingSession({
+          baseVersionId: payload.datasetVersionId || null,
+          hiddenSampleKeys: [],
+          acceptedRewriteRowIds: [],
+          pendingRefineRowIds: [],
+          lastCommittedVersionId: payload.datasetVersionId || null,
+        });
         resetRewriteSession();
         setVisibleRowsInEvaluation([]);
         setVisibleRowsInRefinement([]);
@@ -4668,7 +4765,13 @@ export function ConversionPage() {
     setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
-    setBalanceApplied(false);
+    setPipelineWorkingSession({
+      baseVersionId: null,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: null,
+    });
     resetRewriteSession();
     setVisibleRowsInEvaluation([]);
     setVisibleRowsInRefinement([]);
@@ -4712,6 +4815,11 @@ export function ConversionPage() {
           prepareResumeStep,
         });
         setCurrentDatasetVersionId(created.datasetVersion._id);
+        setPipelineWorkingSession((prev) => ({
+          ...prev,
+          baseVersionId: created.datasetVersion._id,
+          lastCommittedVersionId: created.datasetVersion._id,
+        }));
         setSampleIdMap(created.sampleIdMap || {});
         setDatasetVersionPromptId('');
         return true;
@@ -4743,8 +4851,6 @@ export function ConversionPage() {
       await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
       return;
     }
-
-    setPendingIncompleteBucket(status.incompleteBucket || 'Rewrite');
     setIsIncompleteLabelingModalOpen(true);
   };
 
@@ -4756,9 +4862,9 @@ export function ConversionPage() {
 
     setIsSavingIncompleteBucket(true);
     try {
-      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, pendingIncompleteBucket);
+      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, 'Reject');
       await labelingIntentStatusQuery.refetch();
-      toast.success(result.message || `Incomplete samples will be treated as ${pendingIncompleteBucket}.`);
+      toast.success(result.message || 'Incomplete samples will be treated as Reject.');
       setIsIncompleteLabelingModalOpen(false);
       await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
     } catch (error: any) {
@@ -4768,20 +4874,153 @@ export function ConversionPage() {
     }
   };
 
+  const createClassificationBalancedCheckpoint = async (): Promise<string | null> => {
+    if (!currentDatasetVersionId) {
+      return null;
+    }
+    if (!hasBalancedWorkingSet) {
+      return currentDatasetVersionId;
+    }
+
+    const data = serializeRowsForCheckpoint(balancedVisibleRows);
+    if (!data.length) {
+      throw new Error('No balanced rows available to checkpoint.');
+    }
+
+    const response = await dataprepApi.createClassificationBalanceCheckpoint(currentDatasetVersionId, {
+      format: previewMode,
+      data,
+      operationParams: {
+        filterSummary: {
+          hiddenCount: pipelineWorkingSession.hiddenSampleKeys.length,
+          keptCount: balancedVisibleRows.length,
+        },
+        hiddenSampleKeys: pipelineWorkingSession.hiddenSampleKeys,
+      },
+    });
+
+    setPipelineWorkingSession({
+      baseVersionId: response.datasetVersion._id,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: response.datasetVersion._id,
+    });
+
+    return response.datasetVersion._id;
+  };
+
+  const createEvaluationFilteredCheckpoint = async (): Promise<string> => {
+    if (!currentDatasetVersionId) {
+      throw new Error('Dataset version is required before entering Evaluation.');
+    }
+
+    const rewriteQualifiedKeys = new Set(pipelineWorkingSession.acceptedRewriteRowIds);
+    const qualityByKey = new Map(
+      (allQualitySamplesResult?.items || []).map((item) => [String(item.sampleId), item.bucket])
+    );
+
+    const eligibleRows = rowsWithClusterGroups.filter((row) => {
+      const key = resolveEvaluationKey(row);
+      const bucket = qualityByKey.get(key);
+      if (!bucket) {
+        return false;
+      }
+      if (bucket === 'Gold') {
+        return true;
+      }
+      if (bucket === 'Rewrite') {
+        return rewriteQualifiedKeys.has(key);
+      }
+      return false;
+    });
+
+    if (!eligibleRows.length) {
+      throw new Error('No rows qualified for Evaluation after applying checkpoint rules.');
+    }
+
+    const response = await dataprepApi.createEvaluationFilterCheckpoint(currentDatasetVersionId, {
+      format: previewMode,
+      data: serializeRowsForCheckpoint(eligibleRows),
+      operationParams: {
+        filterSummary: {
+          totalRows: rowsWithClusterGroups.length,
+          keptRows: eligibleRows.length,
+        },
+        qualityRules: {
+          includeGold: true,
+          includeRewriteOnlyIfAccepted: true,
+          excludeReject: true,
+        },
+        rewriteIncludedSampleKeys: Array.from(rewriteQualifiedKeys),
+      },
+    });
+
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      hiddenSampleKeys: [],
+      acceptedRewriteRowIds: [],
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: response.datasetVersion._id,
+    }));
+
+    return response.datasetVersion._id;
+  };
+
+  const createRefineApprovedCheckpoint = async (): Promise<string> => {
+    if (!currentDatasetVersionId) {
+      throw new Error('Dataset version is required before entering Finish.');
+    }
+
+    const response = await dataprepApi.createRefineAcceptCheckpoint(currentDatasetVersionId, {
+      format: previewMode,
+      data: serializeRowsForCheckpoint(evaluationRows),
+      operationParams: {
+        filterSummary: {
+          totalRows: evaluationRows.length,
+          refinedRows: refinedRowIds.size,
+        },
+        refineAcceptedSampleKeys: Array.from(refinedRowIds),
+      },
+    });
+
+    setPipelineWorkingSession((prev) => ({
+      ...prev,
+      pendingRefineRowIds: [],
+      lastCommittedVersionId: response.datasetVersion._id,
+    }));
+
+    return response.datasetVersion._id;
+  };
+
   const handleProceedFromRewriteStep = async () => {
     if (pendingRewriteSampleCount > 0) {
       setIsPendingRewriteModalOpen(true);
       return;
     }
-    await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+    try {
+      const checkpointVersionId = await createEvaluationFilteredCheckpoint();
+      await restoreVersionSession(checkpointVersionId, PREPARE_STAGE_RESUME_STEPS.evaluation);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to create evaluation checkpoint.');
+    }
   };
 
-  const handleProceedFromDistributionStep = () => {
-    if (!balanceApplied) {
+  const handleProceedFromDistributionStep = async () => {
+    if (!hasBalancedWorkingSet) {
       setIsBalanceReminderModalOpen(true);
       return;
     }
-    setCurrentStep(10);
+    try {
+      const checkpointVersionId = await createClassificationBalancedCheckpoint();
+      if (!checkpointVersionId) {
+        setCurrentStep(10);
+        return;
+      }
+      await restoreVersionSession(checkpointVersionId, 10);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to create balanced checkpoint.');
+    }
   };
 
   const restoreVersionSession = async (versionId: string, targetStep: Step) => {
@@ -4834,6 +5073,13 @@ export function ConversionPage() {
       setConversionResult(restoredResult);
       setOriginalConvertedResult((prev) => prev || restoredResult);
       setCurrentDatasetVersionId(detail.datasetVersion._id);
+      setPipelineWorkingSession({
+        baseVersionId: detail.datasetVersion.parentVersionId || detail.datasetVersion._id,
+        hiddenSampleKeys: [],
+        acceptedRewriteRowIds: [],
+        pendingRefineRowIds: [],
+        lastCommittedVersionId: detail.datasetVersion._id,
+      });
       setDatasetVersionPromptId('');
       setSampleIdMap(restoredSampleIdMap);
       setClusterGroups(restoredClusterState.clusterGroups);
@@ -4901,6 +5147,15 @@ export function ConversionPage() {
       await restoreVersionSession(parentVersionId, 11);
     } catch (error: any) {
       toast.error(error?.response?.data?.error || error?.message || 'Failed to load refine parent version.');
+    }
+  };
+
+  const handleProceedFromRefineStep = async () => {
+    try {
+      const checkpointVersionId = await createRefineApprovedCheckpoint();
+      await restoreVersionSession(checkpointVersionId, PREPARE_STAGE_RESUME_STEPS.finish);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || error?.message || 'Failed to create refine checkpoint.');
     }
   };
 
@@ -5015,6 +5270,11 @@ export function ConversionPage() {
           });
 
           setCurrentDatasetVersionId(created.datasetVersion._id);
+          setPipelineWorkingSession((prev) => ({
+            ...prev,
+            baseVersionId: prev.baseVersionId || created.datasetVersion._id,
+            lastCommittedVersionId: created.datasetVersion._id,
+          }));
           setSampleIdMap(created.sampleIdMap || {});
           setDatasetVersionPromptId(selectedPromptId);
         }
@@ -5515,8 +5775,9 @@ export function ConversionPage() {
       {currentStep === 9 && (
         <SubjectDistributionPanel
           versionId={currentDatasetVersionId || ''}
-          alreadyApplied={balanceApplied}
+          alreadyApplied={hasBalancedWorkingSet}
           onApply={handleApplySubjectBalance}
+          onReset={handleResetBalancedWorkingSet}
           onBack={() => setCurrentStep(getBackStep(9))}
           onNext={handleProceedFromDistributionStep}
           nextDisabled={!canMoveFromStep9}
@@ -5534,7 +5795,7 @@ export function ConversionPage() {
           onTurnDecisionChange={handleRewriteDecisionChange}
           onTurnEditChange={handleRewriteEditChange}
           onApply={handleApplyRewriteSelections}
-          hasApplied={rewriteApplied}
+          hasApplied={hasAppliedRewriteSelections}
           pendingSampleCount={pendingRewriteSampleCount}
           onBack={() => setCurrentStep(getBackStep(10))}
           onNext={handleProceedFromRewriteStep}
@@ -5563,6 +5824,8 @@ export function ConversionPage() {
           )}
           averagedEvaluation={averagedEvaluation}
           mode={previewMode}
+          progressCount={evaluationProgress.completed}
+          totalCount={evaluationProgress.total}
           onBack={handleBackFromEvaluation}
           onNext={() => setCurrentStep(12)}
           nextDisabled={!canMoveFromStep11 || isRestoringParentVersion}
@@ -5599,8 +5862,10 @@ export function ConversionPage() {
               onRequestViewRefineChange={handleOpenRefineComparison}
             />
           )}
+          progressCount={refineProgress.completed}
+          totalCount={refineProgress.total}
           onBack={handleBackFromRefine}
-          onNext={() => continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.finish)}
+          onNext={handleProceedFromRefineStep}
           nextDisabled={!canMoveFromStep12 || isRestoringParentVersion}
         />
       )}
@@ -5624,7 +5889,7 @@ export function ConversionPage() {
 
       {currentStep === 14 && (
         <SplitGuardPanel
-          totalSamples={currentPipelineExportData.length}
+          totalSamples={evaluationRows.length}
           testPercentage={downloadTestPercentage}
           setTestPercentage={setDownloadTestPercentage}
           threshold={splitGuardThreshold}
@@ -5751,9 +6016,7 @@ export function ConversionPage() {
       <IncompleteLabelingModal
         isOpen={isIncompleteLabelingModalOpen}
         status={labelingIntentStatusQuery.data || null}
-        selectedBucket={pendingIncompleteBucket}
         isSubmitting={isSavingIncompleteBucket}
-        onSelectBucket={setPendingIncompleteBucket}
         onClose={() => setIsIncompleteLabelingModalOpen(false)}
         onConfirm={handleConfirmIncompleteBucket}
       />
@@ -5773,7 +6036,12 @@ export function ConversionPage() {
         onClose={() => setIsPendingRewriteModalOpen(false)}
         onConfirm={async () => {
           setIsPendingRewriteModalOpen(false);
-          await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.evaluation);
+          try {
+            const checkpointVersionId = await createEvaluationFilteredCheckpoint();
+            await restoreVersionSession(checkpointVersionId, PREPARE_STAGE_RESUME_STEPS.evaluation);
+          } catch (error: any) {
+            toast.error(error?.response?.data?.error || error?.message || 'Failed to create evaluation checkpoint.');
+          }
         }}
       />
 

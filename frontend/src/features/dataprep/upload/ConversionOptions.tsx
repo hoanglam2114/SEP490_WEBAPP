@@ -16,7 +16,8 @@ const formatSamples = {
 };
 
 export const ConversionOptions: React.FC = () => {
-  const { conversionOptions, updateConversionOptions } = useAppStore();
+  const { uploadedFile, conversionOptions, updateConversionOptions } = useAppStore();
+  const supportsAlpaca = uploadedFile?.fileType === 'lesson';
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6 space-y-6">
@@ -25,30 +26,32 @@ export const ConversionOptions: React.FC = () => {
       <div>
         <p className="block text-sm font-medium text-gray-700 mb-3">Output format</p>
         <div className="space-y-3">
-          <label className="block cursor-pointer rounded-lg border border-gray-200 p-4 hover:bg-gray-50">
-            <div className="flex items-start space-x-3">
-              <input
-                type="radio"
-                name="output-format"
-                value="alpaca"
-                checked={conversionOptions.format === 'alpaca'}
-                onChange={() => updateConversionOptions({ format: 'alpaca' })}
-                className="mt-1"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-gray-900">Convert to Alpaca format</p>
-                <p className="text-xs text-gray-500">Each record contains instruction, input and output.</p>
-                <div className="mt-3 overflow-hidden rounded-md border border-slate-200 bg-slate-50">
-                  <div className="border-b border-slate-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    Sample output
+          {supportsAlpaca && (
+            <label className="block cursor-pointer rounded-lg border border-gray-200 p-4 hover:bg-gray-50">
+              <div className="flex items-start space-x-3">
+                <input
+                  type="radio"
+                  name="output-format"
+                  value="alpaca"
+                  checked={conversionOptions.format === 'alpaca'}
+                  onChange={() => updateConversionOptions({ format: 'alpaca' })}
+                  className="mt-1"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-gray-900">Convert to Alpaca format</p>
+                  <p className="text-xs text-gray-500">Each record contains instruction, input and output.</p>
+                  <div className="mt-3 overflow-hidden rounded-md border border-slate-200 bg-slate-50">
+                    <div className="border-b border-slate-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Sample output
+                    </div>
+                    <pre className="overflow-x-auto px-3 py-3 text-[11px] leading-relaxed text-slate-700">
+                      {formatSamples.alpaca}
+                    </pre>
                   </div>
-                  <pre className="overflow-x-auto px-3 py-3 text-[11px] leading-relaxed text-slate-700">
-                    {formatSamples.alpaca}
-                  </pre>
                 </div>
               </div>
-            </div>
-          </label>
+            </label>
+          )}
 
           <label className="block cursor-pointer rounded-lg border border-gray-200 p-4 hover:bg-gray-50">
             <div className="flex items-start space-x-3">
@@ -74,6 +77,12 @@ export const ConversionOptions: React.FC = () => {
               </div>
             </div>
           </label>
+
+          {/* {!supportsAlpaca && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-800">
+              Dữ liệu chat được giữ theo dạng conversation. Tùy chọn Alpaca bị ẩn để tránh tách dữ liệu thành từng turn hỏi-đáp.
+            </div>
+          )} */}
         </div>
 
       </div>

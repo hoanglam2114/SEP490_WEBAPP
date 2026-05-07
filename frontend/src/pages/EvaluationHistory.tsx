@@ -23,7 +23,9 @@ type EvalResults = {
 type ProjectVersionSummary = {
   _id: string;
   versionName: string;
+  operationType?: string;
   prepareResumeStep?: number;
+  checkpointResumeStep?: number;
   similarityThreshold: number;
   totalSamples: number;
   createdAt: string;
@@ -69,7 +71,9 @@ type VersionDetailResponse = {
     _id: string;
     projectName: string;
     versionName: string;
+    operationType?: string;
     prepareResumeStep?: number;
+    checkpointResumeStep?: number;
     similarityThreshold: number;
     totalSamples: number;
     createdAt: string;
@@ -95,6 +99,44 @@ function normalizeVietnamese(value: string): string {
 
 function isOpenAIData(data: Record<string, any>): boolean {
   return Array.isArray(data?.messages);
+}
+
+function resolveContinuePrepareStep(version: {
+  operationType?: string;
+  checkpointResumeStep?: number;
+  prepareResumeStep?: number;
+} | null | undefined): number {
+  if (!version) {
+    return 5;
+  }
+
+  const checkpointResumeStep = Number(version.checkpointResumeStep);
+  if (Number.isInteger(checkpointResumeStep) && checkpointResumeStep >= 1 && checkpointResumeStep <= 15) {
+    return checkpointResumeStep;
+  }
+
+  switch (String(version.operationType || '')) {
+    case 'upload':
+      return 2;
+    case 'clean':
+      return 3;
+    case 'cluster':
+    case 'labeling_base':
+      return 5;
+    case 'classification_balanced':
+      return 10;
+    case 'evaluation_filtered':
+      return 11;
+    case 'refine_approved':
+      return 13;
+    default: {
+      const prepareResumeStep = Number(version.prepareResumeStep);
+      if (Number.isInteger(prepareResumeStep) && prepareResumeStep >= 1 && prepareResumeStep <= 15) {
+        return prepareResumeStep;
+      }
+      return 5;
+    }
+  }
 }
 
 function renderDataCell(item: VersionDetailItem): React.ReactNode {
@@ -396,6 +438,7 @@ export const EvaluationHistory: React.FC = () => {
       }
 
       const format = itemsToLoad[0] && isOpenAIData(itemsToLoad[0].data) ? 'openai' : 'alpaca';
+      const startStep = resolveContinuePrepareStep(versionDetail.datasetVersion);
 
       const evaluationMap = Object.fromEntries(
         itemsToLoad.map((item) => {
@@ -429,7 +472,7 @@ export const EvaluationHistory: React.FC = () => {
             evaluationMap,
             datasetVersionId: versionDetail.datasetVersion._id,
             sampleIdMap: Object.fromEntries(itemsToLoad.map((item) => [item.sampleKey, item.sampleId])),
-            startStep: 11,
+            startStep,
           },
         },
       });

@@ -10,7 +10,16 @@ export interface IDatasetVersion extends Document {
   createdFromVersionId?: mongoose.Types.ObjectId;
   versionNo?: number;
   versionName: string;
-  operationType?: 'upload' | 'clean' | 'cluster' | 'refine_approved' | 'manual_edit' | 'legacy';
+  operationType?:
+    | 'upload'
+    | 'clean'
+    | 'cluster'
+    | 'labeling_base'
+    | 'classification_balanced'
+    | 'evaluation_filtered'
+    | 'refine_approved'
+    | 'manual_edit'
+    | 'legacy';
   operationParams?: Record<string, unknown>;
   prepareResumeStep?: number;
   promptId?: mongoose.Types.ObjectId;
@@ -34,7 +43,17 @@ const DatasetVersionSchema = new Schema<IDatasetVersion>(
     versionName: { type: String, required: true, trim: true },
     operationType: {
       type: String,
-      enum: ['upload', 'clean', 'cluster', 'refine_approved', 'manual_edit', 'legacy'],
+      enum: [
+        'upload',
+        'clean',
+        'cluster',
+        'labeling_base',
+        'classification_balanced',
+        'evaluation_filtered',
+        'refine_approved',
+        'manual_edit',
+        'legacy',
+      ],
       default: 'legacy',
     },
     operationParams: { type: Schema.Types.Mixed },

@@ -67,7 +67,7 @@ const tools = [
   {
     title: 'Dataset Preparation History',
     description: 'View past preparation efforts, manually re-evaluate records, and manage dataset quality.',
-    path: '/evaluation-history',
+    path: '/preparation-history',
     tag: 'History',
     icon: (
       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

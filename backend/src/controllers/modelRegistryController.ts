@@ -3,7 +3,6 @@ import { ModelRegistry } from '../models/ModelRegistry';
 import { ModelVersion, ModelVersionStatus } from '../models/ModelVersion';
 import { TrainingHistory } from '../models/TrainingHistory';
 import { ModelEvaluation } from '../models/Evaluation';
-import mongoose from 'mongoose';
 
 // Helper để lấy kết quả đánh giá mới nhất cho một job huấn luyện
 const getLatestEvaluation = async (jobId: string, ownerId: string) => {

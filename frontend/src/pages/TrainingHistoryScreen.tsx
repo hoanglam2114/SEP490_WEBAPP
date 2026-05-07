@@ -20,6 +20,7 @@ interface TrainingHistoryItem {
   datasetSource: string;
   datasetName: string;
   columnMapping: string;
+  systemPrompt?: string;
   systemPromptVersion?: string;
   datasetVersionId?: string;
   parameters: {

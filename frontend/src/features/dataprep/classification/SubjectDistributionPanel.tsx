@@ -8,12 +8,13 @@ type SubjectDistributionPanelProps = {
   versionId: string;
   alreadyApplied: boolean;
   onApply: (items: ClassifiedSamplesResult['items'], removedCount: number) => void;
+  onReset: () => void;
   onBack: () => void;
   onNext: () => void;
   nextDisabled: boolean;
 };
 
-const SUBJECT_GROUPS: ClassificationGroup[] = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY'];
+const SUBJECT_GROUPS: ClassificationGroup[] = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY', 'OUT_OF_SCOPE'];
 
 const GROUP_META: Record<ClassificationGroup, { label: string; color: string; text: string }> = {
   MATH: { label: 'Math', color: '#2563eb', text: 'text-blue-700' },
@@ -55,6 +56,7 @@ export function SubjectDistributionPanel({
   versionId,
   alreadyApplied,
   onApply,
+  onReset,
   onBack,
   onNext,
   nextDisabled,
@@ -102,7 +104,8 @@ export function SubjectDistributionPanel({
   const subjectTotal = subjectRows.reduce((sum, item) => sum + item.count, 0);
   const maxCount = Math.max(...subjectRows.map((item) => item.count), 1);
   const nonSubjectRows = summary.filter((item) => !SUBJECT_GROUPS.includes(item.group));
-  const chartBackground = buildConicGradient(summary, totalSamples);
+  const subjectSummaryRows = summary.filter((item) => SUBJECT_GROUPS.includes(item.group));
+  const chartBackground = buildConicGradient(subjectSummaryRows, subjectTotal);
   const qualityGroups = qualityResult?.groups || [];
   const wrongPairs = qualityResult?.wrongPairs || qualityResult?.summary?.wrongPairs || [];
   const maxWrongPairCount = Math.max(...wrongPairs.map((item) => item.count), 1);
@@ -134,8 +137,7 @@ export function SubjectDistributionPanel({
       };
     });
 
-    const rejectItems = items.filter((item) => item.group === 'REJECT');
-    const nonSubjectItems = items.filter((item) => !SUBJECT_GROUPS.includes(item.group) && item.group !== 'REJECT');
+    const nonSubjectItems = items.filter((item) => !SUBJECT_GROUPS.includes(item.group));
     nonSubjectItems.forEach((item) => keepIds.add(item._id));
 
     const keptItems = items.filter((item) => keepIds.has(item._id));
@@ -149,7 +151,6 @@ export function SubjectDistributionPanel({
       originalCount: items.length,
       finalCount: keptItems.length,
       otherCount: nonSubjectItems.length,
-      rejectCount: rejectItems.length,
     };
   }, [classifiedResult]);
   const canApplyBalance = Boolean(classifiedResult && balancePlan.removeCount > 0 && !alreadyApplied);
@@ -250,7 +251,7 @@ export function SubjectDistributionPanel({
                   </div>
                   <div className="rounded-lg bg-white p-3 text-center">
                     <p className="font-bold text-gray-900">{nonSubjectRows.reduce((sum, item) => sum + item.count, 0)}</p>
-                    <p className="text-gray-500">Other</p>
+                    <p className="text-gray-500">Rewrite + Reject</p>
                   </div>
                 </div>
               </div>
@@ -434,16 +435,27 @@ export function SubjectDistributionPanel({
 
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     <p>
-                      Keep non-subject buckets unchanged: {balancePlan.otherCount} samples. Remove REJECT: {balancePlan.rejectCount}. Subject groups are capped to the smallest non-zero subject bucket.
+                      Keep non-subject quality buckets unchanged: {balancePlan.otherCount} samples. The 6 subject-distribution groups are capped to the smallest non-zero group.
                     </p>
-                    <button
-                      onClick={() => onApply(balancePlan.keptItems, balancePlan.removeCount)}
-                      disabled={!canApplyBalance}
-                      className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-rose-700 disabled:bg-gray-300"
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {alreadyApplied ? 'Applied' : 'Accept & apply'}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => onApply(balancePlan.keptItems, balancePlan.removeCount)}
+                        disabled={!canApplyBalance}
+                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-rose-700 disabled:bg-gray-300"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        {alreadyApplied ? 'Applied' : 'Accept & apply'}
+                      </button>
+                      {alreadyApplied && (
+                        <button
+                          type="button"
+                          onClick={onReset}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

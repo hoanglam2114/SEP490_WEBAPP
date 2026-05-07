@@ -45,6 +45,7 @@ export default function AppRouter() {
             element={<AutoTrainScreen />}
           />
           <Route path="/training-history" element={<TrainingHistoryScreen />} />
+          <Route path="/preparation-history" element={<EvaluationHistory />} />
           <Route path="/evaluation-history" element={<EvaluationHistory />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/community-hub" element={<PublicProjectsHub />} />
