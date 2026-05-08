@@ -45,7 +45,6 @@ type SampleAccess = {
   datasetVersionId: string;
   ownerId: string;
   isPublic: boolean;
-  sharedWithUserIds: string[];
   hasAssignments: boolean;
   isAssignedToUser: (userId: string) => Promise<boolean>;
   isAssignedSample: () => Promise<boolean>;
@@ -87,7 +86,7 @@ async function getSampleAccessBySampleId(
   }
 
   const version = await DatasetVersion.findById(sample.datasetVersionId)
-    .select('ownerId isPublic sharedWithUserIds')
+    .select('ownerId isPublic')
     .lean();
   if (!version?.ownerId) {
     return null;
@@ -99,9 +98,6 @@ async function getSampleAccessBySampleId(
     datasetVersionId: String(sample.datasetVersionId),
     ownerId: String(version.ownerId),
     isPublic: Boolean((version as any).isPublic),
-    sharedWithUserIds: Array.isArray((version as any).sharedWithUserIds)
-      ? (version as any).sharedWithUserIds.map((id: any) => String(id))
-      : [],
     hasAssignments: assignmentCount > 0,
     isAssignedToUser: async (userId: string) => Boolean(await DatasetSampleAssignment.exists({
       datasetVersionId: sample.datasetVersionId,
@@ -135,7 +131,6 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
   }
 
   const isOwner = access.ownerId === String(userId);
-  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   const hasAssignedAccess = await access.isAssignedToUser(userId);
   const lockedSubmission = !isOwner && hasAssignedAccess
     ? await DatasetAssignmentSubmission.findOne({
@@ -145,8 +140,8 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
       }).select('status').lean()
     : null;
   if (isCommunityHubRequest(req)) {
-    if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
-      const error = new Error('Dataset version is not public or shared with this account.');
+    if (!isOwner && !access.isPublic && !hasAssignedAccess) {
+      const error = new Error('Dataset version is not public and this account is not assigned.');
       (error as any).statusCode = 403;
       throw error;
     }
@@ -182,9 +177,8 @@ async function getSampleAccessForRead(sampleId: string, userId: string): Promise
   }
 
   const isOwner = access.ownerId === String(userId);
-  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   const hasAssignedAccess = await access.isAssignedToUser(userId);
-  if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
+  if (!isOwner && !access.isPublic && !hasAssignedAccess) {
     const error = new Error('Forbidden: you do not have access to this sample labels.');
     (error as any).statusCode = 403;
     throw error;
@@ -207,7 +201,6 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
   }
 
   const isOwner = access.ownerId === String(userId);
-  const hasSharedAccess = access.sharedWithUserIds.includes(String(userId));
   const hasAssignedAccess = await access.isAssignedToUser(userId);
   const lockedSubmission = !isOwner && hasAssignedAccess
     ? await DatasetAssignmentSubmission.findOne({
@@ -217,8 +210,8 @@ async function assertLabelAccessByLabelId(labelId: string, userId: string, req: 
       }).select('status').lean()
     : null;
   if (isCommunityHubRequest(req)) {
-    if (!isOwner && !access.isPublic && !hasSharedAccess && !hasAssignedAccess) {
-      const error = new Error('Dataset version is not public or shared with this account.');
+    if (!isOwner && !access.isPublic && !hasAssignedAccess) {
+      const error = new Error('Dataset version is not public and this account is not assigned.');
       (error as any).statusCode = 403;
       throw error;
     }
@@ -299,6 +292,30 @@ function hasAnyVotes(label: any): boolean {
   return upvoteCount > 0 || downvoteCount > 0;
 }
 
+function buildHardLabelLookupQuery(
+  sampleId: string,
+  targetScope: 'sample' | 'message',
+  normalizedName: string,
+  messageIndex?: number,
+  messageRole?: 'user' | 'assistant'
+): Record<string, any> {
+  const query: Record<string, any> = {
+    sampleId: new mongoose.Types.ObjectId(sampleId),
+    type: 'hard',
+    name: normalizedName,
+  };
+
+  if (targetScope === 'sample') {
+    Object.assign(query, sampleScopeQuery());
+    return query;
+  }
+
+  query.targetScope = 'message';
+  query.messageIndex = messageIndex;
+  query.messageRole = messageRole;
+  return query;
+}
+
 // ─── GET /labels/:sampleId ────────────────────────────────────────────────────
 
 export const getLabelsBySample = async (req: Request, res: Response): Promise<void> => {
@@ -321,6 +338,7 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
     const scope = normalizeQueryScope(req.query.scope);
     const includeUnvoted = String(req.query.includeUnvoted || '').toLowerCase() === 'true';
     const createdBy = String(req.query.createdBy || '').trim();
+    const contributedBy = String(req.query.contributedBy || '').trim();
     const query: Record<string, any> = {
       sampleId: new mongoose.Types.ObjectId(sampleId),
     };
@@ -352,12 +370,29 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       query.createdBy = new mongoose.Types.ObjectId(createdBy);
     }
 
+    if (contributedBy) {
+      if (!mongoose.Types.ObjectId.isValid(contributedBy)) {
+        res.status(400).json({ error: 'Invalid contributedBy' });
+        return;
+      }
+      if (!isOwner && contributedBy !== String(userId)) {
+        res.status(403).json({ error: 'Forbidden: cannot filter labels by another user contribution.' });
+        return;
+      }
+      const contributorOid = new mongoose.Types.ObjectId(contributedBy);
+      query.$or = [
+        { createdBy: contributorOid },
+        { upvotes: contributorOid },
+      ];
+    }
+
     const labels = await Label.find(query)
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 })
       .lean();
 
-    const visibleLabels = includeUnvoted && isOwner
+    const canIncludeUnvoted = isOwner || createdBy === String(userId) || contributedBy === String(userId);
+    const visibleLabels = includeUnvoted && canIncludeUnvoted
       ? labels
       : labels.filter((label) => hasAnyVotes(label));
     const result = visibleLabels.map((label) => formatLabel(label, userId));
@@ -447,6 +482,28 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       normalizedName = normalizedName.toLowerCase();
     }
 
+    const userOid = new mongoose.Types.ObjectId(userId);
+    if (type === 'hard') {
+      const existing = await Label.findOne(
+        buildHardLabelLookupQuery(sampleId, targetScope, normalizedName, messageIndex, normalizedMessageRole)
+      ).sort({ createdAt: 1 });
+
+      if (existing) {
+        const alreadyUpvoted = existing.upvotes.some((id) => id.equals(userOid));
+        if (!alreadyUpvoted) {
+          existing.upvotes.push(userOid);
+        }
+        existing.downvotes = existing.downvotes.filter((id) => !id.equals(userOid));
+        await existing.save();
+
+        const populatedExisting = await Label.findById(existing._id)
+          .populate('createdBy', 'name email')
+          .lean();
+        res.status(200).json({ label: formatLabel(populatedExisting, userId) });
+        return;
+      }
+    }
+
     const created = await Label.create({
       sampleId: new mongoose.Types.ObjectId(sampleId),
       name: normalizedName,
@@ -455,9 +512,8 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       messageIndex,
       messageRole: normalizedMessageRole,
       targetTextSnapshot: normalizedTargetTextSnapshot,
-      createdBy: new mongoose.Types.ObjectId(userId),
-      // In the internal dataset-version workflow, the creator's label starts with one upvote.
-      upvotes: isCommunityHubRequest(req) ? [] : [new mongoose.Types.ObjectId(userId)],
+      createdBy: userOid,
+      upvotes: type === 'hard' ? [userOid] : (isCommunityHubRequest(req) ? [] : [userOid]),
       downvotes: [],
     });
 

@@ -1,19 +1,13 @@
 import mongoose from 'mongoose';
 import { Label } from '../models/Label';
-
-/**
- * The upvote threshold that triggers the hard-REJECT filter.
- * A sample whose hard-REJECT label reaches this many upvotes is considered
- * "community-rejected" and hidden from normal pipelines.
- */
-const HARD_REJECT_UPVOTE_THRESHOLD = 3;
+import { QUALITY_AUTO_REJECT_MARKER } from '../modules/dataprep/quality/quality.constants';
 
 /**
  * Returns the Set of `ProcessedDatasetItem._id` strings that are hard-rejected
  * by the community, i.e. they have a Label where:
  *   - name === 'REJECT'  (case-insensitive normalised to upper at write time)
  *   - type === 'hard'    (soft 'reject' labels are intentionally excluded)
- *   - upvotes.length >= HARD_REJECT_UPVOTE_THRESHOLD
+ *   - upvotes.length - downvotes.length > 0
  *
  * @param scopedSampleIds  Optional allowlist of ObjectIds to narrow the query.
  *                         Pass undefined / empty array to scan all labels.
@@ -24,7 +18,8 @@ export async function getHardRejectedSampleIds(
   const matchStage: Record<string, any> = {
     name: 'REJECT',
     type: 'hard',
-    $expr: { $gte: [{ $size: '$upvotes' }, HARD_REJECT_UPVOTE_THRESHOLD] },
+    targetTextSnapshot: { $ne: QUALITY_AUTO_REJECT_MARKER },
+    $expr: { $gt: [{ $subtract: [{ $size: '$upvotes' }, { $size: '$downvotes' }] }, 0] },
     $or: [
       { targetScope: 'sample' },
       { targetScope: { $exists: false } },

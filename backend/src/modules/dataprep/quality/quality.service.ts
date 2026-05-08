@@ -2,8 +2,9 @@ import mongoose from 'mongoose';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
 import { Label } from '../../../models/Label';
+import { QUALITY_AUTO_REJECT_MARKER } from './quality.constants';
 
-export const QUALITY_BUCKETS = ['Gold', 'Rewrite', 'Reject'] as const;
+export const QUALITY_BUCKETS = ['Gold', 'Rewrite', 'Reject', 'Incomplete'] as const;
 export type QualityBucket = (typeof QUALITY_BUCKETS)[number];
 
 const INTENTS = [
@@ -71,6 +72,7 @@ export type QualityItem = {
   data: Record<string, unknown>;
   bucket: QualityBucket;
   score: number;
+  scoreScale: 'turn-average-raw';
   vector: number[];
   intentCounts: number[];
   iar: Array<number | null>;
@@ -85,6 +87,13 @@ export type QualityItem = {
     assistantLabels: string[];
     expectedActions: string[];
     matched: boolean;
+    turnScore: number;
+    intentScores: Array<{
+      intent: string;
+      value: number;
+      matched: boolean;
+      harmfulActions: string[];
+    }>;
   }>;
 };
 
@@ -112,9 +121,6 @@ export type LabelingStatusResult = {
   unlabeledSamples: number;
   incompleteBucket: QualityBucket | null;
 };
-
-const QUALITY_AUTO_REJECT_MARKER = 'quality-classification:auto-reject';
-const HARD_REJECT_FILTER_UPVOTES = 3;
 
 function isQualityBucket(value: string): value is QualityBucket {
   return (QUALITY_BUCKETS as readonly string[]).includes(value);
@@ -193,17 +199,23 @@ function incrementWrongPair(map: Map<string, QualityWrongPair>, intent: string, 
 }
 
 function resolveBucket(score: number): QualityBucket {
-  if (score >= 0.7) {
+  if (score >= 0.5) {
     return 'Gold';
   }
-  if (score >= 0.5) {
+  if (score >= 0) {
     return 'Rewrite';
   }
   return 'Reject';
 }
 
-function sigmoid(value: number): number {
-  return 1 / (1 + Math.exp(-value));
+function getBucketScore(bucket: QualityBucket): number {
+  if (bucket === 'Gold') {
+    return 1;
+  }
+  if (bucket === 'Rewrite') {
+    return 0.5;
+  }
+  return 0;
 }
 
 export class QualityService {
@@ -255,6 +267,7 @@ export class QualityService {
       const messages = serializeMessages(item.data || {});
       const vector = new Array(INTENTS.length).fill(0);
       const intentCounts = new Array(INTENTS.length).fill(0);
+      let totalTurnScore = 0;
       let scorableTurns = 0;
       let criticalFailures = 0;
       let requiredTurns = 0;
@@ -278,11 +291,15 @@ export class QualityService {
           continue;
         }
 
+        const intentScores: QualityItem['turnPairs'][number]['intentScores'] = [];
+        const expectedActions = new Set<string>();
+
         for (const userLabel of userLabels) {
           const intentIndex = INTENT_INDEX.get(userLabel as any);
           const validActions = VALID_ACTIONS[userLabel];
           if (intentIndex === undefined || !validActions) continue;
 
+          Array.from(validActions).forEach((action) => expectedActions.add(action));
           const matchedActions = assistantLabels.filter((action) => validActions.has(action));
           const harmfulActions = assistantLabels.filter((action) => HARMFUL_ACTIONS[userLabel]?.has(action));
           const isCorrect = matchedActions.length > 0;
@@ -298,22 +315,38 @@ export class QualityService {
 
           vector[intentIndex] += value;
           intentCounts[intentIndex] += 1;
-          scorableTurns += 1;
           if (isCriticalFailure) {
             criticalFailures += 1;
           }
 
-          turnPairs.push({
-            userMessageIndex: userMessage.messageIndex,
-            assistantMessageIndex: assistantMessage.messageIndex,
-            user: String(userMessage.content || ''),
-            assistant: String(assistantMessage.content || ''),
-            userLabels: [userLabel],
-            assistantLabels: [...assistantLabels],
-            expectedActions: Array.from(validActions),
+          intentScores.push({
+            intent: userLabel,
+            value,
             matched: isCorrect,
+            harmfulActions: [...harmfulActions],
           });
         }
+
+        if (!intentScores.length) {
+          continue;
+        }
+
+        const turnScore = intentScores.reduce((sum, current) => sum + current.value, 0) / intentScores.length;
+        totalTurnScore += turnScore;
+        scorableTurns += 1;
+
+        turnPairs.push({
+          userMessageIndex: userMessage.messageIndex,
+          assistantMessageIndex: assistantMessage.messageIndex,
+          user: String(userMessage.content || ''),
+          assistant: String(assistantMessage.content || ''),
+          userLabels: [...userLabels],
+          assistantLabels: [...assistantLabels],
+          expectedActions: Array.from(expectedActions),
+          matched: intentScores.every((entry) => entry.matched),
+          turnScore,
+          intentScores,
+        });
       }
 
       const isIncomplete = requiredTurns === 0 || hasMissingLabeling;
@@ -323,7 +356,8 @@ export class QualityService {
           sampleId: String(item.sampleId),
           data: item.data || {},
           bucket: incompleteBucket,
-          score: incompleteBucket === 'Gold' ? 1 : incompleteBucket === 'Rewrite' ? 0.5 : 0,
+          score: getBucketScore(incompleteBucket),
+          scoreScale: 'turn-average-raw',
           vector,
           intentCounts,
           iar: vector.map((value, index) => (
@@ -340,8 +374,7 @@ export class QualityService {
         continue;
       }
 
-      const rawAverage = vector.reduce((sum, value) => sum + value, 0) / scorableTurns;
-      const score = sigmoid(rawAverage);
+      const score = totalTurnScore / scorableTurns;
       const bucket = resolveBucket(score);
       const iar = vector.map((value, index) => (
         intentCounts[index] > 0 ? value / intentCounts[index] : null
@@ -353,6 +386,7 @@ export class QualityService {
         data: item.data || {},
         bucket,
         score,
+        scoreScale: 'turn-average-raw',
         vector,
         intentCounts,
         iar,
@@ -539,7 +573,7 @@ export class QualityService {
       targetScope: 'sample' as const,
       targetTextSnapshot: QUALITY_AUTO_REJECT_MARKER,
       createdBy: ownerOid,
-      upvotes: Array.from({ length: HARD_REJECT_FILTER_UPVOTES }, () => ownerOid),
+      upvotes: [ownerOid],
       downvotes: [],
     }));
 

@@ -11,7 +11,7 @@ type PublicProject = {
   versionName: string;
   ownerId: string;
   ownerName: string;
-  accessType?: 'public' | 'shared' | 'assigned' | 'owned';
+  accessType?: 'public' | 'assigned' | 'owned';
   updatedAt: string;
   topLabel: {
     _id: string;
@@ -46,19 +46,17 @@ export const PublicProjectsHub: React.FC = () => {
   const ownedProjects = projects.filter((project) => project.accessType === 'owned');
   const visibleProjects = activeTab === 'owned' ? ownedProjects : accessibleProjects;
   const emptyMessage = activeTab === 'owned'
-    ? 'No assigned or shared datasets owned by you.'
-    : 'No public, shared, or assigned projects found.';
+    ? 'No owned datasets available.'
+    : 'No public or assigned projects found.';
 
   const accessBadgeClass = (accessType?: PublicProject['accessType']) => {
     if (accessType === 'assigned') return 'border-violet-200 bg-violet-50 text-violet-700';
-    if (accessType === 'shared') return 'border-blue-200 bg-blue-50 text-blue-700';
     if (accessType === 'owned') return 'border-amber-200 bg-amber-50 text-amber-700';
     return 'border-emerald-200 bg-emerald-50 text-emerald-700';
   };
 
   const accessBadgeLabel = (accessType?: PublicProject['accessType']) => {
     if (accessType === 'assigned') return 'Assigned';
-    if (accessType === 'shared') return 'Shared';
     if (accessType === 'owned') return 'Owned';
     return 'Public';
   };
@@ -77,7 +75,7 @@ export const PublicProjectsHub: React.FC = () => {
             </button>
             <div>
               <h1 className="text-xl font-bold text-slate-900">Community Hub</h1>
-              <p className="text-xs text-slate-500">Explore public or shared projects and jump straight to Data Labeling.</p>
+              <p className="text-xs text-slate-500">Explore public or assigned projects and jump straight to Data Labeling.</p>
             </div>
           </div>
           <button
@@ -101,7 +99,7 @@ export const PublicProjectsHub: React.FC = () => {
                 : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
             }`}
           >
-            Shared / Assigned
+            Public / Assigned
             <span className={`ml-2 rounded-full px-2 py-0.5 text-xs ${
               activeTab === 'accessible' ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
             }`}

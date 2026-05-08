@@ -157,11 +157,9 @@ export class AutoLabelingService {
     }
 
     const isOwner = String(version.ownerId) === String(userId);
-    const hasSharedAccess = Array.isArray((version as any).sharedWithUserIds)
-      && (version as any).sharedWithUserIds.some((id: any) => String(id) === String(userId));
 
-    if (!isOwner && !hasSharedAccess) {
-      throw Object.assign(new Error('Forbidden: only the dataset owner or collaborator can auto-label this version.'), { statusCode: 403 });
+    if (!isOwner) {
+      throw Object.assign(new Error('Forbidden: only the dataset owner can auto-label this version.'), { statusCode: 403 });
     }
 
     return version;

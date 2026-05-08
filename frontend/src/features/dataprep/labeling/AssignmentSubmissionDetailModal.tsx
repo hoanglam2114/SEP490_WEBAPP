@@ -52,7 +52,7 @@ export function AssignmentSubmissionDetailModal({
     queryKey: ['dataset-version-assignment-detail-labels', currentSample?.sampleId, assignee?.id],
     queryFn: () => dataprepApi.getSampleLabels(currentSample?.sampleId || '', {
       scope: 'all',
-      createdBy: assignee?.id,
+      contributedBy: assignee?.id,
       includeUnvoted: true,
     }),
     enabled: isOpen && Boolean(currentSample?.sampleId && assignee?.id),

@@ -16,6 +16,29 @@ export class DataPrepVersionController {
     return legacyEvaluationController.getDatasetVersionDetail(req, res);
   }
 
+  async deleteVersion(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id } = req.params;
+      const result = await versionService.deleteVersionTree(ownerId, id);
+
+      res.json({
+        message: 'Đã xóa dataset version cùng toàn bộ version con và assignment liên quan.',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('Delete dataset version error:', error);
+      res.status(error?.statusCode || 500).json({
+        error: error?.message || 'Xóa dataset version thất bại',
+      });
+    }
+  }
+
   async updateVisibility(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.updateDatasetVersionVisibility(req, res);
   }

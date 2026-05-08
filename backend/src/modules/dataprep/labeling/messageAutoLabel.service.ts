@@ -268,7 +268,7 @@ export class MessageAutoLabelingService {
     }
 
     const version = await DatasetVersion.findById(sample.datasetVersionId)
-      .select('_id ownerId sharedWithUserIds')
+      .select('_id ownerId isPublic')
       .lean();
 
     if (!version) {
@@ -277,8 +277,6 @@ export class MessageAutoLabelingService {
 
     const userOid = new mongoose.Types.ObjectId(userId);
     const isOwner = String(version.ownerId) === String(userId);
-    const hasSharedAccess = Array.isArray((version as any).sharedWithUserIds)
-      && (version as any).sharedWithUserIds.some((id: any) => String(id) === String(userId));
     const assignmentCount = await DatasetSampleAssignment.countDocuments({ datasetVersionId: version._id });
     const assignedSample = !isOwner && assignmentCount > 0
       ? await DatasetSampleAssignment.findOne({
@@ -289,10 +287,9 @@ export class MessageAutoLabelingService {
       : null;
     const hasAssignedAccess = Boolean(assignedSample);
 
-    if (!isOwner && !hasSharedAccess && !hasAssignedAccess) {
-      throw Object.assign(new Error('Forbidden: only the dataset owner or collaborator can auto-label messages.'), { statusCode: 403 });
+    if (!isOwner && !Boolean((version as any).isPublic) && !hasAssignedAccess) {
+      throw Object.assign(new Error('Forbidden: only the dataset owner or assigned accounts can auto-label messages.'), { statusCode: 403 });
     }
-
 
     if (!isOwner && assignmentCount > 0) {
       if (!assignedSample) {
@@ -329,24 +326,21 @@ export class MessageAutoLabelingService {
       throw Object.assign(new Error('suggestions is required.'), { statusCode: 400 });
     }
 
-    const docs = await this.buildInsertDocs(sampleId, userId, suggestions, normalizedMessages);
-
-    if (docs.length) {
-      await Label.insertMany(docs, { ordered: false });
-    }
-
-    return { insertedCount: docs.length };
+    const insertedCount = await this.applyHardLabelSuggestions(sampleId, userId, suggestions, normalizedMessages);
+    return { insertedCount };
   }
 
-  private async buildInsertDocs(
-    sampleId: string,
-    userId: string,
+  private buildCandidates(
     suggestions: MessageAutoLabelSaveSuggestion[],
     normalizedMessages: MessageAutoLabelInput[],
-  ): Promise<any[]> {
+  ): Array<{
+    key: string;
+    name: string;
+    messageIndex: number;
+    messageRole: MessageRole;
+    targetTextSnapshot: string;
+  }> {
     const messageByIndex = new Map(normalizedMessages.map((message) => [message.messageIndex, message]));
-    const sampleOid = new mongoose.Types.ObjectId(sampleId);
-    const userOid = new mongoose.Types.ObjectId(userId);
     const candidates: Array<{
       key: string;
       name: string;
@@ -384,26 +378,70 @@ export class MessageAutoLabelingService {
       return [];
     }
 
+    return candidates;
+  }
+
+  private async applyHardLabelSuggestions(
+    sampleId: string,
+    userId: string,
+    suggestions: MessageAutoLabelSaveSuggestion[],
+    normalizedMessages: MessageAutoLabelInput[],
+  ): Promise<number> {
+    const sampleOid = new mongoose.Types.ObjectId(sampleId);
+    const userOid = new mongoose.Types.ObjectId(userId);
+    const candidates = this.buildCandidates(suggestions, normalizedMessages);
+    if (!candidates.length) {
+      return 0;
+    }
+
     const existingLabels = await Label.find({
       sampleId: sampleOid,
       targetScope: 'message',
       type: 'hard',
-      createdBy: userOid,
       $or: candidates.map((candidate) => ({
         messageIndex: candidate.messageIndex,
         messageRole: candidate.messageRole,
         name: candidate.name,
       })),
     })
-      .select('messageIndex messageRole name')
-      .lean();
+      .sort({ createdAt: 1 });
 
-    const existingKeys = new Set(
-      existingLabels.map((label: any) => `${Number(label.messageIndex)}:${String(label.messageRole)}:${String(label.name).toUpperCase()}`),
-    );
+    const existingByKey = new Map<string, any>();
+    existingLabels.forEach((label: any) => {
+      const key = `${Number(label.messageIndex)}:${String(label.messageRole)}:${String(label.name).toUpperCase()}`;
+      if (!existingByKey.has(key)) {
+        existingByKey.set(key, label);
+      }
+    });
 
-    return candidates
-      .filter((candidate) => !existingKeys.has(candidate.key))
+    let appliedCount = 0;
+    const saves: Promise<any>[] = [];
+    for (const candidate of candidates) {
+      const existing = existingByKey.get(candidate.key);
+      if (!existing) {
+        continue;
+      }
+      const hasUpvote = existing.upvotes.some((id: any) => id.equals(userOid));
+      const hasDownvote = existing.downvotes.some((id: any) => id.equals(userOid));
+      if (hasUpvote && !hasDownvote) {
+        continue;
+      }
+      if (!hasUpvote) {
+        existing.upvotes.push(userOid);
+      }
+      if (hasDownvote) {
+        existing.downvotes = existing.downvotes.filter((id: any) => !id.equals(userOid));
+      }
+      saves.push(existing.save());
+      appliedCount += 1;
+    }
+
+    if (saves.length) {
+      await Promise.all(saves);
+    }
+
+    const docs = candidates
+      .filter((candidate) => !existingByKey.has(candidate.key))
       .map((candidate) => ({
         sampleId: sampleOid,
         name: candidate.name,
@@ -416,6 +454,13 @@ export class MessageAutoLabelingService {
         upvotes: [userOid],
         downvotes: [],
       }));
+
+    if (docs.length) {
+      await Label.insertMany(docs, { ordered: false });
+      appliedCount += docs.length;
+    }
+
+    return appliedCount;
   }
 
   async previewAndSaveBatch(
@@ -473,16 +518,12 @@ export class MessageAutoLabelingService {
           await this.assertAutoLabelAccess(sampleId, userId);
           const rawText = await this.provider.generateContent(buildPrompt(normalizedMessages));
           const suggestions = parseSuggestions(rawText, normalizedMessages);
-          const docs = await this.buildInsertDocs(sampleId, userId, suggestions, normalizedMessages);
-
-          if (docs.length) {
-            await Label.insertMany(docs, { ordered: false });
-          }
+          const insertedCount = await this.applyHardLabelSuggestions(sampleId, userId, suggestions, normalizedMessages);
 
           results[jobIndex] = {
             sampleId,
             status: 'success',
-            insertedCount: docs.length,
+            insertedCount,
             suggestionCount: suggestions.reduce((sum, suggestion) => sum + suggestion.label.length, 0),
           };
         } catch (error: any) {

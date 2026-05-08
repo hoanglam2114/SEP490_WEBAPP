@@ -6,6 +6,7 @@ const controller = new DataPrepVersionController();
 
 router.post('/', (req, res) => controller.createVersion(req, res));
 router.get('/:id', (req, res) => controller.getVersion(req, res));
+router.delete('/:id', (req, res) => controller.deleteVersion(req, res));
 router.post('/:id/checkpoints/classification-balance', (req, res) => controller.createClassificationBalanceCheckpoint(req, res));
 router.post('/:id/checkpoints/evaluation-filter', (req, res) => controller.createEvaluationFilterCheckpoint(req, res));
 router.post('/:id/checkpoints/refine-accept', (req, res) => controller.createRefineAcceptCheckpoint(req, res));

@@ -424,6 +424,7 @@ export function DataLabelingPanel({
   const effectiveLockReason = assignmentIsLocked
     ? `Assignment is ${assignmentStatus?.status}; labels are locked.`
     : lockReason;
+  const contributionFilterUserId = assignmentSubmissionEnabled ? currentUserId : '';
 
   useEffect(() => {
     if (!error) {
@@ -441,7 +442,11 @@ export function DataLabelingPanel({
 
   const fetchMessageLabelCounts = async (sampleId: string) => {
     try {
-      const payload = await dataprepApi.getSampleLabels(sampleId, { scope: 'all' });
+      const payload = await dataprepApi.getSampleLabels(sampleId, {
+        scope: 'all',
+        contributedBy: contributionFilterUserId || undefined,
+        includeUnvoted: Boolean(contributionFilterUserId),
+      });
       const counts: Record<number, number> = {};
       const names: Record<number, string[]> = {};
       (Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : [])
@@ -468,8 +473,16 @@ export function DataLabelingPanel({
 
     try {
       const payload = messageIndex === null
-        ? await dataprepApi.getSampleLabels(sampleId)
-        : await dataprepApi.getSampleLabels(sampleId, { scope: 'message', messageIndex });
+        ? await dataprepApi.getSampleLabels(sampleId, {
+            contributedBy: contributionFilterUserId || undefined,
+            includeUnvoted: Boolean(contributionFilterUserId),
+          })
+        : await dataprepApi.getSampleLabels(sampleId, {
+            scope: 'message',
+            messageIndex,
+            contributedBy: contributionFilterUserId || undefined,
+            includeUnvoted: Boolean(contributionFilterUserId),
+          });
       setLabels(Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : []);
     } catch (err: any) {
       setLabels([]);
@@ -496,7 +509,7 @@ export function DataLabelingPanel({
     fetchLabels(currentSample.sampleId, selectedTargetIndex);
     fetchMessageLabelCounts(currentSample.sampleId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSample?.sampleId, selectedTargetIndex]);
+  }, [contributionFilterUserId, currentSample?.sampleId, selectedTargetIndex]);
 
   useEffect(() => {
     setSelectedMessageIndex(null);
@@ -694,9 +707,6 @@ export function DataLabelingPanel({
           ...prev,
           [labelIndex]: Array.from(new Set([...(prev[labelIndex] || []), created.name])),
         }));
-      }
-      if (fromCommunityHub) {
-        await handleVote(created._id, 'up');
       }
       queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {

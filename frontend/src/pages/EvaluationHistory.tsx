@@ -372,6 +372,25 @@ export const EvaluationHistory: React.FC = () => {
     },
   });
 
+  const deleteVersionMutation = useMutation({
+    mutationFn: (versionId: string) => dataprepApi.deleteDatasetVersion(versionId),
+    onSuccess: async (data) => {
+      setDeletedSampleIds(new Set());
+      setOpenActionMenuSampleId(null);
+      setSelectedVersionId(null);
+      await queryClient.invalidateQueries({ queryKey: ['dataset-version-detail'] });
+      await queryClient.invalidateQueries({ queryKey: ['dataset-version-quality'] });
+      await queryClient.invalidateQueries({ queryKey: ['evaluation-history'] });
+      toast.success(
+        data.message ||
+        `Đã xóa ${data.deletedCounts.versions} version, ${data.deletedCounts.samples} sample và ${data.deletedCounts.assignments} assignment.`
+      );
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error?.message || 'Xóa dataset version thất bại.');
+    },
+  });
+
   const detailItems = versionQuery.data?.items ?? [];
 
   const filteredDetailItems = useMemo(() => {
@@ -386,7 +405,7 @@ export const EvaluationHistory: React.FC = () => {
 
     const nonRejectSampleKeys = new Set(
       qualityItems
-        .filter((item: any) => item.bucket !== 'Reject')
+        .filter((item: any) => item.bucket === 'Gold' || item.bucket === 'Rewrite')
         .map((item: any) => String(item.sampleId || item._id))
     );
 
@@ -519,6 +538,21 @@ export const EvaluationHistory: React.FC = () => {
       return;
     }
     deleteMutation.mutate(item.sampleId);
+  };
+
+  const handleDeleteVersion = () => {
+    if (!selectedVersionId || !selectedVersion) {
+      return;
+    }
+
+    const ok = window.confirm(
+      `Xóa vĩnh viễn ${selectedVersion.versionName}? Toàn bộ version con sinh từ version này và các assignment liên quan cũng sẽ bị xóa.`
+    );
+    if (!ok) {
+      return;
+    }
+
+    deleteVersionMutation.mutate(selectedVersionId);
   };
 
   return (
@@ -680,6 +714,13 @@ export const EvaluationHistory: React.FC = () => {
                   className="px-3 py-2 text-sm font-semibold text-emerald-700 border border-emerald-300 rounded-lg bg-emerald-50 hover:bg-emerald-100"
                 >
                   Download
+                </button>
+                <button
+                  onClick={handleDeleteVersion}
+                  disabled={deleteVersionMutation.isPending}
+                  className="px-3 py-2 text-sm font-semibold text-red-700 border border-red-300 rounded-lg bg-red-50 hover:bg-red-100 disabled:opacity-60"
+                >
+                  {deleteVersionMutation.isPending ? 'Deleting...' : 'Delete'}
                 </button>
                 <button
                   onClick={handleContinuePrepare}

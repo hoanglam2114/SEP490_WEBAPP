@@ -38,15 +38,15 @@ export class QualityController {
         ? null
         : String(rawBucket);
 
-      if (bucket !== null && !['Gold', 'Rewrite', 'Reject'].includes(bucket)) {
-        res.status(400).json({ error: "bucket must be one of 'Gold', 'Rewrite', 'Reject' or null" });
+      if (bucket !== null && !['Gold', 'Rewrite', 'Reject', 'Incomplete'].includes(bucket)) {
+        res.status(400).json({ error: "bucket must be one of 'Gold', 'Rewrite', 'Reject', 'Incomplete' or null" });
         return;
       }
 
       const result = await qualityService.updateIncompleteBucket(versionId, ownerId, bucket as any);
       res.json({
         message: bucket
-          ? `Incomplete samples will be treated as ${bucket}.`
+          ? `Incomplete samples will be placed in ${bucket}.`
           : 'Incomplete sample bucket override cleared.',
         ...result,
       });

@@ -22,9 +22,14 @@ const GROUP_META: Record<ClassificationGroup, { label: string; color: string; te
   CHEMISTRY: { label: 'Chemistry', color: '#16a34a', text: 'text-green-700' },
   LITERATURE: { label: 'Literature', color: '#9333ea', text: 'text-purple-700' },
   BIOLOGY: { label: 'Biology', color: '#0d9488', text: 'text-teal-700' },
-  REJECT: { label: 'Reject', color: '#e11d48', text: 'text-rose-700' },
-  REWRITE: { label: 'Rewrite', color: '#d97706', text: 'text-amber-700' },
   OUT_OF_SCOPE: { label: 'Out of scope', color: '#64748b', text: 'text-slate-700' },
+};
+
+const QUALITY_BUCKET_LABELS: Record<'Gold' | 'Rewrite' | 'Reject' | 'Incomplete', string> = {
+  Gold: 'Gold',
+  Rewrite: 'Rewrite',
+  Reject: 'Bad',
+  Incomplete: 'Incomplete',
 };
 
 function stableShuffle<T extends { _id: string; sampleId: string }>(items: T[]): T[] {
@@ -103,17 +108,17 @@ export function SubjectDistributionPanel({
 
   const subjectTotal = subjectRows.reduce((sum, item) => sum + item.count, 0);
   const maxCount = Math.max(...subjectRows.map((item) => item.count), 1);
-  const nonSubjectRows = summary.filter((item) => !SUBJECT_GROUPS.includes(item.group));
-  const subjectSummaryRows = summary.filter((item) => SUBJECT_GROUPS.includes(item.group));
-  const chartBackground = buildConicGradient(subjectSummaryRows, subjectTotal);
+  const chartBackground = buildConicGradient(subjectRows, subjectTotal);
   const qualityGroups = qualityResult?.groups || [];
   const wrongPairs = qualityResult?.wrongPairs || qualityResult?.summary?.wrongPairs || [];
   const maxWrongPairCount = Math.max(...wrongPairs.map((item) => item.count), 1);
   const balancePlan = useMemo(() => {
     const items = classifiedResult?.items || [];
+    const hardRejectedIds = new Set(classifiedResult?.hardRejectedSampleIds || []);
+    const eligibleItems = items.filter((item) => !hardRejectedIds.has(String(item.sampleId)));
     const byGroup = new Map<ClassificationGroup, ClassifiedSamplesResult['items']>();
 
-    items.forEach((item) => {
+    eligibleItems.forEach((item) => {
       const list = byGroup.get(item.group) || [];
       list.push(item);
       byGroup.set(item.group, list);
@@ -137,10 +142,7 @@ export function SubjectDistributionPanel({
       };
     });
 
-    const nonSubjectItems = items.filter((item) => !SUBJECT_GROUPS.includes(item.group));
-    nonSubjectItems.forEach((item) => keepIds.add(item._id));
-
-    const keptItems = items.filter((item) => keepIds.has(item._id));
+    const keptItems = eligibleItems.filter((item) => keepIds.has(item._id));
     const removeCount = items.length - keptItems.length;
 
     return {
@@ -150,7 +152,7 @@ export function SubjectDistributionPanel({
       removeCount,
       originalCount: items.length,
       finalCount: keptItems.length,
-      otherCount: nonSubjectItems.length,
+      hardRejectedCount: hardRejectedIds.size,
     };
   }, [classifiedResult]);
   const canApplyBalance = Boolean(classifiedResult && balancePlan.removeCount > 0 && !alreadyApplied);
@@ -250,8 +252,8 @@ export function SubjectDistributionPanel({
                     <p className="text-gray-500">Total</p>
                   </div>
                   <div className="rounded-lg bg-white p-3 text-center">
-                    <p className="font-bold text-gray-900">{nonSubjectRows.reduce((sum, item) => sum + item.count, 0)}</p>
-                    <p className="text-gray-500">Rewrite + Reject</p>
+                    <p className="font-bold text-rose-700">{classifiedResult?.hardRejectedCount || 0}</p>
+                    <p className="text-gray-500">Hard reject</p>
                   </div>
                 </div>
               </div>
@@ -270,10 +272,12 @@ export function SubjectDistributionPanel({
                     ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                     : item.group === 'Rewrite'
                       ? 'border-amber-200 bg-amber-50 text-amber-700'
-                      : 'border-rose-200 bg-rose-50 text-rose-700';
+                      : item.group === 'Incomplete'
+                        ? 'border-slate-200 bg-slate-50 text-slate-700'
+                        : 'border-rose-200 bg-rose-50 text-rose-700';
                   return (
                     <div key={item.group} className={`rounded-xl border p-4 ${tone}`}>
-                      <p className="text-xs font-bold uppercase">{item.group}</p>
+                      <p className="text-xs font-bold uppercase">{QUALITY_BUCKET_LABELS[item.group]}</p>
                       <p className="mt-1 text-3xl font-black text-gray-900">{item.count}</p>
                       <p className="text-xs font-semibold text-gray-500">{item.percentage}% classified samples</p>
                     </div>
@@ -346,22 +350,18 @@ export function SubjectDistributionPanel({
 
         {activeTab === 'subject' && (
           <div className="mt-5 space-y-5">
-            {nonSubjectRows.length > 0 && totalSamples > 0 && (
-              <div className="rounded-lg border border-gray-100 bg-gray-50 p-4">
-                <p className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-500">Other Classification Buckets</p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  {nonSubjectRows.map((item) => {
-                    const meta = GROUP_META[item.group] || GROUP_META.OUT_OF_SCOPE;
-                    return (
-                      <div key={item.group} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-xs">
-                        <span className={`font-bold ${meta.text}`}>{meta.label}</span>
-                        <span className="font-semibold text-gray-700">{item.count}</span>
-                      </div>
-                    );
-                  })}
+            <div className="rounded-lg border border-rose-100 bg-rose-50 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Hard Reject</p>
+                  <p className="mt-1 text-xs text-rose-900">Hard reject is tracked separately from subject grouping and will be removed in downstream filtered datasets.</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-black text-rose-700">{classifiedResult?.hardRejectedCount || 0}</p>
+                  <p className="text-[11px] font-medium text-rose-600">sample(s)</p>
                 </div>
               </div>
-            )}
+            </div>
 
             <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
               <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
@@ -435,7 +435,7 @@ export function SubjectDistributionPanel({
 
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     <p>
-                      Keep non-subject quality buckets unchanged: {balancePlan.otherCount} samples. The 6 subject-distribution groups are capped to the smallest non-zero group.
+                      The 6 subject-distribution groups are capped to the smallest non-zero group after removing hard rejected samples. Hard reject removed: {balancePlan.hardRejectedCount}.
                     </p>
                     <div className="flex flex-wrap gap-2">
                       <button
