@@ -123,7 +123,11 @@ export function ModelEvalHistoryScreen() {
     if (!window.confirm('Xóa bản đánh giá này? Không thể hoàn tác.')) return;
     setDeleting(evalId);
     try {
-      const res = await fetch(`/api/model-eval/${encodeURIComponent(evalId)}`, { method: 'DELETE' });
+      const token = getAuthToken();
+      const res = await fetch(`/api/model-eval/${encodeURIComponent(evalId)}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((json as { error?: string }).error || 'Xóa thất bại');
       const newPinned = (json as { newPinnedEvalId?: string | null }).newPinnedEvalId ?? data.pinnedEvalId;
@@ -149,7 +153,11 @@ export function ModelEvalHistoryScreen() {
     if (!data) return;
     setPinning(evalId);
     try {
-      const res = await fetch(`/api/model-eval/pin/${evalId}`, { method: 'POST' });
+      const token = getAuthToken();
+      const res = await fetch(`/api/model-eval/pin/${evalId}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) throw new Error('Pin thất bại');
       // Cập nhật local state
       setData(prev => {
@@ -471,8 +479,7 @@ export function ModelEvalHistoryScreen() {
               </button>
               <button
                 onClick={() => navigate(`/model-eval/compare?a=${compareIds[0]}&b=${compareIds[1]}`)}
-                className="text-sm font-semibold bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition"
-              >
+                className="text-sm font-semibold bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition">
                 So sánh →
               </button>
             </div>
