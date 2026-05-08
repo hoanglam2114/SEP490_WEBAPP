@@ -197,8 +197,8 @@ type ClusterResponse = {
 
 export type SubjectAutoLabel = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OTHER';
 
-export type ClassificationGroup = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'REJECT' | 'REWRITE' | 'OUT_OF_SCOPE';
-export type QualityBucket = 'Gold' | 'Rewrite' | 'Reject';
+export type ClassificationGroup = 'MATH' | 'PHYSICAL' | 'CHEMISTRY' | 'LITERATURE' | 'BIOLOGY' | 'OUT_OF_SCOPE';
+export type QualityBucket = 'Gold' | 'Rewrite' | 'Reject' | 'Incomplete';
 
 export type AutoLabelSuggestion = {
   clusterId: number;
@@ -217,12 +217,16 @@ export type ClassificationResult = {
   totalSamples: number;
   groups: ClassificationSummaryGroup[];
   sampleClassifications: Array<{ sampleId: string; group: ClassificationGroup }>;
+  hardRejectedCount: number;
+  hardRejectedSampleIds: string[];
 };
 
 export type ClassifiedSamplesResult = {
   totalSamples: number;
   groups: ClassificationSummaryGroup[];
-  items: Array<{ _id: string; sampleId: string; data: Record<string, any>; group: ClassificationGroup }>;
+  hardRejectedCount: number;
+  hardRejectedSampleIds: string[];
+  items: Array<{ _id: string; sampleId: string; data: Record<string, any>; group: ClassificationGroup; hardRejected: boolean }>;
 };
 
 export type QualitySummaryGroup = {
@@ -237,6 +241,7 @@ export type QualityClassificationItem = {
   data: Record<string, any>;
   bucket: QualityBucket;
   score: number;
+  scoreScale?: 'turn-average-raw';
   vector: number[];
   intentCounts: number[];
   iar: Array<number | null>;
@@ -251,6 +256,13 @@ export type QualityClassificationItem = {
     assistantLabels: string[];
     expectedActions: string[];
     matched: boolean;
+    turnScore?: number;
+    intentScores?: Array<{
+      intent: string;
+      value: number;
+      matched: boolean;
+      harmfulActions: string[];
+    }>;
   }>;
 };
 
@@ -827,6 +839,26 @@ export const apiService = {
     return response.data;
   },
 
+  deleteDatasetVersion: async (id: string): Promise<{
+    message: string;
+    deletedVersionIds: string[];
+    deletedSampleIds: string[];
+    deletedCounts: {
+      versions: number;
+      samples: number;
+      assignments: number;
+      submissions: number;
+      labels: number;
+      evaluations: number;
+    };
+    projectArchived: boolean;
+    latestVersionId: string | null;
+    rootVersionId: string | null;
+  }> => {
+    const response = await api.delete(`/dataprep/versions/${id}`);
+    return response.data;
+  },
+
   deleteDatasetVersionItem: async (sampleId: string): Promise<{ message: string; deletedSampleId: string }> => {
     const response = await api.delete(`/dataprep/versions/items/${sampleId}`);
     return response.data;
@@ -839,7 +871,7 @@ export const apiService = {
       versionName: string;
       ownerId: string;
       ownerName: string;
-      accessType?: 'public' | 'shared' | 'assigned' | 'owned';
+      accessType?: 'public' | 'assigned' | 'owned';
       updatedAt: string;
       topLabel: {
         _id: string;
@@ -937,7 +969,7 @@ export const apiService = {
 
   getSampleLabels: async (
     sampleId: string,
-    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number; createdBy?: string; includeUnvoted?: boolean }
+    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number; createdBy?: string; contributedBy?: string; includeUnvoted?: boolean }
   ): Promise<{ labels: any[] }> => {
     const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
     return response.data;

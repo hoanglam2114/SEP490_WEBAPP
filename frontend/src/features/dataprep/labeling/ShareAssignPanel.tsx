@@ -14,9 +14,6 @@ type ShareAssignPanelProps = {
   isTogglingVersionPublic: boolean;
   onToggleVersionVisibility: () => void;
   shareUsers: ShareUser[];
-  selectedSharedUserId: string;
-  isUpdatingVersionSharing: boolean;
-  onUpdateVersionSharing: (userId: string) => void;
   onBack: () => void;
   onNext: () => void;
 };
@@ -29,9 +26,6 @@ export function ShareAssignPanel({
   isTogglingVersionPublic,
   onToggleVersionVisibility,
   shareUsers,
-  selectedSharedUserId,
-  isUpdatingVersionSharing,
-  onUpdateVersionSharing,
   onBack,
   onNext,
 }: ShareAssignPanelProps) {
@@ -166,8 +160,8 @@ export function ShareAssignPanel({
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-sm font-semibold text-slate-900">Public & Share</p>
-            <p className="text-xs text-slate-500">Publish this version or grant direct access to one collaborator.</p>
+            <p className="text-sm font-semibold text-slate-900">Public Access</p>
+            <p className="text-xs text-slate-500">Publish this version publicly while managing assignee ranges below.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             <button
@@ -179,17 +173,6 @@ export function ShareAssignPanel({
               <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingAssignments ? 'animate-spin' : ''}`} />
               Refresh
             </button>
-            <select
-              value={selectedSharedUserId}
-              onChange={(event) => onUpdateVersionSharing(event.target.value)}
-              disabled={isUpdatingVersionSharing}
-              className="h-9 min-w-[260px] rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 outline-none hover:bg-slate-50 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
-            >
-              <option value="">No specific account</option>
-              {shareUsers.map((account) => (
-                <option key={account.id} value={account.id}>{account.name} ({account.email})</option>
-              ))}
-            </select>
             <button
               type="button"
               onClick={onToggleVersionVisibility}

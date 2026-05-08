@@ -90,7 +90,7 @@ const tools = [
   },
   {
     title: 'Community Hub',
-    description: 'Browse public projects and jump directly into Data Labeling as a guest collaborator',
+    description: 'Browse public projects and jump directly into Data Labeling as a public user or assignee',
     path: '/community-hub',
     tag: 'Community',
     icon: (

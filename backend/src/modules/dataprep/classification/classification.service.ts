@@ -2,15 +2,10 @@ import mongoose from 'mongoose';
 import { Label } from '../../../models/Label';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
+import { getHardRejectedSampleIds } from '../../../utils/labelFilters';
 
 /**
- * The 8 classification groups.
- *
- * Priority order when a sample qualifies for multiple groups:
- *   1. REJECT   – hard-REJECT label with ≥ 3 upvotes
- *   2. REWRITE  – any of ERROR_FORMULAR | ERROR_RESPONSE | ERROR_FORMAT | USER_SPAM
- *   3. Subject  – MATH | PHYSICAL | CHEMISTRY | LITERATURE | BIOLOGY
- *   4. OUT_OF_SCOPE – everything else
+ * Subject-only classification groups.
  */
 export const CLASSIFICATION_GROUPS = [
   'MATH',
@@ -18,8 +13,6 @@ export const CLASSIFICATION_GROUPS = [
   'CHEMISTRY',
   'LITERATURE',
   'BIOLOGY',
-  'REJECT',
-  'REWRITE',
   'OUT_OF_SCOPE',
 ] as const;
 
@@ -32,15 +25,6 @@ const SUBJECT_LABELS: ReadonlySet<string> = new Set([
   'LITERATURE',
   'BIOLOGY',
 ]);
-
-const REWRITE_LABELS: ReadonlySet<string> = new Set([
-  'ERROR_FORMULAR',
-  'ERROR_RESPONSE',
-  'ERROR_FORMAT',
-  'USER_SPAM',
-]);
-
-const HARD_REJECT_UPVOTE_THRESHOLD = 3;
 
 export type ClassificationSummaryGroup = {
   group: ClassificationGroup;
@@ -57,6 +41,8 @@ export type ClassificationResult = {
   totalSamples: number;
   groups: ClassificationSummaryGroup[];
   sampleClassifications: SampleClassification[];
+  hardRejectedCount: number;
+  hardRejectedSampleIds: string[];
 };
 
 export class ClassificationService {
@@ -79,7 +65,13 @@ export class ClassificationService {
       .lean();
 
     if (!items.length) {
-      return { totalSamples: 0, groups: [], sampleClassifications: [] };
+      return {
+        totalSamples: 0,
+        groups: [],
+        sampleClassifications: [],
+        hardRejectedCount: 0,
+        hardRejectedSampleIds: [],
+      };
     }
 
     const sampleOids = items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)));
@@ -95,7 +87,7 @@ export class ClassificationService {
     }).lean();
 
     // 3. Build per-sample label index
-    const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; upvoteCount: number }>>();
+    const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; upvoteCount: number; downvoteCount: number }>>();
 
     for (const label of labels) {
       const sid = String((label as any).sampleId);
@@ -103,11 +95,17 @@ export class ClassificationService {
         name: String((label as any).name || '').toUpperCase(),
         type: String((label as any).type || ''),
         upvoteCount: Array.isArray((label as any).upvotes) ? (label as any).upvotes.length : 0,
+        downvoteCount: Array.isArray((label as any).downvotes) ? (label as any).downvotes.length : 0,
       };
       const list = sampleLabelsMap.get(sid) || [];
       list.push(entry);
       sampleLabelsMap.set(sid, list);
     }
+
+    const hardRejectedItemIds = await getHardRejectedSampleIds(sampleOids);
+    const hardRejectedSampleIds = items
+      .filter((item: any) => hardRejectedItemIds.has(String(item._id)))
+      .map((item: any) => String(item.sampleId));
 
     // 4. Classify each sample
     const sampleClassifications: SampleClassification[] = [];
@@ -134,7 +132,13 @@ export class ClassificationService {
       }))
       .filter((g) => g.count > 0);
 
-    return { totalSamples, groups, sampleClassifications };
+    return {
+      totalSamples,
+      groups,
+      sampleClassifications,
+      hardRejectedCount: hardRejectedSampleIds.length,
+      hardRejectedSampleIds,
+    };
   }
 
   /**
@@ -147,7 +151,9 @@ export class ClassificationService {
   ): Promise<{
     totalSamples: number;
     groups: ClassificationSummaryGroup[];
-    items: Array<{ _id: string; sampleId: string; data: Record<string, unknown>; group: ClassificationGroup }>;
+    hardRejectedCount: number;
+    hardRejectedSampleIds: string[];
+    items: Array<{ _id: string; sampleId: string; data: Record<string, unknown>; group: ClassificationGroup; hardRejected: boolean }>;
   }> {
     const classification = await this.classify(versionId, ownerId);
 
@@ -164,12 +170,16 @@ export class ClassificationService {
     }
 
     const items = await ProcessedDatasetItem.find({ datasetVersionId: version._id }).lean();
+    const hardRejectedItemIds = await getHardRejectedSampleIds(
+      items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)))
+    );
 
     const enriched = items.map((item: any) => ({
       _id: String(item._id),
       sampleId: String(item.sampleId),
       data: item.data || {},
       group: groupMap.get(String(item._id)) || ('OUT_OF_SCOPE' as ClassificationGroup),
+      hardRejected: hardRejectedItemIds.has(String(item._id)),
     }));
 
     const filtered = group
@@ -179,33 +189,19 @@ export class ClassificationService {
     return {
       totalSamples: classification.totalSamples,
       groups: classification.groups,
+      hardRejectedCount: classification.hardRejectedCount,
+      hardRejectedSampleIds: classification.hardRejectedSampleIds,
       items: filtered,
     };
   }
 
   /**
-   * Determine the classification group for a single sample based on its labels.
-   *
-   * Priority: REJECT > REWRITE > Subject > OUT_OF_SCOPE
+   * Determine the subject classification group for a single sample.
    */
   private resolveGroup(
-    sampleLabels: Array<{ name: string; type: string; upvoteCount: number }>
+    sampleLabels: Array<{ name: string; type: string; upvoteCount: number; downvoteCount: number }>
   ): ClassificationGroup {
-    // 1. Check REJECT: hard-REJECT with >= 3 upvotes
-    const hasReject = sampleLabels.some(
-      (l) => l.name === 'REJECT' && l.type === 'hard' && l.upvoteCount >= HARD_REJECT_UPVOTE_THRESHOLD
-    );
-    if (hasReject) {
-      return 'REJECT';
-    }
-
-    // 2. Check REWRITE: any rewrite-type label
-    const hasRewrite = sampleLabels.some((l) => REWRITE_LABELS.has(l.name));
-    if (hasRewrite) {
-      return 'REWRITE';
-    }
-
-    // 3. Check subject labels (prefer the one with the most upvotes)
+    // Prefer the subject label with the most upvotes.
     const subjectLabels = sampleLabels
       .filter((l) => SUBJECT_LABELS.has(l.name))
       .sort((a, b) => b.upvoteCount - a.upvoteCount);
@@ -214,7 +210,7 @@ export class ClassificationService {
       return subjectLabels[0].name as ClassificationGroup;
     }
 
-    // 4. Fallback
+    // Fallback when no subject label exists.
     return 'OUT_OF_SCOPE';
   }
 }

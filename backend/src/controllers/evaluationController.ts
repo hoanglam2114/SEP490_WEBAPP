@@ -120,10 +120,6 @@ function getSharedUserIds(version: any): string[] {
     : [];
 }
 
-function isVersionSharedWithUser(version: any, userId: string): boolean {
-  return getSharedUserIds(version).includes(String(userId));
-}
-
 async function buildSharedUserDtos(version: any): Promise<Array<{ id: string; name: string; email: string }>> {
   const sharedUserIds = getSharedUserIds(version);
   if (!sharedUserIds.length) {
@@ -208,10 +204,10 @@ async function calculateAssignmentProgress(datasetVersionId: mongoose.Types.Obje
     ? await Label.find({
         sampleId: { $in: sampleIds },
         targetScope: 'message',
+        type: 'hard',
         $or: [
           { createdBy: assigneeObjectId },
           { upvotes: assigneeObjectId },
-          { downvotes: assigneeObjectId },
         ],
       })
         .select('sampleId messageIndex')
@@ -640,7 +636,7 @@ export class EvaluationController {
         : [];
 
       // ── Hard-REJECT community filter ─────────────────────────────────────
-      // showRejected=true  → show ONLY samples with hard REJECT >= 3 upvotes
+      // showRejected=true  → show ONLY samples with positive REJECT score
       // showRejected=false → exclude those samples (default)
       const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
       let filteredVersionItems: typeof versionItems = versionItems;
@@ -762,33 +758,42 @@ export class EvaluationController {
       ).map((id) => new mongoose.Types.ObjectId(id));
       const assignedVersionIdSet = new Set(assignedVersionIds.map(String));
 
-      const ownedAssignmentRows = await DatasetSampleAssignment.find({ assignedBy: viewerObjectId })
-        .select('datasetVersionId')
-        .lean();
-      const ownedAssignedVersionIds = Array.from(
-        new Set(ownedAssignmentRows.map((row: any) => String(row.datasetVersionId)).filter(Boolean))
-      ).map((id) => new mongoose.Types.ObjectId(id));
-      const ownedAssignedVersionIdSet = new Set(ownedAssignedVersionIds.map(String));
-
       const versionRows = await DatasetVersion.find({
         $or: [
+          { ownerId: viewerObjectId },
           { isPublic: true },
-          { sharedWithUserIds: viewerObjectId },
           ...(assignedVersionIds.length ? [{ _id: { $in: assignedVersionIds } }] : []),
-          {
-            ownerId: viewerObjectId,
-            $or: [
-              { sharedWithUserIds: { $exists: true, $ne: [] } },
-              ...(ownedAssignedVersionIds.length ? [{ _id: { $in: ownedAssignedVersionIds } }] : []),
-            ],
-          },
         ],
       })
         .sort({ createdAt: -1 })
         .lean();
 
+      const versionObjectIds = versionRows.map((row: any) => row._id);
+      const assignmentCounts = versionObjectIds.length
+        ? await DatasetSampleAssignment.aggregate([
+            { $match: { datasetVersionId: { $in: versionObjectIds } } },
+            { $group: { _id: '$datasetVersionId', count: { $sum: 1 } } },
+          ])
+        : [];
+      const assignmentProtectedVersionIds = new Set(
+        assignmentCounts
+          .filter((row: any) => Number(row.count || 0) > 0)
+          .map((row: any) => String(row._id))
+      );
+      const visibleVersionRows = versionRows.filter((row: any) => {
+        const datasetVersionId = String(row._id);
+        const ownerId = String(row.ownerId);
+        if (ownerId === String(viewerId)) {
+          return true;
+        }
+        if (assignedVersionIdSet.has(datasetVersionId)) {
+          return true;
+        }
+        return Boolean(row.isPublic) && !assignmentProtectedVersionIds.has(datasetVersionId);
+      });
+
       const ownerIds = Array.from(
-        new Set(versionRows.map((row: any) => String(row.ownerId)).filter(Boolean))
+        new Set(visibleVersionRows.map((row: any) => String(row.ownerId)).filter(Boolean))
       );
 
       const owners = ownerIds.length
@@ -799,7 +804,7 @@ export class EvaluationController {
       );
 
       const projects = await Promise.all(
-        versionRows.map(async (row: any) => {
+        visibleVersionRows.map(async (row: any) => {
           const ownerId = String(row.ownerId);
           const projectName = String(row.projectName || 'Untitled Project');
           const datasetVersionId = String(row._id);
@@ -862,16 +867,11 @@ export class EvaluationController {
             ownerId,
             ownerName: ownerNameMap.get(ownerId) || 'Unknown',
             updatedAt: row.createdAt,
-            accessType: ownerId === String(viewerId) && (
-              ownedAssignedVersionIdSet.has(datasetVersionId)
-              || (Array.isArray(row.sharedWithUserIds) && row.sharedWithUserIds.length > 0)
-            )
+            accessType: ownerId === String(viewerId)
               ? 'owned'
-              : Boolean(row.isPublic)
-              ? 'public'
               : assignedVersionIdSet.has(datasetVersionId)
                 ? 'assigned'
-                : 'shared',
+                : 'public',
             topLabel,
           };
         })
@@ -908,11 +908,14 @@ export class EvaluationController {
       }
 
       const isOwner = String(datasetVersion.ownerId) === String(viewerId);
-      const hasSharedAccess = isVersionSharedWithUser(datasetVersion, viewerId);
       const assignedAccess = await getAssignedSampleIdsForUser(datasetVersion._id, viewerId);
       const hasAssignedAccess = assignedAccess.sampleIds.size > 0;
-      if (!datasetVersion.isPublic && !hasSharedAccess && !hasAssignedAccess && !isOwner) {
+      if (!datasetVersion.isPublic && !hasAssignedAccess && !isOwner) {
         res.status(403).json({ error: 'Bạn chưa được cấp quyền truy cập project này.' });
+        return;
+      }
+      if (!isOwner && assignedAccess.hasAssignments && !hasAssignedAccess) {
+        res.status(403).json({ error: 'Project này đang dùng assignment; tài khoản này chưa được phân công.' });
         return;
       }
 
@@ -1022,12 +1025,15 @@ export class EvaluationController {
 
       const isOwner = String((version as any).ownerId) === String(viewerId);
       const isPublicVersion = Boolean((version as any).isPublic);
-      const hasSharedAccess = isVersionSharedWithUser(version, viewerId);
       const assignedAccess = await getAssignedSampleIdsForUser(version._id, viewerId);
       const hasAssignedAccess = assignedAccess.sampleIds.size > 0;
 
-      if (!isOwner && !isPublicVersion && !hasSharedAccess && !hasAssignedAccess) {
+      if (!isOwner && !isPublicVersion && !hasAssignedAccess) {
         res.status(403).json({ error: 'Forbidden: you do not have access to this dataset version.' });
+        return;
+      }
+      if (!isOwner && assignedAccess.hasAssignments && !hasAssignedAccess) {
+        res.status(403).json({ error: 'Forbidden: this dataset version is assignment-restricted for this account.' });
         return;
       }
 
@@ -1045,7 +1051,7 @@ export class EvaluationController {
       ]);
 
       // ── Hard-REJECT community filter ─────────────────────────────────────
-      // showRejected=true  → show ONLY samples with hard REJECT >= 3 upvotes
+      // showRejected=true  → show ONLY samples with positive REJECT score
       // showRejected=false → exclude those samples (default)
       const showRejected = String(req.query.showRejected || '').toLowerCase() === 'true';
       let filteredItems: typeof itemsWithEvaluations = !isOwner && assignedAccess.hasAssignments
@@ -1641,11 +1647,6 @@ export class EvaluationController {
         { ordered: false }
       );
 
-      await DatasetVersion.updateOne(
-        { _id: version._id, ownerId },
-        { $addToSet: { sharedWithUserIds: new mongoose.Types.ObjectId(assigneeId) } }
-      );
-
       res.status(201).json({
         message: `Đã gán ${selectedSamples.length} mẫu.`,
         assignedCount: selectedSamples.length,
@@ -1686,43 +1687,11 @@ export class EvaluationController {
         return;
       }
 
-      const affectedAssignments = await DatasetSampleAssignment.find({
-        datasetVersionId: version._id,
-        sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
-      })
-        .select('assigneeId')
-        .lean();
-
       const result = await DatasetSampleAssignment.deleteMany({
         datasetVersionId: version._id,
         sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
       });
       await DatasetAssignmentSubmission.deleteMany({ datasetVersionId: version._id });
-
-      const affectedAssigneeIds = Array.from(
-        new Set(affectedAssignments.map((item: any) => String(item.assigneeId)).filter(Boolean))
-      );
-
-      if (affectedAssigneeIds.length > 0) {
-        const remainingAssignments = await DatasetSampleAssignment.find({
-          datasetVersionId: version._id,
-          assigneeId: { $in: affectedAssigneeIds.map((item) => new mongoose.Types.ObjectId(item)) },
-        })
-          .select('assigneeId')
-          .lean();
-
-        const assigneesWithRemainingAssignments = new Set(
-          remainingAssignments.map((item: any) => String(item.assigneeId)).filter(Boolean)
-        );
-        const assigneesToRemoveFromShared = affectedAssigneeIds.filter((item) => !assigneesWithRemainingAssignments.has(item));
-
-        if (assigneesToRemoveFromShared.length > 0) {
-          await DatasetVersion.updateOne(
-            { _id: version._id, ownerId },
-            { $pull: { sharedWithUserIds: { $in: assigneesToRemoveFromShared.map((item) => new mongoose.Types.ObjectId(item)) } } }
-          );
-        }
-      }
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment.`,
@@ -1765,18 +1734,6 @@ export class EvaluationController {
         datasetVersionId: version._id,
         assigneeId: new mongoose.Types.ObjectId(userId),
       });
-
-      const remainingAssignmentCount = await DatasetSampleAssignment.countDocuments({
-        datasetVersionId: version._id,
-        assigneeId: new mongoose.Types.ObjectId(userId),
-      });
-
-      if (remainingAssignmentCount === 0) {
-        await DatasetVersion.updateOne(
-          { _id: version._id, ownerId },
-          { $pull: { sharedWithUserIds: new mongoose.Types.ObjectId(userId) } }
-        );
-      }
 
       res.json({
         message: `Đã xóa ${result.deletedCount || 0} assignment của user.`,

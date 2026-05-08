@@ -22,8 +22,6 @@ const GROUP_COLORS: Record<ClassificationGroup, { bg: string; text: string; bord
   CHEMISTRY: { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
   LITERATURE: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
   BIOLOGY: { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  REJECT: { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  REWRITE: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
   OUT_OF_SCOPE: { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
 };
 
@@ -31,8 +29,15 @@ const QUALITY_COLORS: Record<QualityBucket, { bg: string; text: string; border: 
   Gold: { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
   Rewrite: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
   Reject: { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  Incomplete: { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
 };
-const QUALITY_BUCKETS: QualityBucket[] = ['Gold', 'Rewrite', 'Reject'];
+const QUALITY_BUCKETS: QualityBucket[] = ['Gold', 'Rewrite', 'Reject', 'Incomplete'];
+const QUALITY_BUCKET_LABELS: Record<QualityBucket, string> = {
+  Gold: 'Gold',
+  Rewrite: 'Rewrite',
+  Reject: 'Bad',
+  Incomplete: 'Incomplete',
+};
 
 export function ClassificationPanel({
   versionId,
@@ -53,6 +58,7 @@ export function ClassificationPanel({
   const [qualityTotalSamples, setQualityTotalSamples] = useState(0);
   const [qualityClassifiedSamples, setQualityClassifiedSamples] = useState(0);
   const [qualitySkippedSamples, setQualitySkippedSamples] = useState(0);
+  const [hardRejectedCount, setHardRejectedCount] = useState(0);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isQualityLoaded, setIsQualityLoaded] = useState(false);
 
@@ -61,6 +67,7 @@ export function ClassificationPanel({
       const res = await apiService.getClassifiedSamples(versionId);
       setSummary(res.groups);
       setTotalSamples(res.totalSamples);
+      setHardRejectedCount(res.hardRejectedCount || 0);
       setIsLoaded(true);
     } catch (error: any) {
       console.error('Failed to load classification summary:', error);
@@ -93,6 +100,7 @@ export function ClassificationPanel({
       const res = await apiService.classifyVersion(versionId);
       setSummary(res.groups);
       setTotalSamples(res.totalSamples);
+      setHardRejectedCount(res.hardRejectedCount || 0);
       toast.success('Classification completed successfully.');
       onGroupFilterChange(null); // Reset filter to show all
     } catch (error: any) {
@@ -132,7 +140,7 @@ export function ClassificationPanel({
         <div className="space-y-4">
           <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-bold text-gray-900">Classification Summary</h3>
+              <h3 className="text-sm font-bold text-gray-900">Subject Classification</h3>
               <button
                 onClick={handleRunClassification}
                 disabled={isClassifying || !versionId}
@@ -199,11 +207,23 @@ export function ClassificationPanel({
               <div>
                 <p className="text-xs font-bold text-blue-900">Priority Rules</p>
                 <ul className="mt-1 space-y-1 text-[10px] text-blue-700 list-disc list-inside leading-relaxed">
-                  <li><strong>REJECT</strong> takes highest priority (3+ upvotes).</li>
-                  <li><strong>REWRITE</strong> applies for error/spam labels.</li>
-                  <li><strong>Subjects</strong> applied after quality checks.</li>
-                  <li><strong>OUT_OF_SCOPE</strong> for any other cases.</li>
+                  <li><strong>Subjects</strong> are classified independently from hard reject and quality review.</li>
+                  <li><strong>OUT_OF_SCOPE</strong> is used when no subject label exists.</li>
+                  <li><strong>Hard reject</strong> is tracked separately and applied in downstream filtering.</li>
                 </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-rose-100 bg-rose-50 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Hard Reject</p>
+                <p className="mt-1 text-xs text-rose-900">Samples with positive sample-level `REJECT` score are excluded later, without changing their subject group.</p>
+              </div>
+              <div className="text-right">
+                <p className="text-2xl font-black text-rose-700">{hardRejectedCount}</p>
+                <p className="text-[11px] font-medium text-rose-600">sample(s)</p>
               </div>
             </div>
           </div>
@@ -212,7 +232,8 @@ export function ClassificationPanel({
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="text-sm font-bold text-gray-900">Quality Classification</h3>
-                <p className="text-[11px] text-gray-500">Gold / Rewrite / Reject from message labels.</p>
+                <p className="text-[11px] text-gray-500">Gold / Rewrite / Bad / Incomplete from message labels.</p>
+                <p className="text-[11px] text-gray-500">Bad = low-quality samples from message-label scoring.</p>
               </div>
               <button
                 onClick={handleRunQualityClassification}
@@ -230,7 +251,7 @@ export function ClassificationPanel({
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="grid grid-cols-4 gap-2 text-center">
                   {QUALITY_BUCKETS.map((bucket) => {
                     const item = qualityGroupByBucket.get(bucket) || { group: bucket, count: 0, percentage: 0 };
                     const colors = QUALITY_COLORS[bucket];
@@ -242,7 +263,7 @@ export function ClassificationPanel({
                         onClick={() => onQualityBucketFilterChange(bucket)}
                         className={`rounded-lg border p-3 text-left transition-all ${isActive ? `${colors.bg} ${colors.border} ring-1 ${colors.border.replace('border-', 'ring-')}` : `${colors.bg} ${colors.border} hover:shadow-sm`}`}
                       >
-                        <p className={`text-[10px] font-bold uppercase ${colors.text}`}>{bucket}</p>
+                        <p className={`text-[10px] font-bold uppercase ${colors.text}`}>{QUALITY_BUCKET_LABELS[bucket]}</p>
                         <p className="mt-1 text-2xl font-black text-gray-900">{item.count}</p>
                         <p className="text-[11px] font-medium text-gray-500">{item.percentage}% classified</p>
                       </button>
@@ -284,7 +305,7 @@ export function ClassificationPanel({
                     >
                       <div className="flex items-center gap-2">
                         <div className={`w-1.5 h-1.5 rounded-full ${colors.text.replace('text-', 'bg-')}`} />
-                        <span className={`text-xs font-bold ${colors.text}`}>{item.group}</span>
+                        <span className={`text-xs font-bold ${colors.text}`}>{QUALITY_BUCKET_LABELS[item.group]}</span>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-[10px] text-gray-400 font-medium">{item.percentage}%</span>

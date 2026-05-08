@@ -3,6 +3,9 @@ import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
 import { DataPrepProject } from '../../../models/DataPrepProject';
 import { Label } from '../../../models/Label';
+import { EvaluationHistory } from '../../../models/EvaluationHistory';
+import { DatasetSampleAssignment } from '../../../models/DatasetSampleAssignment';
+import { DatasetAssignmentSubmission } from '../../../models/DatasetAssignmentSubmission';
 import { normalizeEvaluationData, inferFormatFromRow, resolveSampleKey } from '../../../utils/evalUtils';
 
 export type DatasetOperationType =
@@ -52,6 +55,22 @@ type CreatedVersionResult = {
   datasetVersion: any;
   sampleIdMap: Record<string, string>;
   sourceToCreatedSampleMap: Record<string, string>;
+};
+
+type DeleteVersionTreeResult = {
+  deletedVersionIds: string[];
+  deletedSampleIds: string[];
+  deletedCounts: {
+    versions: number;
+    samples: number;
+    assignments: number;
+    submissions: number;
+    labels: number;
+    evaluations: number;
+  };
+  projectArchived: boolean;
+  latestVersionId: string | null;
+  rootVersionId: string | null;
 };
 
 function normalizeProjectName(value?: string): string {
@@ -295,6 +314,164 @@ export class VersionService {
       promptId: params.promptId || (baseVersion.promptId ? String(baseVersion.promptId) : undefined),
       promptContentSnapshot: params.promptContentSnapshot ?? baseVersion.promptContentSnapshot,
     });
+  }
+
+  async deleteVersionTree(ownerId: string, versionId: string): Promise<DeleteVersionTreeResult> {
+    if (!mongoose.Types.ObjectId.isValid(versionId)) {
+      throw Object.assign(new Error('Invalid dataset version id.'), { statusCode: 400 });
+    }
+
+    const ownerObjectId = new mongoose.Types.ObjectId(ownerId);
+    const targetVersion = await DatasetVersion.findOne({
+      _id: new mongoose.Types.ObjectId(versionId),
+      ownerId: ownerObjectId,
+    }).lean();
+
+    if (!targetVersion) {
+      throw Object.assign(new Error('Dataset version not found.'), { statusCode: 404 });
+    }
+
+    const versionScopeQuery: Record<string, any> = { ownerId: ownerObjectId };
+    if (targetVersion.projectId) {
+      versionScopeQuery.projectId = targetVersion.projectId;
+    } else {
+      versionScopeQuery.projectName = targetVersion.projectName;
+    }
+
+    const scopedVersions = await DatasetVersion.find(versionScopeQuery)
+      .select('_id parentVersionId versionNo createdAt')
+      .lean();
+
+    const childrenByParentId = new Map<string, string[]>();
+    scopedVersions.forEach((version: any) => {
+      const parentId = version.parentVersionId ? String(version.parentVersionId) : null;
+      if (!parentId) {
+        return;
+      }
+      const current = childrenByParentId.get(parentId) || [];
+      current.push(String(version._id));
+      childrenByParentId.set(parentId, current);
+    });
+
+    const deletedVersionIdSet = new Set<string>();
+    const queue: string[] = [String(targetVersion._id)];
+    while (queue.length) {
+      const currentId = queue.shift() as string;
+      if (deletedVersionIdSet.has(currentId)) {
+        continue;
+      }
+      deletedVersionIdSet.add(currentId);
+      const childIds = childrenByParentId.get(currentId) || [];
+      childIds.forEach((childId) => {
+        if (!deletedVersionIdSet.has(childId)) {
+          queue.push(childId);
+        }
+      });
+    }
+
+    const deletedVersionIds = Array.from(deletedVersionIdSet);
+    const deletedVersionObjectIds = deletedVersionIds.map((id) => new mongoose.Types.ObjectId(id));
+
+    const sampleRows = await ProcessedDatasetItem.find({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    })
+      .select('_id')
+      .lean();
+    const deletedSampleIds = sampleRows.map((row: any) => String(row._id));
+    const deletedSampleObjectIds = deletedSampleIds.map((id) => new mongoose.Types.ObjectId(id));
+
+    const labelResult = deletedSampleObjectIds.length
+      ? await Label.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
+      : { deletedCount: 0 };
+    const evaluationResult = deletedSampleObjectIds.length
+      ? await EvaluationHistory.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
+      : { deletedCount: 0 };
+    const assignmentResult = await DatasetSampleAssignment.deleteMany({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    });
+    const submissionResult = await DatasetAssignmentSubmission.deleteMany({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    });
+    const sampleResult = await ProcessedDatasetItem.deleteMany({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    });
+    const versionResult = await DatasetVersion.deleteMany({
+      _id: { $in: deletedVersionObjectIds },
+      ownerId: ownerObjectId,
+    });
+
+    let projectArchived = false;
+    let latestVersionId: string | null = null;
+    let rootVersionId: string | null = null;
+
+    if (targetVersion.projectId) {
+      const remainingVersions = await DatasetVersion.find({
+        ownerId: ownerObjectId,
+        projectId: targetVersion.projectId,
+      })
+        .select('_id parentVersionId versionNo createdAt')
+        .lean();
+
+      if (!remainingVersions.length) {
+        projectArchived = true;
+        await DataPrepProject.updateOne(
+          { _id: targetVersion.projectId, ownerId: ownerObjectId },
+          {
+            $set: { isArchived: true },
+            $unset: { latestVersionId: 1, rootVersionId: 1 },
+          }
+        );
+      } else {
+        const remainingIdSet = new Set(remainingVersions.map((version: any) => String(version._id)));
+        const nextLatest = [...remainingVersions].sort((a: any, b: any) => {
+          const versionNoDiff = Number(b.versionNo || 0) - Number(a.versionNo || 0);
+          if (versionNoDiff !== 0) {
+            return versionNoDiff;
+          }
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        })[0];
+        const nextRoot =
+          remainingVersions.find((version: any) => {
+            if (!version.parentVersionId) {
+              return true;
+            }
+            return !remainingIdSet.has(String(version.parentVersionId));
+          }) ||
+          [...remainingVersions].sort(
+            (a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          )[0];
+
+        latestVersionId = nextLatest ? String(nextLatest._id) : null;
+        rootVersionId = nextRoot ? String(nextRoot._id) : null;
+
+        await DataPrepProject.updateOne(
+          { _id: targetVersion.projectId, ownerId: ownerObjectId },
+          {
+            $set: {
+              isArchived: false,
+              ...(latestVersionId ? { latestVersionId: new mongoose.Types.ObjectId(latestVersionId) } : {}),
+              ...(rootVersionId ? { rootVersionId: new mongoose.Types.ObjectId(rootVersionId) } : {}),
+            },
+          }
+        );
+      }
+    }
+
+    return {
+      deletedVersionIds,
+      deletedSampleIds,
+      deletedCounts: {
+        versions: versionResult.deletedCount || 0,
+        samples: sampleResult.deletedCount || 0,
+        assignments: assignmentResult.deletedCount || 0,
+        submissions: submissionResult.deletedCount || 0,
+        labels: labelResult.deletedCount || 0,
+        evaluations: evaluationResult.deletedCount || 0,
+      },
+      projectArchived,
+      latestVersionId,
+      rootVersionId,
+    };
   }
 }
 

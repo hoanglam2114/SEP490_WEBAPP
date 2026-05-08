@@ -7,6 +7,7 @@ export const dataprepApi = {
   createRefineAcceptCheckpoint: apiService.createRefineAcceptCheckpoint,
   updateDatasetVersionPrepareProgress: apiService.updateDatasetVersionPrepareProgress,
   getDatasetVersionDetail: apiService.getDatasetVersionDetail,
+  deleteDatasetVersion: apiService.deleteDatasetVersion,
   deleteDatasetVersionItem: apiService.deleteDatasetVersionItem,
   updateDatasetVersionVisibility: apiService.updateDatasetVersionVisibility,
   updateDatasetVersionSharing: apiService.updateDatasetVersionSharing,

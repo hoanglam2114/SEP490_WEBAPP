@@ -15,7 +15,7 @@ type BalanceDatasetPanelProps = {
   nextDisabled: boolean;
 };
 
-const SUBJECT_GROUPS: ClassificationGroup[] = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY'];
+const SUBJECT_GROUPS: ClassificationGroup[] = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY', 'OUT_OF_SCOPE'];
 
 const GROUP_LABELS: Record<ClassificationGroup, string> = {
   MATH: 'Math',
@@ -23,8 +23,6 @@ const GROUP_LABELS: Record<ClassificationGroup, string> = {
   CHEMISTRY: 'Chemistry',
   LITERATURE: 'Literature',
   BIOLOGY: 'Biology',
-  REJECT: 'Reject',
-  REWRITE: 'Rewrite',
   OUT_OF_SCOPE: 'Out of scope',
 };
 
@@ -67,8 +65,10 @@ export function BalanceDatasetPanel({
 
   const plan = useMemo(() => {
     const items = result?.items || [];
+    const hardRejectedIds = new Set(result?.hardRejectedSampleIds || []);
+    const eligibleItems = items.filter((item) => !hardRejectedIds.has(String(item.sampleId)));
     const byGroup = new Map<ClassificationGroup, ClassifiedItem[]>();
-    items.forEach((item) => {
+    eligibleItems.forEach((item) => {
       const list = byGroup.get(item.group) || [];
       list.push(item);
       byGroup.set(item.group, list);
@@ -92,11 +92,7 @@ export function BalanceDatasetPanel({
       };
     });
 
-    const rejectItems = items.filter((item) => item.group === 'REJECT');
-    const nonSubjectItems = items.filter((item) => !SUBJECT_GROUPS.includes(item.group) && item.group !== 'REJECT');
-    nonSubjectItems.forEach((item) => keepIds.add(item._id));
-
-    const keptItems = items.filter((item) => keepIds.has(item._id));
+    const keptItems = eligibleItems.filter((item) => keepIds.has(item._id));
     const removeCount = items.length - keptItems.length;
 
     return {
@@ -106,8 +102,7 @@ export function BalanceDatasetPanel({
       removeCount,
       originalCount: items.length,
       finalCount: keptItems.length,
-      otherCount: nonSubjectItems.length,
-      rejectCount: rejectItems.length,
+      hardRejectedCount: hardRejectedIds.size,
     };
   }, [result]);
 
@@ -196,7 +191,7 @@ export function BalanceDatasetPanel({
 
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <p>
-                This preview trims oversized subject groups and removes hard rejected samples. Other buckets are kept unchanged: {plan.otherCount} samples. Reject removed: {plan.rejectCount}.
+                This preview trims oversized subject groups across all 6 subject buckets and removes hard rejected samples separately. Hard reject removed: {plan.hardRejectedCount}.
               </p>
               <button
                 onClick={() => onApply(plan.keptItems, plan.removeCount)}

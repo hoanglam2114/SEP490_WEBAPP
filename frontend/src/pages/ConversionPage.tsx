@@ -96,6 +96,7 @@ type DisplayRow = {
   assistantText: string;
   conversationPairs?: Array<{ user: string; think?: string; assistant: string }>;
   groupId?: number;
+  qualityScore?: number | null;
 };
 
 type ClusterGroup = {
@@ -143,6 +144,7 @@ function recommendClusterK(
   const validSilhouette = silhouette.filter(
     (item) => Number.isFinite(item.k) && Number.isFinite(item.silhouette)
   );
+  const silhouetteByK = new Map(validSilhouette.map((item) => [item.k, item.silhouette]));
   const bestSilhouette = validSilhouette.reduce<{ k: number; silhouette: number } | null>((best, item) => {
     if (!best || item.silhouette > best.silhouette) {
       return item;
@@ -157,38 +159,105 @@ function recommendClusterK(
       : { recommendedK: null, recommendationReason: '' };
   }
 
-  const first = validElbow[0];
-  const last = validElbow[validElbow.length - 1];
-  const dx = last.k - first.k;
-  const dy = last.wcss - first.wcss;
-  const denominator = Math.sqrt(dx * dx + dy * dy) || 1;
-
-  const elbowCandidate = validElbow.reduce<{ k: number; distance: number } | null>((best, item) => {
-    const distance = Math.abs(dy * item.k - dx * item.wcss + last.k * first.wcss - last.wcss * first.k) / denominator;
-    if (!best || distance > best.distance) {
-      return { k: item.k, distance };
-    }
-    return best;
-  }, null);
-
   if (!bestSilhouette) {
+    const first = validElbow[0];
+    const last = validElbow[validElbow.length - 1];
+    const dx = last.k - first.k;
+    const dy = last.wcss - first.wcss;
+    const denominator = Math.sqrt(dx * dx + dy * dy) || 1;
+
+    const elbowCandidate = validElbow.reduce<{ k: number; distance: number } | null>((best, item) => {
+      const distance = Math.abs(dy * item.k - dx * item.wcss + last.k * first.wcss - last.wcss * first.k) / denominator;
+      if (!best || distance > best.distance) {
+        return { k: item.k, distance };
+      }
+      return best;
+    }, null);
+
     return elbowCandidate
       ? { recommendedK: elbowCandidate.k, recommendationReason: 'elbow point' }
       : { recommendedK: null, recommendationReason: '' };
   }
 
-  if (elbowCandidate && Math.abs(bestSilhouette.k - elbowCandidate.k) <= 1) {
+  const maxSilhouette = Math.max(...validSilhouette.map((item) => item.silhouette));
+  const maxWcss = Math.max(...validElbow.map((item) => item.wcss));
+  const minWcss = Math.min(...validElbow.map((item) => item.wcss));
+  const wcssRange = Math.max(1e-9, maxWcss - minWcss);
+  const maxDrop = validElbow.reduce((best, item, index) => {
+    const next = validElbow[index + 1];
+    if (!next) {
+      return best;
+    }
+    return Math.max(best, Math.max(0, item.wcss - next.wcss));
+  }, 0);
+
+  const candidates = validElbow.map((item, index) => {
+    const next = validElbow[index + 1];
+    const nextDrop = next ? Math.max(0, item.wcss - next.wcss) : 0;
+    const flattening = maxDrop > 0 ? 1 - (nextDrop / maxDrop) : 1;
+    const compactness = (maxWcss - item.wcss) / wcssRange;
+    const currentSilhouette = silhouetteByK.get(item.k);
+    const silhouetteRatio = currentSilhouette !== undefined && maxSilhouette > 0
+      ? currentSilhouette / maxSilhouette
+      : 0;
+
+    const localSilhouetteValues = [item.k - 1, item.k, item.k + 1]
+      .map((k) => silhouetteByK.get(k))
+      .filter((value): value is number => Number.isFinite(value));
+    const localMean = localSilhouetteValues.length
+      ? localSilhouetteValues.reduce((sum, value) => sum + value, 0) / localSilhouetteValues.length
+      : currentSilhouette ?? 0;
+    const localVariance = localSilhouetteValues.length
+      ? localSilhouetteValues.reduce((sum, value) => sum + Math.pow(value - localMean, 2), 0) / localSilhouetteValues.length
+      : 0;
+    const localStd = Math.sqrt(localVariance);
+    const silhouetteStability = maxSilhouette > 0
+      ? Math.max(0, 1 - localStd / maxSilhouette)
+      : 0;
+
+    const tradeoffScore =
+      flattening * 0.35 +
+      compactness * 0.25 +
+      silhouetteRatio * 0.2 +
+      silhouetteStability * 0.2;
+
     return {
-      recommendedK: elbowCandidate.k,
-      recommendationReason: 'elbow point confirmed by silhouette',
+      k: item.k,
+      flattening,
+      compactness,
+      silhouetteRatio,
+      silhouetteStability,
+      tradeoffScore,
+    };
+  });
+
+  const plateauCandidate = candidates.find((candidate) =>
+    candidate.silhouetteRatio >= 0.6 &&
+    candidate.flattening >= 0.9 &&
+    candidate.silhouetteStability >= 0.85
+  );
+
+  if (plateauCandidate) {
+    return {
+      recommendedK: plateauCandidate.k,
+      recommendationReason: 'stable plateau: silhouette remains strong while WCSS has flattened',
+    };
+  }
+
+  const balancedCandidate = candidates
+    .filter((candidate) => candidate.silhouetteRatio >= 0.55)
+    .sort((a, b) => b.tradeoffScore - a.tradeoffScore || a.k - b.k)[0];
+
+  if (balancedCandidate) {
+    return {
+      recommendedK: balancedCandidate.k,
+      recommendationReason: `best compactness/silhouette trade-off; silhouette peaks at K=${bestSilhouette.k}`,
     };
   }
 
   return {
-    recommendedK: elbowCandidate?.k ?? bestSilhouette.k,
-    recommendationReason: elbowCandidate
-      ? `elbow point prioritized; silhouette peaks at K=${bestSilhouette.k}`
-      : 'best silhouette score',
+    recommendedK: bestSilhouette.k,
+    recommendationReason: 'best silhouette score',
   };
 }
 
@@ -642,6 +711,7 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
         assistantText: pairs[0].assistant,
         conversationPairs: pairs,
         groupId: (conv as any).cluster,
+        qualityScore: normalizeNullableNumber((conv as any).qualityScore),
       });
     });
 
@@ -666,6 +736,7 @@ function buildDisplayRows(data: any[], mode: PreviewMode, removeThinkTags: boole
       thinkText: input,
       assistantText: output,
       groupId: (item as any).cluster,
+      qualityScore: normalizeNullableNumber((item as any).qualityScore),
     };
   });
 }
@@ -1134,7 +1205,7 @@ function IncompleteLabelingModal({
     <ActionModalFrame
       isOpen={isOpen}
       title="Incomplete Intent-Action labeling"
-      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. If you continue, those samples will be moved to Reject before entering the next step.`}
+      description={`There are ${status?.unlabeledSamples || 0} sample(s) without complete Intent-Action labels. If you continue, those samples will be moved to the Incomplete quality bucket before entering the next step.`}
       confirmText="Continue"
       isSubmitting={isSubmitting}
       onClose={onClose}
@@ -1144,10 +1215,10 @@ function IncompleteLabelingModal({
         Labeled: <span className="font-semibold">{status?.labeledSamples || 0}</span> / {status?.totalSamples || 0} samples
       </div>
 
-      <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
-        <p className="font-semibold">Action on continue: Reject incomplete samples</p>
-        <p className="mt-1 text-xs text-rose-700">
-          This keeps the pipeline moving forward, but all unlabeled samples will be excluded from the main accepted dataset.
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900">
+        <p className="font-semibold">Action on continue: Move incomplete samples to Incomplete</p>
+        <p className="mt-1 text-xs text-slate-700">
+          This keeps the pipeline moving forward, while keeping unlabeled samples separate from Gold, Rewrite, and Reject.
         </p>
       </div>
     </ActionModalFrame>
@@ -1677,11 +1748,12 @@ function ConvertedDatasetTable({
   const showRefineComparisonAction = Boolean(onRequestViewRefineChange);
   const showActionMenu = Boolean(showDeleteAction || onRequestManualEvaluate || onRequestViewHistory);
   const showSystemColumn = isFinishPreview;
+  const showQualityScoreColumn = rows.some((row) => row.qualityScore !== null && row.qualityScore !== undefined);
   const hideOpenAIMetricBreakdown = Boolean(isFinishPreview && mode === 'openai');
   const scoreColumnCount = showEvaluationColumns
     ? (hideOpenAIMetricBreakdown ? 1 : 4) + 2
     : 0;
-  const emptyColSpan = 3 + (showSystemColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
+  const emptyColSpan = 3 + (showSystemColumn ? 1 : 0) + (showQualityScoreColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
   const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
@@ -1855,6 +1927,7 @@ function ConvertedDatasetTable({
             <col className="w-[30%]" />
             <col className="w-[20%]" />
             <col className="w-[40%]" />
+            {showQualityScoreColumn && <col className="w-[96px]" />}
             {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
             {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
             {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
@@ -1875,6 +1948,9 @@ function ConvertedDatasetTable({
               <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'Assistant' : 'Output'}
               </th>
+              {showQualityScoreColumn && (
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">Quality</th>
+              )}
               {showEvaluationColumns && (
                 <>
                   {!hideOpenAIMetricBreakdown && (
@@ -1946,6 +2022,11 @@ function ConvertedDatasetTable({
 
                       {pairIndex === 0 && (
                         <>
+                          {showQualityScoreColumn && (
+                            <td className="px-4 py-3 text-gray-700 font-semibold align-top" rowSpan={pairs.length}>
+                              {formatTableScore(row.qualityScore)}
+                            </td>
+                          )}
                           {!hideOpenAIMetricBreakdown && (
                             <>
                               <td className="px-4 py-3 text-gray-700 align-top" rowSpan={pairs.length}>
@@ -2009,6 +2090,11 @@ function ConvertedDatasetTable({
                             onReadMore={(title, content) => setDetailModal({ title, content })}
                           />
                         </td>
+                        {showQualityScoreColumn && (
+                          <td className="px-4 py-3 text-gray-700 font-semibold">
+                            {pairIndex === 0 ? formatTableScore(row.qualityScore) : ''}
+                          </td>
+                        )}
                       </tr>
                     ));
                   })
@@ -2047,6 +2133,9 @@ function ConvertedDatasetTable({
                             onReadMore={(title, content) => setDetailModal({ title, content })}
                           />
                         </td>
+                        {showQualityScoreColumn && (
+                          <td className="px-4 py-3 text-gray-700 font-semibold">{formatTableScore(row.qualityScore)}</td>
+                        )}
                         {showEvaluationColumns && (
                           <>
                             {!hideOpenAIMetricBreakdown && (
@@ -2535,8 +2624,6 @@ export function ConversionPage() {
   const [activeProjectOwnerId, setActiveProjectOwnerId] = useState<string | null>(null);
   const [isCurrentVersionPublic, setIsCurrentVersionPublic] = useState(false);
   const [isTogglingVersionPublic, setIsTogglingVersionPublic] = useState(false);
-  const [selectedSharedUserId, setSelectedSharedUserId] = useState('');
-  const [isUpdatingVersionSharing, setIsUpdatingVersionSharing] = useState(false);
   const [communityShowRejectedSamples, setCommunityShowRejectedSamples] = useState(false);
   const [communityLoadedRejectedMode, setCommunityLoadedRejectedMode] = useState<boolean | null>(null);
   const [communityCounts, setCommunityCounts] = useState<{ visible: number; total: number; rejected: number }>({
@@ -2546,6 +2633,7 @@ export function ConversionPage() {
   });
   const [activeClassificationGroup, setActiveClassificationGroup] = useState<ClassificationGroup | null>(null);
   const [classifiedSamplesResult, setClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
+  const [allClassifiedSamplesResult, setAllClassifiedSamplesResult] = useState<ClassifiedSamplesResult | null>(null);
   const [activeQualityBucket, setActiveQualityBucket] = useState<QualityBucket | null>(null);
   const [qualitySamplesResult, setQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
   const [allQualitySamplesResult, setAllQualitySamplesResult] = useState<QualityClassificationResult | null>(null);
@@ -2618,6 +2706,7 @@ export function ConversionPage() {
   useEffect(() => {
     setActiveClassificationGroup(null);
     setClassifiedSamplesResult(null);
+    setAllClassifiedSamplesResult(null);
     setActiveQualityBucket(null);
     setQualitySamplesResult(null);
     setAllQualitySamplesResult(null);
@@ -2626,7 +2715,6 @@ export function ConversionPage() {
   useEffect(() => {
     if (!currentDatasetVersionId) {
       setIsCurrentVersionPublic(false);
-      setSelectedSharedUserId('');
       return;
     }
 
@@ -2640,12 +2728,10 @@ export function ConversionPage() {
         );
         if (!disposed) {
           setIsCurrentVersionPublic(Boolean(detail?.datasetVersion?.isPublic));
-          setSelectedSharedUserId(String(detail?.datasetVersion?.sharedWithUsers?.[0]?.id || ''));
         }
       } catch {
         if (!disposed) {
           setIsCurrentVersionPublic(false);
-          setSelectedSharedUserId('');
         }
       }
     };
@@ -2811,15 +2897,16 @@ export function ConversionPage() {
   }, [hiddenBalancedSampleKeySet, rowsWithClusterGroups]);
 
   const classificationFilteredRows = useMemo(() => {
-    const sourceItems = qualitySamplesResult?.items || classifiedSamplesResult?.items;
-    if (!sourceItems) return [];
-    const rawData = sourceItems.map((item) => ({
-      ...item.data,
-      sampleId: item.sampleId,
-      id: item._id,
-    }));
-    return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
-  }, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
+  const sourceItems = qualitySamplesResult?.items || classifiedSamplesResult?.items;
+  if (!sourceItems) return [];
+  const rawData = sourceItems.map((item) => ({
+    ...item.data,
+    sampleId: item.sampleId,
+    id: item._id,
+    qualityScore: 'score' in item ? item.score : null,
+  }));
+  return buildDisplayRows(rawData, previewMode, conversionOptions.removeThinkTags ?? true);
+}, [classifiedSamplesResult, qualitySamplesResult, previewMode, conversionOptions.removeThinkTags]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -2872,6 +2959,23 @@ export function ConversionPage() {
   useEffect(() => {
     let disposed = false;
 
+    const loadAllClassifiedSamples = async () => {
+      if (!currentDatasetVersionId || currentStep < 8 || currentStep > 11) {
+        return;
+      }
+
+      try {
+        const result = await apiService.getClassifiedSamples(currentDatasetVersionId);
+        if (!disposed) {
+          setAllClassifiedSamplesResult(result);
+        }
+      } catch {
+        if (!disposed) {
+          setAllClassifiedSamplesResult(null);
+        }
+      }
+    };
+
     const loadAllQualitySamples = async () => {
       if (!currentDatasetVersionId || currentStep < 8 || currentStep > 11) {
         return;
@@ -2892,6 +2996,7 @@ export function ConversionPage() {
       }
     };
 
+    loadAllClassifiedSamples();
     loadAllQualitySamples();
     return () => {
       disposed = true;
@@ -2912,23 +3017,27 @@ export function ConversionPage() {
     );
   }, [ownerAssignmentsQuery.data?.samples]);
 
-  const nonRejectQualitySampleIds = useMemo(() => {
+  const acceptedQualitySampleIds = useMemo(() => {
     if (!allQualitySamplesResult?.items?.length) {
       return null;
     }
+    const hardRejectedSampleIds = new Set(allClassifiedSamplesResult?.hardRejectedSampleIds || []);
     return new Set(
       allQualitySamplesResult.items
-        .filter((item) => item.bucket !== 'Reject')
+        .filter((item) => (
+          (item.bucket === 'Gold' || item.bucket === 'Rewrite')
+          && !hardRejectedSampleIds.has(String(item.sampleId || item._id))
+        ))
         .map((item) => String(item.sampleId || item._id))
     );
-  }, [allQualitySamplesResult]);
+  }, [allClassifiedSamplesResult, allQualitySamplesResult]);
 
   const evaluationRows = useMemo(() => {
     const filterRows = (rows: DisplayRow[]) => {
-      if (!nonRejectQualitySampleIds) {
+      if (!acceptedQualitySampleIds) {
         return rows;
       }
-      return rows.filter((row) => nonRejectQualitySampleIds.has(String(row.id)) || nonRejectQualitySampleIds.has(String(row.blockId)));
+      return rows.filter((row) => acceptedQualitySampleIds.has(String(row.id)) || acceptedQualitySampleIds.has(String(row.blockId)));
     };
 
     if (previewMode !== 'openai') {
@@ -2968,7 +3077,7 @@ export function ConversionPage() {
           groupId: groupByConversation.get(String(conv.conversation_id)),
         } as DisplayRow;
       }));
-  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode, rowsWithClusterGroups]);
+  }, [acceptedQualitySampleIds, conversionResult?.data, previewMode, rowsWithClusterGroups]);
 
   const pendingRewriteSampleCount = useMemo(() => (
     rewriteRows.filter((row) => row.turns.some((turn) => {
@@ -2985,21 +3094,21 @@ export function ConversionPage() {
       return [];
     }
 
-    if (!nonRejectQualitySampleIds) {
+    if (!acceptedQualitySampleIds) {
       return conversionResult.data;
     }
 
     if (previewMode === 'openai') {
       return normalizeOpenAIConversations(conversionResult.data).filter((conv) => (
-        nonRejectQualitySampleIds.has(String(conv.conversation_id))
+        acceptedQualitySampleIds.has(String(conv.conversation_id))
       ));
     }
 
     return conversionResult.data.filter((item: any, index: number) => {
       const rowId = String(item?.id ?? item?.sampleId ?? `alpaca-${index}`);
-      return nonRejectQualitySampleIds.has(rowId);
+      return acceptedQualitySampleIds.has(rowId);
     });
-  }, [conversionResult?.data, nonRejectQualitySampleIds, previewMode]);
+  }, [acceptedQualitySampleIds, conversionResult?.data, previewMode]);
 
   const splitGuardDatasetFingerprint = useMemo(
     () => JSON.stringify(currentPipelineExportData),
@@ -3375,26 +3484,6 @@ export function ConversionPage() {
       ...group,
       avgSimilarity: statByCluster.get(Number(group.groupId)) ?? group.avgSimilarity ?? null,
     }));
-  };
-
-  const handleUpdateVersionSharing = async (userId: string) => {
-    if (!currentDatasetVersionId || !canManageVersionVisibility || isUpdatingVersionSharing) {
-      return;
-    }
-
-    const previous = selectedSharedUserId;
-    try {
-      setSelectedSharedUserId(userId);
-      setIsUpdatingVersionSharing(true);
-      const response = await dataprepApi.updateDatasetVersionSharing(currentDatasetVersionId, userId || null);
-      setSelectedSharedUserId(String(response?.datasetVersion?.sharedWithUsers?.[0]?.id || ''));
-      toast.success(response?.message || 'Updated sharing permission.');
-    } catch (error: any) {
-      setSelectedSharedUserId(previous);
-      toast.error(error?.response?.data?.error || error?.message || 'Failed to update sharing permission.');
-    } finally {
-      setIsUpdatingVersionSharing(false);
-    }
   };
 
   const convertMutation = useMutation({
@@ -3909,6 +3998,7 @@ export function ConversionPage() {
     setAutoLabelSuggestionsByProvider({});
     setAutoLabelsSaved(false);
     setAutoLabelFilterGroupId(null);
+    setAllClassifiedSamplesResult(null);
     setAllQualitySamplesResult(null);
     const nextMap: Record<string, number> = {};
     if (previewMode === 'openai') {
@@ -4115,7 +4205,7 @@ export function ConversionPage() {
       acceptedRewriteRowIds: [],
     }));
     resetRewriteSession();
-    toast.success(`Balanced dataset applied. Removed ${removedCount} oversized subject samples.`);
+    toast.success(`Balanced dataset applied. Removed ${removedCount} sample(s) from the working set.`);
   };
 
   const handleResetBalancedWorkingSet = () => {
@@ -4862,9 +4952,9 @@ export function ConversionPage() {
 
     setIsSavingIncompleteBucket(true);
     try {
-      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, 'Reject');
+      const result = await apiService.updateLabelingIncompleteBucket(currentDatasetVersionId, 'Incomplete');
       await labelingIntentStatusQuery.refetch();
-      toast.success(result.message || 'Incomplete samples will be treated as Reject.');
+      toast.success(result.message || 'Incomplete samples will be placed in Incomplete.');
       setIsIncompleteLabelingModalOpen(false);
       await continuePrepareAtStageStart(PREPARE_STAGE_RESUME_STEPS.classification);
     } catch (error: any) {
@@ -4916,12 +5006,16 @@ export function ConversionPage() {
     }
 
     const rewriteQualifiedKeys = new Set(pipelineWorkingSession.acceptedRewriteRowIds);
+    const hardRejectedKeys = new Set(allClassifiedSamplesResult?.hardRejectedSampleIds || []);
     const qualityByKey = new Map(
       (allQualitySamplesResult?.items || []).map((item) => [String(item.sampleId), item.bucket])
     );
 
     const eligibleRows = rowsWithClusterGroups.filter((row) => {
       const key = resolveEvaluationKey(row);
+      if (hardRejectedKeys.has(key)) {
+        return false;
+      }
       const bucket = qualityByKey.get(key);
       if (!bucket) {
         return false;
@@ -4951,8 +5045,11 @@ export function ConversionPage() {
           includeGold: true,
           includeRewriteOnlyIfAccepted: true,
           excludeReject: true,
+          excludeIncomplete: true,
+          excludeHardReject: true,
         },
         rewriteIncludedSampleKeys: Array.from(rewriteQualifiedKeys),
+        hardRejectedSampleKeys: Array.from(hardRejectedKeys),
       },
     });
 
@@ -5102,6 +5199,7 @@ export function ConversionPage() {
       setRefineComparisonView(null);
       setActiveClassificationGroup(null);
       setClassifiedSamplesResult(null);
+      setAllClassifiedSamplesResult(null);
       setActiveQualityBucket(null);
       setQualitySamplesResult(null);
       setAllQualitySamplesResult(null);
@@ -5656,9 +5754,6 @@ export function ConversionPage() {
           isTogglingVersionPublic={isTogglingVersionPublic}
           onToggleVersionVisibility={handleToggleVersionVisibility}
           shareUsers={shareUsersQuery.data?.users || []}
-          selectedSharedUserId={selectedSharedUserId}
-          isUpdatingVersionSharing={isUpdatingVersionSharing}
-          onUpdateVersionSharing={handleUpdateVersionSharing}
           onBack={() => setCurrentStep(5)}
           onNext={() => setCurrentStep(7)}
         />
@@ -5730,8 +5825,8 @@ export function ConversionPage() {
                 fromCommunityHub={isProjectLabelingRoute}
                 datasetVersionId={currentDatasetVersionId || undefined}
                 assignmentSubmissionEnabled={isGuestMode}
-                lockInteractions={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute}
-                lockReason={isOwnerInCommunityHub && !isOwnerManagedCommunityRoute ? 'Owner cannot add/vote from Community Hub route. Use normal workflow to vote.' : ''}
+                lockInteractions={false}
+                lockReason=""
               />
             )}
           />
