@@ -335,30 +335,35 @@ const RunCard: React.FC<{
       {/* Progress bar (active only, always visible) */}
       {isActive && (
         <div className="px-4 pb-3">
-          {/* Stage steps */}
+          {/* Stage steps — dùng stage thực từ backend, không đoán qua pct */}
           <div className="flex gap-1 mb-2">
-            {Object.entries({
-              Warmup: 10,
-              Replay: 35,
-              Judging: 75,
-              Finalize: 98,
-            }).map(([label, threshold]) => {
-              const pct = run.progress?.pct ?? 0;
-              const done = pct >= threshold;
-              const active = pct >= threshold - 25 && pct < threshold;
-              return (
-                <div key={label} className="flex-1">
-                  <div
-                    className={`h-0.5 rounded-full mb-1 transition-all duration-500 ${done ? "bg-emerald-400" : active ? "bg-blue-400" : "bg-slate-200"}`}
-                  />
-                  <p
-                    className={`text-[9px] text-center truncate ${done ? "text-emerald-600" : active ? "text-blue-500" : "text-slate-300"}`}
-                  >
-                    {label}
-                  </p>
-                </div>
+            {(() => {
+              const STAGE_ORDER: EvalStageKey[] = ["warmup", "replay", "judge", "finalize"];
+              const STAGE_LABELS: Record<EvalStageKey, string> = {
+                warmup: "Warmup", replay: "Replay", judge: "Judging",
+                finalize: "Finalize", rubric: "Judging", unknown: "...",
+              };
+              const currentStage = detectEvalStage((run.progress as Record<string, unknown>) ?? {});
+              const currentIdx = STAGE_ORDER.indexOf(
+                currentStage === "rubric" ? "judge" : currentStage === "unknown" ? "warmup" : currentStage
               );
-            })}
+              return STAGE_ORDER.map((stageKey, idx) => {
+                const done = idx < currentIdx;
+                const active = idx === currentIdx;
+                return (
+                  <div key={stageKey} className="flex-1">
+                    <div
+                      className={`h-0.5 rounded-full mb-1 transition-all duration-500 ${done ? "bg-emerald-400" : active ? "bg-blue-400" : "bg-slate-200"}`}
+                    />
+                    <p
+                      className={`text-[9px] text-center truncate ${done ? "text-emerald-600" : active ? "text-blue-500" : "text-slate-300"}`}
+                    >
+                      {STAGE_LABELS[stageKey]}
+                    </p>
+                  </div>
+                );
+              });
+            })()}
           </div>
           <div className="flex items-center gap-2">
             <div className="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
