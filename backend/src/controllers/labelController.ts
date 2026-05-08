@@ -173,7 +173,7 @@ async function assertLabelAccessBySampleId(sampleId: string, userId: string, req
   }
 }
 
-async function assertLabelReadAccessBySampleId(sampleId: string, userId: string): Promise<void> {
+async function getSampleAccessForRead(sampleId: string, userId: string): Promise<SampleAccess> {
   const access = await getSampleAccessBySampleId(sampleId);
   if (!access) {
     const error = new Error('Sample not found');
@@ -194,6 +194,8 @@ async function assertLabelReadAccessBySampleId(sampleId: string, userId: string)
     (error as any).statusCode = 403;
     throw error;
   }
+
+  return access;
 }
 
 async function assertLabelAccessByLabelId(labelId: string, userId: string, req: Request): Promise<void> {
@@ -313,9 +315,12 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    await assertLabelReadAccessBySampleId(sampleId, userId);
+    const access = await getSampleAccessForRead(sampleId, userId);
+    const isOwner = access.ownerId === String(userId);
 
     const scope = normalizeQueryScope(req.query.scope);
+    const includeUnvoted = String(req.query.includeUnvoted || '').toLowerCase() === 'true';
+    const createdBy = String(req.query.createdBy || '').trim();
     const query: Record<string, any> = {
       sampleId: new mongoose.Types.ObjectId(sampleId),
     };
@@ -335,12 +340,26 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       }
     }
 
+    if (createdBy) {
+      if (!mongoose.Types.ObjectId.isValid(createdBy)) {
+        res.status(400).json({ error: 'Invalid createdBy' });
+        return;
+      }
+      if (!isOwner && createdBy !== String(userId)) {
+        res.status(403).json({ error: 'Forbidden: cannot filter labels by another user.' });
+        return;
+      }
+      query.createdBy = new mongoose.Types.ObjectId(createdBy);
+    }
+
     const labels = await Label.find(query)
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 })
       .lean();
 
-    const visibleLabels = labels.filter((label) => hasAnyVotes(label));
+    const visibleLabels = includeUnvoted && isOwner
+      ? labels
+      : labels.filter((label) => hasAnyVotes(label));
     const result = visibleLabels.map((label) => formatLabel(label, userId));
 
     res.status(200).json({ labels: result });

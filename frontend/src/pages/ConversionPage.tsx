@@ -5651,6 +5651,7 @@ export function ConversionPage() {
         <ShareAssignPanel
           versionId={currentDatasetVersionId || ''}
           canManage={canManageVersionVisibility}
+          disableBack={isOwnerManagedCommunityRoute}
           isCurrentVersionPublic={isCurrentVersionPublic}
           isTogglingVersionPublic={isTogglingVersionPublic}
           onToggleVersionVisibility={handleToggleVersionVisibility}

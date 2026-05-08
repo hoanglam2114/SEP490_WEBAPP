@@ -388,6 +388,7 @@ export class MessageAutoLabelingService {
       sampleId: sampleOid,
       targetScope: 'message',
       type: 'hard',
+      createdBy: userOid,
       $or: candidates.map((candidate) => ({
         messageIndex: candidate.messageIndex,
         messageRole: candidate.messageRole,

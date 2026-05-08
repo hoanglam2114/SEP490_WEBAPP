@@ -13,6 +13,7 @@ router.patch('/:id/prepare-progress', (req, res) => controller.updatePrepareProg
 router.patch('/:id/visibility', (req, res) => controller.updateVisibility(req, res));
 router.patch('/:id/share', (req, res) => controller.updateSharing(req, res));
 router.get('/:id/assignments', (req, res) => controller.getAssignments(req, res));
+router.get('/:id/assignments/users/:userId/detail', (req, res) => controller.getUserAssignmentDetail(req, res));
 router.get('/:id/assignments/me/status', (req, res) => controller.getMyAssignmentStatus(req, res));
 router.post('/:id/assignments/me/submit', (req, res) => controller.submitMyAssignment(req, res));
 router.post('/:id/assignments/range', (req, res) => controller.assignRange(req, res));

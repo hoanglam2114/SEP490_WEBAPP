@@ -36,6 +36,10 @@ export class DataPrepVersionController {
     return legacyEvaluationController.assignDatasetVersionRange(req, res);
   }
 
+  async getUserAssignmentDetail(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getDatasetVersionUserAssignmentDetail(req, res);
+  }
+
   async clearAssignmentRange(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.clearDatasetVersionAssignmentRange(req, res);
   }

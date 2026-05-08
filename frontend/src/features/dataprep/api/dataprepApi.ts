@@ -11,6 +11,7 @@ export const dataprepApi = {
   updateDatasetVersionVisibility: apiService.updateDatasetVersionVisibility,
   updateDatasetVersionSharing: apiService.updateDatasetVersionSharing,
   getDatasetVersionAssignments: apiService.getDatasetVersionAssignments,
+  getDatasetVersionUserAssignmentDetail: apiService.getDatasetVersionUserAssignmentDetail,
   getMyAssignmentSubmissionStatus: apiService.getMyAssignmentSubmissionStatus,
   submitMyAssignment: apiService.submitMyAssignment,
   approveAssignmentSubmission: apiService.approveAssignmentSubmission,

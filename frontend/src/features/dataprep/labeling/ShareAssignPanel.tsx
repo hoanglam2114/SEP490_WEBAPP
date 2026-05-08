@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
+import { CheckCircle, ChevronLeft, ChevronRight, Eye, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
 import type { DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
+import { AssignmentSubmissionDetailModal } from './AssignmentSubmissionDetailModal';
 
 type ShareAssignPanelProps = {
   versionId: string;
   canManage: boolean;
+  disableBack?: boolean;
   isCurrentVersionPublic: boolean;
   isTogglingVersionPublic: boolean;
   onToggleVersionVisibility: () => void;
@@ -22,6 +24,7 @@ type ShareAssignPanelProps = {
 export function ShareAssignPanel({
   versionId,
   canManage,
+  disableBack = false,
   isCurrentVersionPublic,
   isTogglingVersionPublic,
   onToggleVersionVisibility,
@@ -39,6 +42,7 @@ export function ShareAssignPanel({
   const [clearStartIndex, setClearStartIndex] = useState('1');
   const [clearCount, setClearCount] = useState('20');
   const [conflictMessage, setConflictMessage] = useState('');
+  const [reviewAssignee, setReviewAssignee] = useState<ShareUser | null>(null);
 
   const assignmentsQuery = useQuery<DatasetAssignmentsResponse>({
     queryKey: ['dataset-version-assignments', versionId],
@@ -135,7 +139,16 @@ export function ShareAssignPanel({
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-sm font-semibold text-slate-900">Share & Assign is available only to the project owner.</p>
         <div className="mt-4 flex justify-between">
-          <button type="button" onClick={onBack} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+          <button
+            type="button"
+            onClick={disableBack ? undefined : onBack}
+            disabled={disableBack}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ${
+              disableBack
+                ? 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
             <ChevronLeft className="h-4 w-4" />
             Back
           </button>
@@ -290,17 +303,28 @@ export function ShareAssignPanel({
                     >
                       {item.submission?.status || 'draft'} · {item.submission?.progress?.completedMessages || 0}/{item.submission?.progress?.requiredMessages || 0}
                     </span>
-                    {item.submission?.status === 'submitted' && (
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => approveMutation.mutate(item.user.id)}
-                        disabled={approveMutation.isPending}
-                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                        onClick={() => setReviewAssignee(item.user)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                        title="View assignment labeling detail"
                       >
-                        {approveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
-                        Approve
+                        <Eye className="h-3 w-3" />
+                        View
                       </button>
-                    )}
+                      {item.submission?.status === 'submitted' && (
+                        <button
+                          type="button"
+                          onClick={() => approveMutation.mutate(item.user.id)}
+                          disabled={approveMutation.isPending}
+                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                        >
+                          {approveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
+                          Approve
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {item.submission?.submittedAt && (
                     <p className="mt-1 text-[10px] text-slate-400">
@@ -353,7 +377,16 @@ export function ShareAssignPanel({
       </div>
 
       <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-        <button type="button" onClick={onBack} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+        <button
+          type="button"
+          onClick={disableBack ? undefined : onBack}
+          disabled={disableBack}
+          className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ${
+            disableBack
+              ? 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
           <ChevronLeft className="h-4 w-4" />
           Back
         </button>
@@ -362,6 +395,13 @@ export function ShareAssignPanel({
           <ChevronRight className="h-4 w-4" />
         </button>
       </div>
+
+      <AssignmentSubmissionDetailModal
+        isOpen={Boolean(reviewAssignee)}
+        versionId={versionId}
+        assignee={reviewAssignee}
+        onClose={() => setReviewAssignee(null)}
+      />
     </div>
   );
 }

@@ -1481,6 +1481,94 @@ export class EvaluationController {
     }
   }
 
+  async getDatasetVersionUserAssignmentDetail(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, userId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc userId không hợp lệ.' });
+        return;
+      }
+
+      const [version, assignee] = await Promise.all([
+        DatasetVersion.findOne({ _id: id, ownerId }).lean(),
+        User.findById(userId).select('_id name email').lean(),
+      ]);
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+      if (!assignee) {
+        res.status(404).json({ error: 'Không tìm thấy user được gán.' });
+        return;
+      }
+
+      const assignments = await DatasetSampleAssignment.find({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      })
+        .sort({ sampleIndex: 1 })
+        .lean();
+
+      const sampleIds = assignments.map((item: any) => item.sampleId);
+      const samples = sampleIds.length
+        ? await ProcessedDatasetItem.find({ _id: { $in: sampleIds } }).lean()
+        : [];
+      const sampleMap = new Map(samples.map((sample: any) => [String(sample._id), sample]));
+      const submission = await DatasetAssignmentSubmission.findOne({
+        datasetVersionId: version._id,
+        assigneeId: new mongoose.Types.ObjectId(userId),
+      }).lean();
+      const progress = await calculateAssignmentProgress(version._id, userId);
+
+      const detailSamples = assignments
+        .map((assignment: any) => {
+          const sample = sampleMap.get(String(assignment.sampleId));
+          if (!sample) {
+            return null;
+          }
+
+          const messages = getLogicalMessagesForAssignment(sample);
+          const preview = messages.map((message) => message.content).join(' ').trim().slice(0, 180);
+          return {
+            sampleId: String(sample._id),
+            sampleKey: String(sample.sampleId || ''),
+            sampleIndex: Number(assignment.sampleIndex),
+            preview,
+            messages,
+          };
+        })
+        .filter(Boolean);
+
+      res.json({
+        datasetVersion: {
+          _id: String(version._id),
+          projectName: version.projectName,
+          versionName: version.versionName,
+          totalSamples: detailSamples.length,
+        },
+        assignee: {
+          id: String(assignee._id),
+          name: String((assignee as any).name || ''),
+          email: String((assignee as any).email || ''),
+        },
+        submission: formatSubmission(submission, progress),
+        samples: detailSamples,
+      });
+    } catch (error: any) {
+      console.error('Get dataset version user assignment detail error:', error);
+      res.status(500).json({
+        error: 'Lấy chi tiết kết quả gán nhãn thất bại',
+        details: error.message,
+      });
+    }
+  }
+
   async assignDatasetVersionRange(req: Request, res: Response): Promise<void> {
     try {
       const ownerId = getAuthUserId(req);

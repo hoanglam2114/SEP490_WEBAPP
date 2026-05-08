@@ -163,6 +163,30 @@ export type DatasetAssignmentsResponse = {
   };
 };
 
+export type DatasetAssignmentDetailSample = {
+  sampleId: string;
+  sampleKey: string;
+  sampleIndex: number;
+  preview: string;
+  messages: Array<{
+    messageIndex: number;
+    role: 'user' | 'assistant';
+    content: string;
+  }>;
+};
+
+export type DatasetAssignmentDetailResponse = {
+  datasetVersion: {
+    _id: string;
+    projectName: string;
+    versionName: string;
+    totalSamples: number;
+  };
+  assignee: ShareUser;
+  submission: AssignmentSubmissionStatus;
+  samples: DatasetAssignmentDetailSample[];
+};
+
 type ClusterResponse = {
   data: any[];
   groups: any[];
@@ -861,6 +885,14 @@ export const apiService = {
     return response.data;
   },
 
+  getDatasetVersionUserAssignmentDetail: async (
+    id: string,
+    userId: string
+  ): Promise<DatasetAssignmentDetailResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/users/${userId}/detail`);
+    return response.data;
+  },
+
   getMyAssignmentSubmissionStatus: async (id: string): Promise<AssignmentSubmissionStatus> => {
     const response = await api.get(`/dataprep/versions/${id}/assignments/me/status`);
     return response.data;
@@ -905,7 +937,7 @@ export const apiService = {
 
   getSampleLabels: async (
     sampleId: string,
-    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number }
+    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number; createdBy?: string; includeUnvoted?: boolean }
   ): Promise<{ labels: any[] }> => {
     const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
     return response.data;
