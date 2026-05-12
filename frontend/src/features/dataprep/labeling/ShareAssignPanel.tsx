@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, ChevronLeft, ChevronRight, Eye, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ChevronLeft, ChevronRight, Eye, Gauge, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
-import type { DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
+import type { AssignmentDashboardResponse, DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
 import { AssignmentSubmissionDetailModal } from './AssignmentSubmissionDetailModal';
+import { AssignmentConflictComparisonModal } from './AssignmentConflictComparisonModal';
 
 type ShareAssignPanelProps = {
   versionId: string;
@@ -37,15 +38,25 @@ export function ShareAssignPanel({
   const [clearCount, setClearCount] = useState('20');
   const [conflictMessage, setConflictMessage] = useState('');
   const [reviewAssignee, setReviewAssignee] = useState<ShareUser | null>(null);
+  const [comparisonSampleId, setComparisonSampleId] = useState<string | null>(null);
 
   const assignmentsQuery = useQuery<DatasetAssignmentsResponse>({
     queryKey: ['dataset-version-assignments', versionId],
     queryFn: () => dataprepApi.getDatasetVersionAssignments(versionId),
     enabled: Boolean(versionId && canManage),
+    refetchInterval: 10000,
+  });
+
+  const dashboardQuery = useQuery<AssignmentDashboardResponse>({
+    queryKey: ['dataset-version-assignment-dashboard', versionId],
+    queryFn: () => dataprepApi.getDatasetVersionAssignmentDashboard(versionId),
+    enabled: Boolean(versionId && canManage),
+    refetchInterval: 10000,
   });
 
   const invalidateAssignments = () => {
     queryClient.invalidateQueries({ queryKey: ['dataset-version-assignments', versionId] });
+    queryClient.invalidateQueries({ queryKey: ['dataset-version-assignment-dashboard', versionId] });
   };
 
   const assignMutation = useMutation({
@@ -107,9 +118,11 @@ export function ShareAssignPanel({
   });
 
   const samples = assignmentsQuery.data?.samples || [];
-  const totals = assignmentsQuery.data?.totals || { totalSamples: 0, assigned: 0, unassigned: 0 };
+  const totals = assignmentsQuery.data?.totals || { totalSamples: 0, assigned: 0, unassigned: 0, pendingConflicts: 0 };
   const summary = assignmentsQuery.data?.summary || [];
   const isRefreshingAssignments = assignmentsQuery.isFetching && !assignmentsQuery.isLoading;
+  const dashboard = dashboardQuery.data;
+  const conflicts = dashboard?.conflicts || [];
 
   const selectedRangeLabel = useMemo(() => {
     const start = Number(startIndex);
@@ -185,6 +198,33 @@ export function ShareAssignPanel({
               {isTogglingVersionPublic ? 'Saving...' : isCurrentVersionPublic ? 'Public: ON' : 'Public: OFF'}
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-6">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Assigned</p>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{dashboard?.overview.totalAssignedSamples ?? totals.assigned}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Assignees</p>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{dashboard?.overview.totalAssignees ?? summary.length}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">In Progress</p>
+          <p className="mt-2 text-2xl font-bold text-amber-700">{dashboard?.overview.inProgressAssignees ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Submitted</p>
+          <p className="mt-2 text-2xl font-bold text-blue-700">{dashboard?.overview.submittedAssignees ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Approved</p>
+          <p className="mt-2 text-2xl font-bold text-emerald-700">{dashboard?.overview.approvedAssignees ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Conflicts</p>
+          <p className="mt-2 text-2xl font-bold text-rose-700">{dashboard?.overview.pendingConflicts ?? totals.pendingConflicts ?? 0}</p>
         </div>
       </div>
 
@@ -319,6 +359,63 @@ export function ShareAssignPanel({
               {!summary.length && <p className="text-xs text-slate-500">No assignments yet.</p>}
             </div>
           </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-blue-600" />
+              <h3 className="text-sm font-semibold text-slate-900">Realtime Productivity</h3>
+            </div>
+            <div className="mt-3 space-y-2">
+              {(dashboard?.users || []).map((item) => (
+                <div key={item.user.id} className="rounded-lg border border-slate-200 px-3 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-900">{item.user.name}</p>
+                      <p className="truncate text-[11px] text-slate-500">{item.user.email}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                      {item.labelsPerHour} label/h
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-600">
+                    {item.completedTargets}/{item.totalTargets} targets · {item.completionPercent}% · {item.assignedSamples} samples
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Latest: {item.latestActivityAt ? new Date(item.latestActivityAt).toLocaleString() : 'No activity yet'}
+                  </p>
+                </div>
+              ))}
+              {!dashboard?.users?.length && <p className="text-xs text-slate-500">No productivity data yet.</p>}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-rose-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-rose-600" />
+              <h3 className="text-sm font-semibold text-slate-900">Pending Conflicts</h3>
+            </div>
+            <div className="mt-3 space-y-2">
+              {conflicts.map((item) => (
+                <button
+                  key={item.sampleId}
+                  type="button"
+                  onClick={() => setComparisonSampleId(item.sampleId)}
+                  className="w-full rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-left hover:bg-rose-100"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-rose-900">#{item.sampleIndex} · {item.sampleKey}</p>
+                    <span className="rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                      {item.pendingAdjudicationCount} pending
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-rose-700">
+                    IAA {typeof item.agreementScore === 'number' ? item.agreementScore.toFixed(2) : 'N/A'} · {item.assigneeCount} annotators
+                  </p>
+                </button>
+              ))}
+              {!conflicts.length && <p className="text-xs text-slate-500">No conflicts detected.</p>}
+            </div>
+          </section>
         </div>
 
         <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -333,11 +430,28 @@ export function ShareAssignPanel({
               </div>
             )}
             {!assignmentsQuery.isLoading && samples.map((sample) => (
-              <div key={sample.sampleId} className="grid grid-cols-[70px_1fr_220px] gap-3 border-b border-slate-100 px-4 py-3 text-sm">
+              <div key={sample.sampleId} className={`grid grid-cols-[70px_1fr_220px] gap-3 border-b px-4 py-3 text-sm ${sample.hasConflict ? 'border-rose-100 bg-rose-50/40' : 'border-slate-100'}`}>
                 <span className="font-semibold text-slate-600">#{sample.sampleIndex}</span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold text-slate-800">{sample.sampleKey}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-xs font-semibold text-slate-800">{sample.sampleKey}</p>
+                    {sample.hasConflict && (
+                      <button
+                        type="button"
+                        onClick={() => setComparisonSampleId(sample.sampleId)}
+                        className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
+                      >
+                        <AlertTriangle className="h-3 w-3" />
+                        Conflict
+                      </button>
+                    )}
+                  </div>
                   <p className="mt-1 line-clamp-2 text-xs text-slate-500">{sample.preview || '-'}</p>
+                  {sample.hasConflict && (
+                    <p className="mt-1 text-[10px] text-rose-600">
+                      IAA {typeof sample.lowestAgreementScore === 'number' ? sample.lowestAgreementScore.toFixed(2) : 'N/A'} · {sample.pendingAdjudicationCount || 0} pending adjudication
+                    </p>
+                  )}
                 </div>
                 <div className="min-w-0 text-right">
                   {sample.assignees && sample.assignees.length > 0 ? (
@@ -384,6 +498,16 @@ export function ShareAssignPanel({
         versionId={versionId}
         assignee={reviewAssignee}
         onClose={() => setReviewAssignee(null)}
+      />
+      <AssignmentConflictComparisonModal
+        isOpen={Boolean(comparisonSampleId)}
+        versionId={versionId}
+        sampleId={comparisonSampleId}
+        onClose={() => setComparisonSampleId(null)}
+        onResolved={() => {
+          invalidateAssignments();
+          dashboardQuery.refetch();
+        }}
       />
     </div>
   );

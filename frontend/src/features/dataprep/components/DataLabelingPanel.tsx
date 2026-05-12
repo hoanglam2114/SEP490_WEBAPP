@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import {
-  ThumbsUp,
-  ThumbsDown,
   ChevronLeft,
   ChevronRight,
   Tag,
@@ -34,7 +32,6 @@ import {
 import { dataprepApi } from '../api/dataprepApi';
 import { getAuthUserId } from '../../../services/authSession';
 
-type VoteType = 'up' | 'down';
 type AiProvider = 'gemini' | 'openai' | 'deepseek';
 
 type LabelItem = {
@@ -50,13 +47,13 @@ type LabelItem = {
     name: string;
     email: string;
   };
-  upvotes?: string[];
-  downvotes?: string[];
-  score: number;
-  upvoteCount: number;
-  downvoteCount: number;
-  hasVoted: boolean;
-  userVoteType: VoteType | null;
+  assignedUserCount: number;
+  assignedByCurrentUser: boolean;
+  assignedUsers?: Array<{
+    id: string;
+    name: string;
+    email: string;
+  }>;
 };
 
 type ChatMessage = {
@@ -248,12 +245,6 @@ function getErrorMessage(error: any, fallback: string): string {
 }
 
 function normalizeLabel(label: any): LabelItem {
-  const upvotes = Array.isArray(label?.upvotes) ? label.upvotes.map(String) : [];
-  const downvotes = Array.isArray(label?.downvotes) ? label.downvotes.map(String) : [];
-  const upvoteCount = Number(label?.upvoteCount ?? upvotes.length ?? 0);
-  const downvoteCount = Number(label?.downvoteCount ?? downvotes.length ?? 0);
-  const userVoteType = (label?.userVoteType || null) as VoteType | null;
-
   return {
     _id: String(label?._id || ''),
     name: String(label?.name || ''),
@@ -262,13 +253,15 @@ function normalizeLabel(label: any): LabelItem {
     messageIndex: Number.isInteger(label?.messageIndex) ? Number(label.messageIndex) : undefined,
     messageRole: label?.messageRole === 'user' || label?.messageRole === 'assistant' ? label.messageRole : undefined,
     targetTextSnapshot: typeof label?.targetTextSnapshot === 'string' ? label.targetTextSnapshot : undefined,
-    upvotes,
-    downvotes,
-    score: Number(label?.score ?? upvoteCount - downvoteCount),
-    upvoteCount,
-    downvoteCount,
-    hasVoted: Boolean(label?.hasVoted ?? userVoteType),
-    userVoteType,
+    assignedUserCount: Number(label?.assignedUserCount || 0),
+    assignedByCurrentUser: Boolean(label?.assignedByCurrentUser),
+    assignedUsers: Array.isArray(label?.assignedUsers)
+      ? label.assignedUsers.map((user: any) => ({
+          id: String(user?.id || ''),
+          name: String(user?.name || ''),
+          email: String(user?.email || ''),
+        }))
+      : undefined,
     creator: label?.creator ? {
       id: String(label.creator.id || ''),
       name: String(label.creator.name || ''),
@@ -285,55 +278,6 @@ function suggestionLabels(suggestion?: MessageAutoLabelSuggestion): string[] {
   return labels
     .map((label) => String(label || '').trim().toUpperCase())
     .filter(Boolean);
-}
-
-function applyOptimisticVote(label: LabelItem, voteAction: VoteType, currentUserId: string): LabelItem {
-  if (!currentUserId) {
-    return label;
-  }
-
-  const upvotes = [...(label.upvotes || [])];
-  const downvotes = [...(label.downvotes || [])];
-  const hasUp = upvotes.includes(currentUserId);
-  const hasDown = downvotes.includes(currentUserId);
-
-  let nextUpvotes = upvotes;
-  let nextDownvotes = downvotes;
-
-  if (voteAction === 'up') {
-    if (hasUp) {
-      nextUpvotes = upvotes.filter((id) => id !== currentUserId);
-    } else {
-      nextUpvotes = [...upvotes, currentUserId];
-      nextDownvotes = downvotes.filter((id) => id !== currentUserId);
-    }
-  } else {
-    if (hasDown) {
-      nextDownvotes = downvotes.filter((id) => id !== currentUserId);
-    } else {
-      nextDownvotes = [...downvotes, currentUserId];
-      nextUpvotes = upvotes.filter((id) => id !== currentUserId);
-    }
-  }
-
-  const upvoteCount = nextUpvotes.length;
-  const downvoteCount = nextDownvotes.length;
-  const userVoteType: VoteType | null = nextUpvotes.includes(currentUserId)
-    ? 'up'
-    : nextDownvotes.includes(currentUserId)
-      ? 'down'
-      : null;
-
-  return {
-    ...label,
-    upvotes: nextUpvotes,
-    downvotes: nextDownvotes,
-    upvoteCount,
-    downvoteCount,
-    score: upvoteCount - downvoteCount,
-    hasVoted: Boolean(userVoteType),
-    userVoteType,
-  };
 }
 
 export function DataLabelingPanel({
@@ -424,7 +368,7 @@ export function DataLabelingPanel({
   const effectiveLockReason = assignmentIsLocked
     ? `Assignment is ${assignmentStatus?.status}; labels are locked.`
     : lockReason;
-  const contributionFilterUserId = assignmentSubmissionEnabled ? currentUserId : '';
+  const contributionFilterUserId = '';
 
   useEffect(() => {
     if (!error) {
@@ -434,18 +378,10 @@ export function DataLabelingPanel({
     setError('');
   }, [error]);
 
-  const scoreColorClass = (score: number): string => {
-    if (score > 0) return 'text-emerald-700 font-semibold';
-    if (score < 0) return 'text-red-600 font-semibold';
-    return 'text-gray-500';
-  };
-
   const fetchMessageLabelCounts = async (sampleId: string) => {
     try {
       const payload = await dataprepApi.getSampleLabels(sampleId, {
         scope: 'all',
-        contributedBy: contributionFilterUserId || undefined,
-        includeUnvoted: Boolean(contributionFilterUserId),
       });
       const counts: Record<number, number> = {};
       const names: Record<number, string[]> = {};
@@ -474,14 +410,10 @@ export function DataLabelingPanel({
     try {
       const payload = messageIndex === null
         ? await dataprepApi.getSampleLabels(sampleId, {
-            contributedBy: contributionFilterUserId || undefined,
-            includeUnvoted: Boolean(contributionFilterUserId),
           })
         : await dataprepApi.getSampleLabels(sampleId, {
             scope: 'message',
             messageIndex,
-            contributedBy: contributionFilterUserId || undefined,
-            includeUnvoted: Boolean(contributionFilterUserId),
           });
       setLabels(Array.isArray(payload?.labels) ? payload.labels.map(normalizeLabel) : []);
     } catch (err: any) {
@@ -584,24 +516,8 @@ export function DataLabelingPanel({
         setSoftLabelInput('');
       }
 
-      const created = payload?.label ? normalizeLabel(payload.label) : null;
-      if (created) {
-        setLabels((prev) => [created, ...prev]);
-        if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
-          const labelIndex = Number(created.messageIndex);
-          setMessageLabelCounts((prev) => ({
-            ...prev,
-            [labelIndex]: (prev[labelIndex] || 0) + 1,
-          }));
-          setMessageLabelNames((prev) => ({
-            ...prev,
-            [labelIndex]: Array.from(new Set([...(prev[labelIndex] || []), created.name])),
-          }));
-        }
-      } else {
-        await fetchLabels(currentSample.sampleId);
-        await fetchMessageLabelCounts(currentSample.sampleId);
-      }
+      await fetchLabels(currentSample.sampleId, selectedTargetIndex);
+      await fetchMessageLabelCounts(currentSample.sampleId);
       queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
       setError(getErrorMessage(err, 'Failed to add label'));
@@ -610,62 +526,41 @@ export function DataLabelingPanel({
     }
   };
 
-  const handleVote = async (labelId: string, voteAction: VoteType) => {
-    setError('');
-
-    const previousLabels = labels;
-    if (currentUserId) {
-      setLabels((prev) =>
-        prev.map((item) =>
-          item._id === labelId ? applyOptimisticVote(item, voteAction, currentUserId) : item
-        )
-      );
+  const removeLabelAssignment = async (label: LabelItem) => {
+    if (!currentSample?.sampleId) {
+      setError('Cannot remove label: missing sampleId');
+      return;
     }
 
+    setIsSavingLabel(true);
+    setError('');
+
     try {
-      const payload = await dataprepApi.voteSampleLabel(labelId, voteAction, fromCommunityHub);
-      const nextLabel = payload?.label;
-
-      if (!nextLabel) {
-        if (payload?.deleted) {
-          setLabels((prev) => prev.filter((item) => item._id !== labelId));
-          if (currentSample?.sampleId) {
-            await fetchMessageLabelCounts(currentSample.sampleId);
-          }
-        } else {
-          setLabels(previousLabels);
-          await fetchLabels(currentSample?.sampleId || '');
-        }
-        return;
-      }
-
-      const normalized = normalizeLabel({
-        ...nextLabel,
-        upvoteCount: payload?.upvoteCount,
-        downvoteCount: payload?.downvoteCount,
-        score: payload?.score,
-        hasVoted: payload?.hasVoted,
-        userVoteType: payload?.userVoteType,
-      });
-
-      setLabels((prev) =>
-        prev.map((item) =>
-          item._id === String(nextLabel._id)
-            ? normalized
-            : item
-        )
+      await dataprepApi.removeSampleLabel(
+        currentSample.sampleId,
+        {
+          name: label.name,
+          type: label.type,
+          targetScope: label.targetScope,
+          messageIndex: label.messageIndex,
+          messageRole: label.messageRole,
+        },
+        fromCommunityHub
       );
+      await fetchLabels(currentSample.sampleId, selectedTargetIndex);
+      await fetchMessageLabelCounts(currentSample.sampleId);
       queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
-      setLabels(previousLabels);
-      setError(getErrorMessage(err, 'Failed to vote label'));
+      setError(getErrorMessage(err, 'Failed to remove label'));
+    } finally {
+      setIsSavingLabel(false);
     }
   };
 
   const handleHardLabelVote = async (hardLabelName: string) => {
     const existing = labels.find((item) => item.type === 'hard' && item.name === hardLabelName);
-    if (existing) {
-      await handleVote(existing._id, 'up');
+    if (existing?.assignedByCurrentUser) {
+      await removeLabelAssignment(existing);
       return;
     }
 
@@ -689,25 +584,8 @@ export function DataLabelingPanel({
         },
         fromCommunityHub
       );
-      const created = payload?.label ? normalizeLabel(payload.label) : null;
-      if (!created?._id) {
-        await fetchLabels(currentSample.sampleId);
-        await fetchMessageLabelCounts(currentSample.sampleId);
-        return;
-      }
-
-      setLabels((prev) => [created, ...prev]);
-      if (created.targetScope === 'message' && Number.isInteger(created.messageIndex)) {
-        const labelIndex = Number(created.messageIndex);
-        setMessageLabelCounts((prev) => ({
-          ...prev,
-          [labelIndex]: (prev[labelIndex] || 0) + 1,
-        }));
-        setMessageLabelNames((prev) => ({
-          ...prev,
-          [labelIndex]: Array.from(new Set([...(prev[labelIndex] || []), created.name])),
-        }));
-      }
+      await fetchLabels(currentSample.sampleId, selectedTargetIndex);
+      await fetchMessageLabelCounts(currentSample.sampleId);
       queryClient.invalidateQueries({ queryKey: ['my-assignment-submission-status', datasetVersionId] });
     } catch (err: any) {
       setError(getErrorMessage(err, 'Failed to vote hard label'));
@@ -995,53 +873,22 @@ export function DataLabelingPanel({
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-gray-900 truncate">{label.name}</p>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-emerald-600 font-medium">▲ {label.upvoteCount ?? 0}</span>
-                      {true && (
-                        <span className="text-[10px] text-red-500 font-medium">▼ {label.downvoteCount ?? 0}</span>
-                      )}
-                      <span className={`text-[10px] font-semibold ${scoreColorClass(label.score)}`}>
-                        score: {label.score > 0 ? `+${label.score}` : label.score}
-                      </span>
-                      {label.creator && (
-                        <span className="text-[10px] text-slate-400 font-medium truncate max-w-[120px]" title={`Created by: ${label.creator.name} (${label.creator.email})`}>
-                          by {label.creator.name}
-                        </span>
+                      <span className="text-[10px] text-blue-700 font-medium">{label.assignedUserCount} user(s)</span>
+                      {label.assignedByCurrentUser && (
+                        <span className="text-[10px] font-semibold text-emerald-700">Assigned by you</span>
                       )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      type="button"
-                      disabled={effectiveLockInteractions}
-                      onClick={() => handleVote(label._id, 'up')}
-                      title="Upvote"
-                      className={`rounded-lg p-1.5 transition-all ${
-                        (Array.isArray(label.upvotes) && currentUserId && label.upvotes.includes(currentUserId)) || label.userVoteType === 'up'
-                          ? 'bg-emerald-100 text-emerald-700 border border-emerald-300 shadow-sm'
-                          : 'bg-white text-gray-500 border border-gray-200 hover:bg-emerald-50 hover:text-emerald-600'
-                      }`}
-                    >
-                      <div className="inline-flex items-center gap-1">
-                        <ThumbsUp className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-semibold">{label.upvoteCount ?? label.upvotes?.length ?? 0}</span>
-                      </div>
-                    </button>
-                    {true && (
+                    {label.assignedByCurrentUser && (
                       <button
                         type="button"
                         disabled={effectiveLockInteractions}
-                        onClick={() => handleVote(label._id, 'down')}
-                        title="Downvote"
-                        className={`rounded-lg p-1.5 transition-all ${
-                          (Array.isArray(label.downvotes) && currentUserId && label.downvotes.includes(currentUserId)) || label.userVoteType === 'down'
-                            ? 'bg-red-100 text-red-700 border border-red-300 shadow-sm'
-                            : 'bg-white text-gray-500 border border-gray-200 hover:bg-red-50 hover:text-red-600'
-                        }`}
+                        onClick={() => removeLabelAssignment(label)}
+                        title="Remove my label"
+                        className="rounded-lg border border-rose-200 bg-white p-1.5 text-rose-600 transition-all hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <div className="inline-flex items-center gap-1">
-                          <ThumbsDown className="w-3.5 h-3.5" />
-                          <span className="text-[10px] font-semibold">{label.downvoteCount ?? label.downvotes?.length ?? 0}</span>
-                        </div>
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
@@ -1132,10 +979,8 @@ export function DataLabelingPanel({
                   {availableHardLabels.map((hardLabel) => (
                     (() => {
                       const existing = labels.find((item) => item.type === 'hard' && item.name === hardLabel);
-                      const upCount = existing?.upvoteCount ?? existing?.upvotes?.length ?? 0;
-                      const hasUpvoted = Boolean(
-                        existing && currentUserId && Array.isArray(existing.upvotes) && existing.upvotes.includes(currentUserId)
-                      );
+                      const upCount = existing?.assignedUserCount ?? 0;
+                      const hasUpvoted = Boolean(existing?.assignedByCurrentUser);
                       const chip = HARD_LABEL_CHIPS[hardLabel] || DEFAULT_HARD_LABEL_CHIP;
                       const Icon = chip.icon;
 

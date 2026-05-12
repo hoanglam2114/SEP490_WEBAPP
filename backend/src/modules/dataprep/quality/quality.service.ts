@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
-import { Label } from '../../../models/Label';
 import { QUALITY_AUTO_REJECT_MARKER } from './quality.constants';
+import { getAggregatedSampleLabels, insertAssignments, removeLabelsByQuery } from '../../../services/labelAssignmentService';
 
 export const QUALITY_BUCKETS = ['Gold', 'Rewrite', 'Reject', 'Incomplete'] as const;
 export type QualityBucket = (typeof QUALITY_BUCKETS)[number];
@@ -249,11 +249,9 @@ export class QualityService {
     }
 
     const itemIds = items.map((item: any) => item._id);
-    const labels = await Label.find({
-      sampleId: { $in: itemIds },
-      targetScope: 'message',
-      type: 'hard',
-    }).lean();
+    const labels = (await getAggregatedSampleLabels(itemIds)).filter(
+      (label: any) => label.targetScope === 'message' && label.type === 'hard'
+    );
     const labelMap = buildLabelMap(labels);
     const configuredIncompleteBucket = isQualityBucket(String((version as any)?.operationParams?.qualityIncompleteBucket || ''))
       ? String((version as any).operationParams.qualityIncompleteBucket) as QualityBucket
@@ -462,11 +460,9 @@ export class QualityService {
     }
 
     const itemIds = items.map((item: any) => item._id);
-    const labels = await Label.find({
-      sampleId: { $in: itemIds },
-      targetScope: 'message',
-      type: 'hard',
-    }).lean();
+    const labels = (await getAggregatedSampleLabels(itemIds)).filter(
+      (label: any) => label.targetScope === 'message' && label.type === 'hard'
+    );
     const labelMap = buildLabelMap(labels);
     const incompleteBucket = isQualityBucket(String((version as any)?.operationParams?.qualityIncompleteBucket || ''))
       ? String((version as any).operationParams.qualityIncompleteBucket) as QualityBucket
@@ -553,7 +549,7 @@ export class QualityService {
       .filter((item) => item.bucket === 'Reject')
       .map((item) => new mongoose.Types.ObjectId(item._id));
 
-    await Label.deleteMany({
+    await removeLabelsByQuery({
       sampleId: { $in: itemIds },
       name: 'REJECT',
       type: 'hard',
@@ -573,11 +569,9 @@ export class QualityService {
       targetScope: 'sample' as const,
       targetTextSnapshot: QUALITY_AUTO_REJECT_MARKER,
       createdBy: ownerOid,
-      upvotes: [ownerOid],
-      downvotes: [],
     }));
 
-    await Label.insertMany(docs, { ordered: false });
+    await insertAssignments(docs);
     return docs.length;
   }
 }

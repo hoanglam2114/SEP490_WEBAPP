@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
-import { Label } from '../../../models/Label';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
+import { insertAssignments, removeLabelsByQuery } from '../../../services/labelAssignmentService';
 import { ILlmProvider } from '../../../services/providers/ILlmProvider';
 
 export const SUBJECT_LABELS = ['MATH', 'PHYSICAL', 'CHEMISTRY', 'LITERATURE', 'BIOLOGY', 'OTHER'] as const;
@@ -229,10 +229,11 @@ export class AutoLabelingService {
       const sampleIds = samples.map((sample: any) => sample._id);
       if (!sampleIds.length) continue;
 
-      await Label.deleteMany({
+      await removeLabelsByQuery({
         sampleId: { $in: sampleIds },
         type: 'hard',
         name: { $in: subjectNames },
+        createdBy: userOid,
         $or: [
           { targetScope: 'sample' },
           { targetScope: { $exists: false } },
@@ -246,12 +247,10 @@ export class AutoLabelingService {
         type: 'hard' as const,
         targetScope: 'sample' as const,
         createdBy: userOid,
-        upvotes: [userOid],
-        downvotes: [],
       }));
 
       if (docs.length) {
-        await Label.insertMany(docs, { ordered: false });
+        await insertAssignments(docs);
         insertedCount += docs.length;
       }
     }

@@ -53,7 +53,6 @@ export function AssignmentSubmissionDetailModal({
     queryFn: () => dataprepApi.getSampleLabels(currentSample?.sampleId || '', {
       scope: 'all',
       contributedBy: assignee?.id,
-      includeUnvoted: true,
     }),
     enabled: isOpen && Boolean(currentSample?.sampleId && assignee?.id),
   });
@@ -258,11 +257,11 @@ export function AssignmentSubmissionDetailModal({
                         <div className="min-w-0">
                           <p className="truncate text-xs font-semibold text-slate-900">{label.name}</p>
                           <p className="mt-1 text-[11px] text-slate-500">
-                            {label.type} · score {label.score > 0 ? `+${label.score}` : label.score}
+                            {label.type} · {label.assignedUserCount || 0} user(s)
                           </p>
                         </div>
                         <div className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                          ▲ {label.upvoteCount || 0} / ▼ {label.downvoteCount || 0}
+                          Contributed
                         </div>
                       </div>
                     </div>

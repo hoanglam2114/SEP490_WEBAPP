@@ -17,7 +17,7 @@ type PublicProject = {
     _id: string;
     name: string;
     type: 'hard' | 'soft';
-    upvoteCount: number;
+    assignedUserCount: number;
   } | null;
 };
 
@@ -161,7 +161,7 @@ export const PublicProjectsHub: React.FC = () => {
                         <span className="text-sm font-semibold text-slate-900 truncate">{project.topLabel.name}</span>
                         <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-100 border border-emerald-200 rounded-full px-2 py-0.5">
                           <ThumbsUp className="w-3 h-3" />
-                          {project.topLabel.upvoteCount}
+                          {project.topLabel.assignedUserCount}
                         </span>
                       </div>
                     ) : (

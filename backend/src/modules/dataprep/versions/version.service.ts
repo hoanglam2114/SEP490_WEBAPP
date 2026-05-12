@@ -2,8 +2,11 @@ import mongoose from 'mongoose';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
 import { DataPrepProject } from '../../../models/DataPrepProject';
-import { Label } from '../../../models/Label';
+import { LabelAssignment } from '../../../models/LabelAssignment';
+import { DatasetAssignmentActivity } from '../../../models/DatasetAssignmentActivity';
+import { DatasetAssignmentAdjudication } from '../../../models/DatasetAssignmentAdjudication';
 import { EvaluationHistory } from '../../../models/EvaluationHistory';
+import { ensureLabelAssignmentsForSamples } from '../../../services/labelAssignmentService';
 import { DatasetSampleAssignment } from '../../../models/DatasetSampleAssignment';
 import { DatasetAssignmentSubmission } from '../../../models/DatasetAssignmentSubmission';
 import { normalizeEvaluationData, inferFormatFromRow, resolveSampleKey } from '../../../utils/evalUtils';
@@ -66,6 +69,8 @@ type DeleteVersionTreeResult = {
     assignments: number;
     submissions: number;
     labels: number;
+    activities: number;
+    adjudications: number;
     evaluations: number;
   };
   projectArchived: boolean;
@@ -177,7 +182,9 @@ export class VersionService {
       return;
     }
 
-    const labels = await Label.find({
+    await ensureLabelAssignmentsForSamples(sourceIds);
+
+    const labels = await LabelAssignment.find({
       sampleId: { $in: sourceIds.map((id) => new mongoose.Types.ObjectId(id)) },
     }).lean();
 
@@ -201,8 +208,6 @@ export class VersionService {
           ...(label.messageRole ? { messageRole: label.messageRole } : {}),
           ...(label.targetTextSnapshot ? { targetTextSnapshot: label.targetTextSnapshot } : {}),
           createdBy: label.createdBy,
-          upvotes: Array.isArray(label.upvotes) ? label.upvotes : [],
-          downvotes: Array.isArray(label.downvotes) ? label.downvotes : [],
         };
       })
       .filter(Boolean);
@@ -211,7 +216,7 @@ export class VersionService {
       return;
     }
 
-    await Label.insertMany(docs as any[], { ordered: false });
+    await LabelAssignment.insertMany(docs as any[], { ordered: false });
   }
 
   async createVersion(params: CreateVersionParams): Promise<CreatedVersionResult> {
@@ -381,8 +386,14 @@ export class VersionService {
     const deletedSampleObjectIds = deletedSampleIds.map((id) => new mongoose.Types.ObjectId(id));
 
     const labelResult = deletedSampleObjectIds.length
-      ? await Label.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
+      ? await LabelAssignment.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
       : { deletedCount: 0 };
+    const activityResult = await DatasetAssignmentActivity.deleteMany({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    });
+    const adjudicationResult = await DatasetAssignmentAdjudication.deleteMany({
+      datasetVersionId: { $in: deletedVersionObjectIds },
+    });
     const evaluationResult = deletedSampleObjectIds.length
       ? await EvaluationHistory.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
       : { deletedCount: 0 };
@@ -466,6 +477,8 @@ export class VersionService {
         assignments: assignmentResult.deletedCount || 0,
         submissions: submissionResult.deletedCount || 0,
         labels: labelResult.deletedCount || 0,
+        activities: activityResult.deletedCount || 0,
+        adjudications: adjudicationResult.deletedCount || 0,
         evaluations: evaluationResult.deletedCount || 0,
       },
       projectArchived,
