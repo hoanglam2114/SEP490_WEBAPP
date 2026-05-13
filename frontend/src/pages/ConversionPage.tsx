@@ -1661,6 +1661,7 @@ function ClampedTextCell({
 function ConvertedDatasetTable({
   rows,
   mode,
+  hideThinkColumn,
   showEvaluationColumns,
   showEvaluationActions = true,
   evaluationMap,
@@ -1681,6 +1682,7 @@ function ConvertedDatasetTable({
 }: {
   rows: DisplayRow[];
   mode: PreviewMode;
+  hideThinkColumn?: boolean;
   showEvaluationColumns?: boolean;
   showEvaluationActions?: boolean;
   evaluationMap?: Record<string, RowEvaluationEntry>;
@@ -1748,12 +1750,14 @@ function ConvertedDatasetTable({
   const showRefineComparisonAction = Boolean(onRequestViewRefineChange);
   const showActionMenu = Boolean(showDeleteAction || onRequestManualEvaluate || onRequestViewHistory);
   const showSystemColumn = isFinishPreview;
+  const showThinkColumn = mode !== 'openai' ? true : !hideThinkColumn;
   const showQualityScoreColumn = rows.some((row) => row.qualityScore !== null && row.qualityScore !== undefined);
   const hideOpenAIMetricBreakdown = Boolean(isFinishPreview && mode === 'openai');
   const scoreColumnCount = showEvaluationColumns
     ? (hideOpenAIMetricBreakdown ? 1 : 4) + 2
     : 0;
-  const emptyColSpan = 3 + (showSystemColumn ? 1 : 0) + (showQualityScoreColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
+  const baseColumnCount = showThinkColumn ? 3 : 2;
+  const emptyColSpan = baseColumnCount + (showSystemColumn ? 1 : 0) + (showQualityScoreColumn ? 1 : 0) + scoreColumnCount + (showActionMenu ? 1 : 0);
   const metricA = mode === 'openai' ? 'socratic' : 'accuracy';
   const metricB = mode === 'openai' ? 'encouragement' : 'clarity';
   const metricC = mode === 'openai' ? 'factuality' : 'completeness';
@@ -1924,9 +1928,18 @@ function ConvertedDatasetTable({
         <table className="min-w-full text-sm table-fixed">
           <colgroup>
             {showSystemColumn && <col className="w-[16%]" />}
-            <col className="w-[30%]" />
-            <col className="w-[20%]" />
-            <col className="w-[40%]" />
+            {showThinkColumn ? (
+              <>
+                <col className="w-[30%]" />
+                <col className="w-[20%]" />
+                <col className="w-[40%]" />
+              </>
+            ) : (
+              <>
+                <col className="w-[35%]" />
+                <col className="w-[65%]" />
+              </>
+            )}
             {showQualityScoreColumn && <col className="w-[96px]" />}
             {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
             {showEvaluationColumns && !hideOpenAIMetricBreakdown && <col className="w-[88px]" />}
@@ -1942,9 +1955,11 @@ function ConvertedDatasetTable({
               <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'User' : 'Instruction'}
               </th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-700">
-                {mode === 'openai' ? '<think>' : 'Input'}
-              </th>
+              {showThinkColumn && (
+                <th className="text-left px-4 py-3 font-semibold text-gray-700">
+                  {mode === 'openai' ? '<think>' : 'Input'}
+                </th>
+              )}
               <th className="text-left px-4 py-3 font-semibold text-gray-700">
                 {mode === 'openai' ? 'Assistant' : 'Output'}
               </th>
@@ -2011,7 +2026,9 @@ function ConvertedDatasetTable({
                           onReadMore={(title, content) => setDetailModal({ title, content })}
                         />
                       </td>
-                      <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                      {showThinkColumn && (
+                        <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                      )}
                       <td className="px-4 py-3 align-top">
                         <ClampedTextCell
                           text={pair.assistant || '-'}
@@ -2082,7 +2099,9 @@ function ConvertedDatasetTable({
                             onReadMore={(title, content) => setDetailModal({ title, content })}
                           />
                         </td>
-                        <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                        {showThinkColumn && (
+                          <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{pair.think || '-'}</td>
+                        )}
                         <td className="px-4 py-3 align-top">
                           <ClampedTextCell
                             text={pair.assistant || '-'}
@@ -2125,7 +2144,9 @@ function ConvertedDatasetTable({
                             onReadMore={(title, content) => setDetailModal({ title, content })}
                           />
                         </td>
-                        <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
+                        {showThinkColumn && (
+                          <td className="px-4 py-3 text-gray-700 whitespace-pre-wrap break-words">{row.thinkText || '-'}</td>
+                        )}
                         <td className="px-4 py-3 align-top">
                           <ClampedTextCell
                             text={row.assistantText || '-'}
@@ -5650,7 +5671,11 @@ export function ConversionPage() {
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <ConvertedDatasetTable rows={allRows} mode={previewMode} />
+              <ConvertedDatasetTable
+                rows={allRows}
+                mode={previewMode}
+                hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
+              />
             </div>
             <div className="space-y-4 lg:col-span-1">
               <PostConversionSummary result={conversionResult} />
@@ -5688,7 +5713,13 @@ export function ConversionPage() {
 
       {currentStep === 4 && (
         <ClusterPanel
-          table={<ConvertedDatasetTable rows={clusteredRows} mode={previewMode} />}
+          table={(
+            <ConvertedDatasetTable
+              rows={clusteredRows}
+              mode={previewMode}
+              hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
+            />
+          )}
           clusterGroups={clusterGroups}
           clusterK={clusterK}
           setClusterK={setClusterK}
@@ -5725,7 +5756,13 @@ export function ConversionPage() {
 
       {currentStep === 5 && (
         <AutoLabelingPanel
-          table={<ConvertedDatasetTable rows={autoLabelFilteredRows} mode={previewMode} />}
+          table={(
+            <ConvertedDatasetTable
+              rows={autoLabelFilteredRows}
+              mode={previewMode}
+              hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
+            />
+          )}
           clusterGroups={clusterGroups}
           suggestions={autoLabelSuggestions}
           provider={autoLabelProvider}
@@ -5860,6 +5897,7 @@ export function ConversionPage() {
             <ConvertedDatasetTable
               rows={classificationFilteredRows}
               mode={previewMode}
+              hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
             />
           )}
           onBack={() => setCurrentStep(getBackStep(8))}
@@ -5905,6 +5943,7 @@ export function ConversionPage() {
             <ConvertedDatasetTable
               rows={evaluationRows}
               mode={previewMode}
+              hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
               showEvaluationColumns
               evaluationMap={evaluationMap}
               onEvaluate={() => setIsEvaluateModalOpen(true)}
@@ -5934,6 +5973,7 @@ export function ConversionPage() {
             <ConvertedDatasetTable
               rows={evaluationRows}
               mode={previewMode}
+              hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
               showEvaluationColumns
               evaluationMap={evaluationMap}
               rowHighlightMap={refinedHighlightMap}
@@ -6006,6 +6046,7 @@ export function ConversionPage() {
           <ConvertedDatasetTable
             rows={evaluationRows}
             mode={previewMode}
+            hideThinkColumn={conversionOptions.removeThinkTags && previewMode === 'openai'}
             showEvaluationColumns
             showEvaluationActions={false}
             evaluationMap={evaluationMap}
