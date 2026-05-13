@@ -700,7 +700,9 @@ export function DataLabelingPanel({
       <div className="grid grid-cols-1 gap-4" style={{ gridTemplateColumns: '60% 40%' }}>
 
         {/* ── Area 1: Chat History (Left - 60%) ── */}
-        <section className="rounded-xl border border-gray-200 bg-white shadow-sm flex flex-col" style={{ minHeight: '520px' }}>
+        <section
+          className="flex h-[calc(100vh-180px)] min-h-[580px] max-h-[900px] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
+        >
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-xl">
             <div className="flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-blue-600" />
@@ -740,83 +742,90 @@ export function DataLabelingPanel({
             </div>
           )}
 
-          <div className="flex-1 overflow-auto p-4 space-y-3">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 pr-3"
+            style={{ scrollbarGutter: 'stable' }}
+          >
             {!currentSample && (
               <div className="h-full flex items-center justify-center">
                 <p className="text-sm text-gray-400">No samples available.</p>
               </div>
             )}
 
-            {currentSample?.messages.map((message, index) => {
-              const isSelected = selectedMessageIndex === index;
-              const labelCount = messageLabelCounts[index] || 0;
-              const aiSuggestion = autoLabelSuggestions[index];
-              const aiLabels = suggestionLabels(aiSuggestion);
-              const savedLabels = messageLabelNames[index] || [];
-              const visibleMessageLabels = aiLabels.length > 0 ? aiLabels : savedLabels;
-              const visibleMessageLabelTitle = aiLabels.length > 0
-                ? `AI: ${aiLabels.join(', ')}${Number.isFinite(aiSuggestion?.confidence) ? ` (${Math.round((aiSuggestion?.confidence || 0) * 100)}%)` : ''}`
-                : `Saved labels: ${savedLabels.join(', ')}`;
+            <div className="space-y-3">
+              {currentSample?.messages.map((message, index) => {
+                const isSelected = selectedMessageIndex === index;
+                const labelCount = messageLabelCounts[index] || 0;
+                const aiSuggestion = autoLabelSuggestions[index];
+                const aiLabels = suggestionLabels(aiSuggestion);
+                const savedLabels = messageLabelNames[index] || [];
+                const visibleMessageLabels = aiLabels.length > 0 ? aiLabels : savedLabels;
+                const visibleMessageLabelTitle = aiLabels.length > 0
+                  ? `AI: ${aiLabels.join(', ')}${Number.isFinite(aiSuggestion?.confidence) ? ` (${Math.round((aiSuggestion?.confidence || 0) * 100)}%)` : ''}`
+                  : `Saved labels: ${savedLabels.join(', ')}`;
 
-              return (
-              <div
-                key={`${message.role}-${index}`}
-                className={`flex ${message.role === 'user' ? 'justify-start' : 'justify-end'}`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setSelectedMessageIndex(index)}
-                  className={`relative max-w-[88%] rounded-2xl px-4 py-3 text-left text-sm shadow-sm transition-all ${
-                    message.role === 'user'
-                      ? 'bg-blue-600 text-white rounded-tl-sm'
-                      : 'bg-gray-100 text-gray-800 border border-gray-200 rounded-tr-sm'
-                  } ${isSelected ? 'ring-2 ring-amber-400 ring-offset-2' : 'hover:ring-2 hover:ring-blue-200 hover:ring-offset-1'}`}
-                  title="Select this message for labeling"
+                return (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={`flex ${message.role === 'user' ? 'justify-start' : 'justify-end'}`}
                 >
-                  {labelCount > 0 && (
-                    <span
-                      className={`absolute -top-2 ${message.role === 'user' ? '-right-2' : '-left-2'} rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMessageIndex(index)}
+                    className={`relative max-w-[88%] rounded-2xl px-4 py-3 text-left text-sm shadow-sm transition-all ${
                         message.role === 'user'
-                          ? 'border-blue-200 bg-white text-blue-700'
-                          : 'border-violet-200 bg-violet-600 text-white'
-                      }`}
-                    >
-                      {labelCount}
-                    </span>
-                  )}
-                  {visibleMessageLabels.length > 0 && (
-                    <span
-                      className={`absolute -bottom-2 ${message.role === 'user' ? '-right-2' : '-left-2'} flex max-w-[260px] flex-wrap items-center justify-end gap-1`}
-                      title={visibleMessageLabelTitle}
-                    >
-                      {visibleMessageLabels.slice(0, 4).map((label) => {
-                        const aiChip = HARD_LABEL_CHIPS[label] || DEFAULT_HARD_LABEL_CHIP;
-                        const AiIcon = aiChip.icon;
-                        return (
+                          ? 'bg-blue-600 text-white rounded-tl-sm'
+                          : 'bg-gray-100 text-gray-800 border border-gray-200 rounded-tr-sm'
+                      } ${isSelected ? 'ring-2 ring-amber-400 ring-offset-2' : 'hover:ring-2 hover:ring-blue-200 hover:ring-offset-1'}`}
+                    title="Select this message for labeling"
+                  >
+                    {labelCount > 0 && (
+                      <span
+                        className={`absolute -top-2 ${message.role === 'user' ? '-right-2' : '-left-2'} rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${
+                          message.role === 'user'
+                            ? 'border-blue-200 bg-white text-blue-700'
+                            : 'border-violet-200 bg-violet-600 text-white'
+                        }`}
+                      >
+                        {labelCount}
+                      </span>
+                    )}
+                    {visibleMessageLabels.length > 0 && (
+                      <span
+                        className={`absolute -bottom-2 ${message.role === 'user' ? '-right-2' : '-left-2'} flex max-w-[260px] flex-wrap items-center justify-end gap-1`}
+                        title={visibleMessageLabelTitle}
+                      >
+                        {visibleMessageLabels.slice(0, 4).map((label) => {
+                          const aiChip = HARD_LABEL_CHIPS[label] || DEFAULT_HARD_LABEL_CHIP;
+                          const AiIcon = aiChip.icon;
+                          return (
+                            <span
+                              key={label}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${aiChip.className}`}
+                            >
+                              <AiIcon className="h-3 w-3 flex-shrink-0" />
+                              <span className="truncate">{aiChip.short}</span>
+                            </span>
+                          );
+                        })}
+                        {visibleMessageLabels.length > 4 && (
                           <span
-                            key={label}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-sm ${aiChip.className}`}
+                            className="inline-flex rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-bold text-gray-600 shadow-sm"
                           >
-                            <AiIcon className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">{aiChip.short}</span>
+                            +{visibleMessageLabels.length - 4}
                           </span>
-                        );
-                      })}
-                      {visibleMessageLabels.length > 4 && (
-                        <span className="inline-flex rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-bold text-gray-600 shadow-sm">
-                          +{visibleMessageLabels.length - 4}
-                        </span>
-                      )}
-                    </span>
-                  )}
-                  <p className={`mb-1 text-[10px] font-bold uppercase tracking-wider ${message.role === 'user' ? 'text-blue-200' : 'text-gray-400'}`}>
-                    {message.role}
-                  </p>
-                  <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content || '–'}</p>
-                </button>
-              </div>
-              );
-            })}
+                        )}
+                      </span>
+                    )}
+                    <p className={`mb-1 text-[10px] font-bold uppercase tracking-wider ${message.role === 'user' ? 'text-blue-200' : 'text-gray-400'}`}>
+                      {message.role}
+                    </p>
+                    <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content || '–'}</p>
+                  </button>
+                </div>
+                );
+              })}
+            </div>
           </div>
         </section>
 

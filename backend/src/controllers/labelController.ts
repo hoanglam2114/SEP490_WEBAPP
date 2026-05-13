@@ -192,6 +192,7 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
 
     const createdBy = String(req.query.createdBy || '').trim();
     const contributedBy = String(req.query.contributedBy || '').trim();
+    const visibilityMode = String(req.query.visibilityMode || '').trim() === 'review' ? 'review' : 'default';
     if (createdBy && !mongoose.Types.ObjectId.isValid(createdBy)) {
       res.status(400).json({ error: 'Invalid createdBy' });
       return;
@@ -215,6 +216,7 @@ export const getLabelsBySample = async (req: Request, res: Response): Promise<vo
       createdBy: createdBy || undefined,
       contributedBy: contributedBy || undefined,
       includeAssignedUsers: isOwner,
+      visibilityMode,
     });
 
     res.status(200).json({ labels });
@@ -293,6 +295,7 @@ export const addLabel = async (req: Request, res: Response): Promise<void> => {
       scope: targetInfo.targetScope === 'message' ? 'message' : 'sample',
       messageIndex: targetInfo.messageIndex,
       includeAssignedUsers: true,
+      visibilityMode: 'default',
     });
     const label = labels.find((item) =>
       item.name === normalizedName

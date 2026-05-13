@@ -53,6 +53,7 @@ export function AssignmentSubmissionDetailModal({
     queryFn: () => dataprepApi.getSampleLabels(currentSample?.sampleId || '', {
       scope: 'all',
       contributedBy: assignee?.id,
+      visibilityMode: 'review',
     }),
     enabled: isOpen && Boolean(currentSample?.sampleId && assignee?.id),
   });

@@ -1096,7 +1096,13 @@ export const apiService = {
 
   getSampleLabels: async (
     sampleId: string,
-    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number; createdBy?: string; contributedBy?: string }
+    params?: {
+      scope?: 'sample' | 'message' | 'all';
+      messageIndex?: number;
+      createdBy?: string;
+      contributedBy?: string;
+      visibilityMode?: 'default' | 'review';
+    }
   ): Promise<{ labels: AggregatedLabel[] }> => {
     const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
     return response.data;

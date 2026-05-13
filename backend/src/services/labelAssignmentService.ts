@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
+import { DatasetVersion } from '../models/DatasetVersion';
 import { Label } from '../models/Label';
 import { LabelAssignment } from '../models/LabelAssignment';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
@@ -68,6 +69,7 @@ type AggregateOptions = {
   createdBy?: string;
   contributedBy?: string;
   includeAssignedUsers?: boolean;
+  visibilityMode?: 'default' | 'review';
 };
 
 type TargetDescriptor = {
@@ -293,9 +295,11 @@ export async function getAggregatedLabelsForSample(
   options: AggregateOptions = {}
 ): Promise<LabelAssignmentAggregate[]> {
   await ensureLabelAssignmentsForSamples([sampleId]);
+  const sample = await resolveSample(sampleId);
+  const visibilityMode = options.visibilityMode === 'review' ? 'review' : 'default';
 
   const query: Record<string, any> = {
-    sampleId: new mongoose.Types.ObjectId(sampleId),
+    sampleId: sample._id,
   };
 
   const scope = normalizeQueryScope(options.scope);
@@ -318,9 +322,51 @@ export async function getAggregatedLabelsForSample(
     .sort({ createdAt: -1 })
     .lean();
 
+  let visibleDocs = docs;
+  if (visibilityMode === 'default' && docs.length) {
+    const datasetVersion = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId').lean();
+    const ownerId = String((datasetVersion as any)?.ownerId || '');
+    const contributorIds = Array.from(
+      new Set(
+        docs
+          .map((doc: any) => String(doc.createdBy?._id || doc.createdBy || ''))
+          .filter(Boolean)
+      )
+    );
+
+    const assigneeIds = contributorIds.filter((contributorId) => contributorId !== ownerId);
+    const approvedSubmissionIds = assigneeIds.length
+      ? new Set(
+          (
+            await DatasetAssignmentSubmission.find({
+              datasetVersionId: sample.datasetVersionId,
+              assigneeId: { $in: assigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+              status: 'approved',
+            })
+              .select('assigneeId')
+              .lean()
+          ).map((submission: any) => String(submission.assigneeId))
+        )
+      : new Set<string>();
+
+    visibleDocs = docs.filter((doc: any) => {
+      const contributorId = String(doc.createdBy?._id || doc.createdBy || '');
+      if (!contributorId) {
+        return false;
+      }
+      if (contributorId === ownerId) {
+        return true;
+      }
+      if (contributorId === String(viewerId)) {
+        return true;
+      }
+      return approvedSubmissionIds.has(contributorId);
+    });
+  }
+
   const contributorIds = Array.from(
     new Set(
-      docs
+      visibleDocs
         .map((doc: any) => String(doc.createdBy?._id || doc.createdBy || ''))
         .filter(Boolean)
     )
@@ -337,7 +383,7 @@ export async function getAggregatedLabelsForSample(
     ])
   );
 
-  return mergeAggregateDocs(docs, viewerId, userMap, Boolean(options.includeAssignedUsers));
+  return mergeAggregateDocs(visibleDocs, viewerId, userMap, Boolean(options.includeAssignedUsers));
 }
 
 export async function assignLabelToSample(params: {
