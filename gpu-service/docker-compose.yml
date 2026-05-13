@@ -1,0 +1,49 @@
+version: "3.9"
+
+# ============================================================
+# Docker Compose — Local Development
+# Dùng .env file thay cho Swarm secrets
+# Chạy: docker compose up --build
+# ============================================================
+
+services:
+  gpu-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hoanglam51/sep490-gpu-service:latest
+    container_name: sep490-gpu-service
+
+    # ── GPU access ──────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # ── Ports ───────────────────────────────────────────────
+    ports:
+      - "5000:5000"
+
+    # ── Env vars từ .env file (local dev) ───────────────────
+    env_file:
+      - .env
+
+    # ── Volumes ─────────────────────────────────────────────
+    volumes:
+      - gpu_checkpoints:/tmp/checkpoints_
+      - gpu_uploads:/app/dataset_uploads
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  gpu_checkpoints:
+  gpu_uploads:

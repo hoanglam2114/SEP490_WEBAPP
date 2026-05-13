@@ -1,0 +1,48 @@
+# ============================================================
+# GPU Service — Requirements
+# ============================================================
+# Cài đặt: pip install -r requirements.txt --break-system-packages
+#
+# Lưu ý: unsloth cần cài riêng sau vì phụ thuộc vào CUDA version:
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+#   pip install --upgrade torchao
+# ============================================================
+
+# --- Core ---
+torch>=2.1.0
+torchvision
+torchaudio
+
+# --- Unsloth (cài thủ công, xem note trên) ---
+# unsloth  # <-- cài qua git+https
+
+# --- HuggingFace Ecosystem ---
+transformers>=4.40.0
+datasets>=2.18.0
+accelerate>=0.28.0
+peft>=0.10.0
+trl>=0.8.0
+huggingface_hub>=0.22.0
+
+# --- Web Server ---
+flask>=3.0.0
+werkzeug>=3.0.0
+gunicorn>=21.0.0
+
+# --- GPU Monitoring ---
+pynvml>=11.0.0
+
+# --- AI / Eval ---
+anthropic>=0.25.0
+
+# --- Embeddings & Clustering ---
+sentence-transformers>=2.7.0
+scikit-learn>=1.4.0
+numpy>=1.26.0
+
+# --- NLP Metrics ---
+nltk>=3.8.0
+rouge-score>=0.1.2
+
+# --- Utilities ---
+duckduckgo-search>=5.3.0

@@ -1,0 +1,75 @@
+version: "3.9"
+
+# ============================================================
+# Docker Swarm Stack — Production
+# Deploy: docker stack deploy -c docker-stack.yml sep490-gpu
+#
+# Trước khi deploy, tạo secrets trên server:
+#   printf "sk-ant-xxx" | docker secret create ANTHROPIC_API_KEY -
+#   printf "hf_xxx"     | docker secret create HF_TOKEN -
+#   printf "http://your-backend:3000" | docker secret create BACKEND_URL -
+# ============================================================
+
+services:
+  gpu-service:
+    image: hoanglam51/sep490-gpu-service:latest
+
+    # ── Secrets — mount vào /run/secrets/<name> ─────────────
+    secrets:
+      - ANTHROPIC_API_KEY
+      - HF_TOKEN
+      - BACKEND_URL
+
+    # ── Non-sensitive env vars ───────────────────────────────
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "5000"
+      TORCHDYNAMO_DISABLE: "1"
+      CUDA_LAUNCH_BLOCKING: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "120"
+
+    # ── Ports ────────────────────────────────────────────────
+    ports:
+      - target: 5000
+        published: 5000
+        protocol: tcp
+        mode: host
+
+    # ── GPU (requires nvidia-container-toolkit trên host) ────
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # ── Volumes (persist checkpoints & uploads qua restart) ──
+    volumes:
+      - gpu_checkpoints:/tmp/checkpoints_
+      - gpu_uploads:/app/dataset_uploads
+
+    # ── Logging ──────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+# ── Secret definitions (external = đã tạo bằng docker secret create) ──
+secrets:
+  ANTHROPIC_API_KEY:
+    external: true
+  HF_TOKEN:
+    external: true
+  BACKEND_URL:
+    external: true
+
+volumes:
+  gpu_checkpoints:
+  gpu_uploads:

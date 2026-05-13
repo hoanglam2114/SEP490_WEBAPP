@@ -14,6 +14,44 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── GPU Service ────────────────────────────────────────────────────────────
+  gpu-service:
+    build:
+      context: ./gpu-service
+      dockerfile: Dockerfile
+    image: hoanglam51/sep490-gpu-service:latest
+    container_name: sep490_gpu
+    restart: unless-stopped
+    # Secrets đọc từ file (docker compose, không cần Swarm)
+    # Tạo thư mục secrets/ và đặt nội dung vào từng file:
+    #   echo "sk-ant-xxx" > secrets/ANTHROPIC_API_KEY
+    #   echo "hf_xxx"     > secrets/HF_TOKEN
+    #   echo "http://backend:3000" > secrets/BACKEND_URL
+    secrets:
+      - ANTHROPIC_API_KEY
+      - HF_TOKEN
+      - BACKEND_URL
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5000
+      - TORCHDYNAMO_DISABLE=1
+      - CUDA_LAUNCH_BLOCKING=1
+    # Không expose ra host — backend gọi nội bộ qua http://gpu-service:5000
+    expose:
+      - "5000"
+    volumes:
+      - gpu_checkpoints:/tmp/checkpoints_
+      - gpu_uploads:/app/dataset_uploads
+    networks:
+      - app_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   # ── Backend ────────────────────────────────────────────────────────────────
   backend:
     build:
@@ -26,7 +64,8 @@ services:
     environment:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/sep_training
-      - GPU_SERVICE_URL=${GPU_SERVICE_URL:-}
+      # Kết nối nội bộ tới gpu-service — không qua ngrok/IP ngoài
+      - GPU_SERVICE_URL=http://gpu-service:5000
       - PORT=3000
     volumes:
       - uploads_data:/app/uploads
@@ -35,6 +74,8 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      gpu-service:
+        condition: service_started
 
   # ── Frontend ───────────────────────────────────────────────────────────────
   frontend:
@@ -45,10 +86,14 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
+      # Port 443 chỉ dùng trên production server (có SSL cert)
+      # - "443:443"
     volumes:
-      - certbot_certs:/etc/letsencrypt:ro
-      - certbot_webroot:/var/www/certbot
+      # Dev: dùng nginx.dev.conf (HTTP only, không cần SSL cert)
+      - ./frontend/nginx.dev.conf:/etc/nginx/conf.d/app.conf:ro
+      # Production: bỏ comment 2 dòng dưới, comment dòng trên
+      # - certbot_certs:/etc/letsencrypt:ro
+      # - certbot_webroot:/var/www/certbot
     networks:
       - app_network
     depends_on:
@@ -69,12 +114,25 @@ volumes:
     driver: local
   uploads_data:
     driver: local
+  gpu_checkpoints:
+    driver: local
+  gpu_uploads:
+    driver: local
   certbot_certs:
     external: true
     name: sep490_webapp_certbot_certs
   certbot_webroot:
     external: true
     name: sep490_webapp_certbot_webroot
+
+# ── Docker Compose Secrets (đọc từ file, không phải Swarm) ───────────────────
+secrets:
+  ANTHROPIC_API_KEY:
+    file: ./secrets/ANTHROPIC_API_KEY
+  HF_TOKEN:
+    file: ./secrets/HF_TOKEN
+  BACKEND_URL:
+    file: ./secrets/BACKEND_URL
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:
