@@ -124,6 +124,7 @@ export type DatasetAssignmentSummary = {
   user: ShareUser;
   count: number;
   ranges: string[];
+  reviewAvailable?: boolean;
   submission?: AssignmentSubmissionStatus;
 };
 
@@ -143,10 +144,8 @@ export type AssignmentSubmissionProgress = {
 };
 
 export type AssignmentSubmissionStatus = {
-  status: 'draft' | 'submitted' | 'approved';
+  status: 'draft' | 'submitted';
   submittedAt?: string | null;
-  approvedAt?: string | null;
-  approvedBy?: string | null;
   progress: AssignmentSubmissionProgress;
 };
 
@@ -191,7 +190,7 @@ export type AssignmentConflictItem = {
   agreementScore: number | null;
   pendingAdjudicationCount: number;
   resolvedAdjudicationCount: number;
-  status: 'pending' | 'resolved';
+  status: 'pending' | 'resolved_unpublished' | 'published';
 };
 
 export type AssignmentDashboardResponse = {
@@ -200,7 +199,8 @@ export type AssignmentDashboardResponse = {
     totalAssignees: number;
     inProgressAssignees: number;
     submittedAssignees: number;
-    approvedAssignees: number;
+    savedDecisionCount: number;
+    publishedDecisionCount: number;
     pendingConflicts: number;
   };
   users: Array<{
@@ -211,10 +211,10 @@ export type AssignmentDashboardResponse = {
     completionPercent: number;
     labelsPerHour: number;
     latestActivityAt: string | null;
+    reviewAvailable?: boolean;
     submission: {
-      status: 'draft' | 'submitted' | 'approved';
+      status: 'draft' | 'submitted';
       submittedAt?: string | null;
-      approvedAt?: string | null;
     } | null;
   }>;
   conflicts: AssignmentConflictItem[];
@@ -243,13 +243,16 @@ export type AssignmentSampleComparisonResponse = {
     annotators: Array<{
       annotator: ShareUser;
       labels: string[];
+      isOwner?: boolean;
     }>;
     adjudication: {
-      status: 'pending' | 'resolved';
+      status: 'pending' | 'resolved_unpublished' | 'published';
       finalLabels: string[];
       note: string;
       resolvedAt: string | null;
       resolvedBy: string | null;
+      publishedAt?: string | null;
+      publishedBy?: string | null;
     } | null;
   }>;
 };
@@ -274,6 +277,7 @@ export type DatasetAssignmentDetailResponse = {
     totalSamples: number;
   };
   assignee: ShareUser;
+  reviewAvailable?: boolean;
   submission: AssignmentSubmissionStatus;
   samples: DatasetAssignmentDetailSample[];
 };
@@ -1044,6 +1048,33 @@ export const apiService = {
     return response.data;
   },
 
+  publishDatasetVersionAssignmentAdjudication: async (
+    id: string,
+    sampleId: string,
+    payload: {
+      targetScope: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+    }
+  ): Promise<{ message: string; adjudication: any }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/samples/${sampleId}/adjudications/publish`, payload);
+    return response.data;
+  },
+
+  autoPublishDatasetVersionAssignmentAdjudications: async (
+    id: string,
+    sampleId: string
+  ): Promise<{
+    message: string;
+    processedTargets: number;
+    publishedTargets: number;
+    skippedZeroIaaTargets: number;
+    skippedEmptyMajorityTargets: number;
+  }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/samples/${sampleId}/adjudications/auto-publish`);
+    return response.data;
+  },
+
   getDatasetVersionUserAssignmentDetail: async (
     id: string,
     userId: string
@@ -1059,14 +1090,6 @@ export const apiService = {
 
   submitMyAssignment: async (id: string): Promise<AssignmentSubmissionStatus & { message: string }> => {
     const response = await api.post(`/dataprep/versions/${id}/assignments/me/submit`);
-    return response.data;
-  },
-
-  approveAssignmentSubmission: async (
-    id: string,
-    userId: string
-  ): Promise<AssignmentSubmissionStatus & { message: string }> => {
-    const response = await api.post(`/dataprep/versions/${id}/assignments/users/${userId}/approve`);
     return response.data;
   },
 

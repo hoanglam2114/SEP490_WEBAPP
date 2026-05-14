@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Loader2, Save, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Save, Wand2, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
 import type { AssignmentSampleComparisonResponse } from '../../../services/api';
@@ -35,15 +35,40 @@ export function AssignmentConflictComparisonModal({
     [comparisonQuery.data?.targets, selectedTargetKey]
   );
 
+  const moveToNextPendingTarget = (targets: AssignmentSampleComparisonResponse['targets'], currentKey: string) => {
+    if (!targets.length) {
+      return;
+    }
+
+    const currentIndex = Math.max(targets.findIndex((target) => target.targetKey === currentKey), 0);
+    const orderedTargets = [
+      ...targets.slice(currentIndex + 1),
+      ...targets.slice(0, currentIndex + 1),
+    ];
+    const nextPendingTarget = orderedTargets.find((target) => {
+      if (!target.hasConflict) {
+        return false;
+      }
+      return !target.adjudication || target.adjudication.status === 'pending';
+    });
+
+    const fallbackTarget = targets.find((target) => target.targetKey === currentKey) || targets[0];
+    const nextTarget = nextPendingTarget || fallbackTarget;
+    setSelectedTargetKey(nextTarget.targetKey);
+    setSelectedLabels(nextTarget.adjudication?.finalLabels?.length ? nextTarget.adjudication.finalLabels : nextTarget.majorityLabels);
+    setNote(nextTarget.adjudication?.note || '');
+  };
+
   useEffect(() => {
     if (!comparisonQuery.data?.targets?.length) {
       return;
     }
-    const nextTarget = comparisonQuery.data.targets[0];
+    const nextTarget = comparisonQuery.data.targets.find((target) => target.targetKey === selectedTargetKey)
+      || comparisonQuery.data.targets[0];
     setSelectedTargetKey(nextTarget.targetKey);
     setSelectedLabels(nextTarget.adjudication?.finalLabels?.length ? nextTarget.adjudication.finalLabels : nextTarget.majorityLabels);
     setNote(nextTarget.adjudication?.note || '');
-  }, [comparisonQuery.data?.targets, sampleId]);
+  }, [comparisonQuery.data?.targets, sampleId, selectedTargetKey]);
 
   const resolveMutation = useMutation({
     mutationFn: () => {
@@ -58,12 +83,55 @@ export function AssignmentConflictComparisonModal({
         note,
       });
     },
-    onSuccess: (payload) => {
+    onSuccess: async (payload) => {
       toast.success(payload.message || 'Adjudication saved.');
+      const refreshed = await comparisonQuery.refetch();
+      moveToNextPendingTarget(refreshed.data?.targets || [], currentTarget?.targetKey || '');
       onResolved();
     },
     onError: (error: any) => {
       toast.error(error?.response?.data?.error || error?.message || 'Save adjudication failed.');
+    },
+  });
+
+  const publishMutation = useMutation({
+    mutationFn: () => {
+      if (!sampleId || !currentTarget) {
+        throw new Error('Missing target selection.');
+      }
+      return dataprepApi.publishDatasetVersionAssignmentAdjudication(versionId, sampleId, {
+        targetScope: currentTarget.targetScope,
+        messageIndex: currentTarget.messageIndex,
+        messageRole: currentTarget.messageRole,
+      });
+    },
+    onSuccess: (payload) => {
+      toast.success(payload.message || 'Final labels published.');
+      comparisonQuery.refetch();
+      onResolved();
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error?.message || 'Publish final labels failed.');
+    },
+  });
+
+  const autoPublishMutation = useMutation({
+    mutationFn: () => {
+      if (!sampleId) {
+        throw new Error('Missing sample selection.');
+      }
+      return dataprepApi.autoPublishDatasetVersionAssignmentAdjudications(versionId, sampleId);
+    },
+    onSuccess: async (payload) => {
+      toast.success(
+        `${payload.message || 'Auto publish completed.'} Published ${payload.publishedTargets}/${payload.processedTargets}, kept ${payload.skippedZeroIaaTargets} target(s) with IAA = 0.`
+      );
+      const refreshed = await comparisonQuery.refetch();
+      moveToNextPendingTarget(refreshed.data?.targets || [], currentTarget?.targetKey || '');
+      onResolved();
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.error || error?.message || 'Auto publish failed.');
     },
   });
 
@@ -91,9 +159,12 @@ export function AssignmentConflictComparisonModal({
         </div>
 
         <div className="grid min-h-0 flex-1 grid-cols-[260px_1fr_320px] overflow-hidden">
-          <aside className="min-h-0 border-r border-slate-200 bg-slate-50/80 p-3">
+          <aside className="min-h-0 overflow-hidden border-r border-slate-200 bg-slate-50/80 p-3">
             <p className="mb-3 text-sm font-semibold text-slate-900">Targets</p>
-            <div className="space-y-2 overflow-y-auto">
+            <div
+              className="max-h-full space-y-2 overflow-y-auto pr-1"
+              style={{ height: 'calc(88vh - 150px)', scrollbarGutter: 'stable' }}
+            >
               {(comparisonQuery.data?.targets || []).map((target) => (
                 <button
                   key={target.targetKey}
@@ -105,7 +176,11 @@ export function AssignmentConflictComparisonModal({
                   }}
                   className={`w-full rounded-xl border px-3 py-2 text-left ${
                     target.targetKey === currentTarget?.targetKey
-                      ? 'border-blue-300 bg-blue-50'
+                      ? target.adjudication?.status === 'published'
+                        ? 'border-emerald-300 bg-emerald-50'
+                        : 'border-blue-300 bg-blue-50'
+                      : target.adjudication?.status === 'published'
+                        ? 'border-emerald-200 bg-emerald-50'
                       : target.hasConflict
                         ? 'border-rose-200 bg-rose-50'
                         : 'border-slate-200 bg-white'
@@ -148,8 +223,20 @@ export function AssignmentConflictComparisonModal({
 
                 <div className="grid gap-3 md:grid-cols-2">
                   {currentTarget.annotators.map((item) => (
-                    <div key={item.annotator.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                      <p className="text-xs font-semibold text-slate-900">{item.annotator.name || item.annotator.email}</p>
+                    <div
+                      key={item.annotator.id}
+                      className={`rounded-xl border bg-white p-3 ${
+                        item.isOwner ? 'border-blue-300 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]' : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-slate-900">{item.annotator.name || item.annotator.email}</p>
+                        {item.isOwner && (
+                          <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                            Owner
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-1 text-[11px] text-slate-500">{item.annotator.email}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {item.labels.length > 0 ? item.labels.map((label) => (
@@ -168,7 +255,18 @@ export function AssignmentConflictComparisonModal({
           </section>
 
           <aside className="min-h-0 border-l border-slate-200 bg-white p-4">
-            <p className="text-sm font-semibold text-slate-900">Final Decision</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-slate-900">Final Decision</p>
+              <button
+                type="button"
+                onClick={() => autoPublishMutation.mutate()}
+                disabled={autoPublishMutation.isPending || comparisonQuery.isLoading}
+                className="inline-flex items-center gap-1 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-[11px] font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+              >
+                {autoPublishMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                Auto Publish IAA &gt; 0
+              </button>
+            </div>
             {currentTarget && (
               <>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -213,6 +311,15 @@ export function AssignmentConflictComparisonModal({
                   className="mt-4 h-28 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                 />
 
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+                  Status:{' '}
+                  {currentTarget.adjudication?.status === 'published'
+                    ? 'Published'
+                    : currentTarget.adjudication?.status === 'resolved_unpublished'
+                      ? 'Decision saved'
+                      : 'Pending review'}
+                </div>
+
                 <button
                   type="button"
                   onClick={() => resolveMutation.mutate()}
@@ -220,7 +327,16 @@ export function AssignmentConflictComparisonModal({
                   className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-slate-300"
                 >
                   {resolveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Save Final Labels
+                  Save Decision
+                </button>
+                <button
+                  type="button"
+                  onClick={() => publishMutation.mutate()}
+                  disabled={publishMutation.isPending || currentTarget.adjudication?.status !== 'resolved_unpublished'}
+                  className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {publishMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Publish Final Labels
                 </button>
               </>
             )}

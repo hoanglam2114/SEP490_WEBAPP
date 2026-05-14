@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
 import { QUALITY_AUTO_REJECT_MARKER } from './quality.constants';
-import { getAggregatedSampleLabels, insertAssignments, removeLabelsByQuery } from '../../../services/labelAssignmentService';
+import { getEffectiveSampleLabelsForVersion, insertAssignments, removeLabelsByQuery } from '../../../services/labelAssignmentService';
 
 export const QUALITY_BUCKETS = ['Gold', 'Rewrite', 'Reject', 'Incomplete'] as const;
 export type QualityBucket = (typeof QUALITY_BUCKETS)[number];
@@ -249,7 +249,7 @@ export class QualityService {
     }
 
     const itemIds = items.map((item: any) => item._id);
-    const labels = (await getAggregatedSampleLabels(itemIds)).filter(
+    const labels = (await getEffectiveSampleLabelsForVersion(version._id, itemIds)).filter(
       (label: any) => label.targetScope === 'message' && label.type === 'hard'
     );
     const labelMap = buildLabelMap(labels);
@@ -460,7 +460,7 @@ export class QualityService {
     }
 
     const itemIds = items.map((item: any) => item._id);
-    const labels = (await getAggregatedSampleLabels(itemIds)).filter(
+    const labels = (await getEffectiveSampleLabelsForVersion(version._id, itemIds)).filter(
       (label: any) => label.targetScope === 'message' && label.type === 'hard'
     );
     const labelMap = buildLabelMap(labels);

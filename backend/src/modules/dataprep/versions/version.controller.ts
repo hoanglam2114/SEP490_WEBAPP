@@ -71,6 +71,14 @@ export class DataPrepVersionController {
     return legacyEvaluationController.resolveDatasetVersionAssignmentAdjudication(req, res);
   }
 
+  async publishAssignmentAdjudication(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.publishDatasetVersionAssignmentAdjudication(req, res);
+  }
+
+  async autoPublishAssignmentAdjudications(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.autoPublishDatasetVersionAssignmentAdjudications(req, res);
+  }
+
   async assignRange(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.assignDatasetVersionRange(req, res);
   }

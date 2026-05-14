@@ -32,6 +32,7 @@ export function AssignmentSubmissionDetailModal({
 
   const samples = detailQuery.data?.samples || [];
   const currentSample = samples[selectedSampleIndex] || null;
+  const reviewAvailable = Boolean(detailQuery.data?.reviewAvailable);
 
   useEffect(() => {
     if (!isOpen) {
@@ -55,7 +56,7 @@ export function AssignmentSubmissionDetailModal({
       contributedBy: assignee?.id,
       visibilityMode: 'review',
     }),
-    enabled: isOpen && Boolean(currentSample?.sampleId && assignee?.id),
+    enabled: isOpen && reviewAvailable && Boolean(currentSample?.sampleId && assignee?.id),
   });
 
   const allLabels = useMemo(
@@ -108,6 +109,9 @@ export function AssignmentSubmissionDetailModal({
                 <span>
                   {detailQuery.data.submission.status} · {detailQuery.data.submission.progress.completedMessages}/{detailQuery.data.submission.progress.requiredMessages}
                 </span>
+              )}
+              {!reviewAvailable && (
+                <span>Review available after submit</span>
               )}
             </div>
           </div>
@@ -239,7 +243,11 @@ export function AssignmentSubmissionDetailModal({
               </p>
             </div>
             <div className="h-[calc(88vh-140px)] overflow-y-scroll p-3">
-              {labelsQuery.isLoading ? (
+              {!reviewAvailable ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-700">
+                  Owner chỉ có thể review labels sau khi assignee submit kết quả.
+                </div>
+              ) : labelsQuery.isLoading ? (
                 <div className="flex items-center gap-2 text-sm text-slate-500">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Loading labels...

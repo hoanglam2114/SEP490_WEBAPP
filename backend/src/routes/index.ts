@@ -128,6 +128,7 @@ router.get('/dataset-versions/:id/assignments', (req, res) => evalController.get
 router.get('/dataset-versions/:id/assignments/users/:userId/detail', (req, res) => evalController.getDatasetVersionUserAssignmentDetail(req, res));
 router.get('/dataset-versions/:id/assignments/me/status', (req, res) => evalController.getMyAssignmentSubmissionStatus(req, res));
 router.post('/dataset-versions/:id/assignments/me/submit', (req, res) => evalController.submitMyAssignment(req, res));
+router.post('/dataset-versions/:id/assignments/samples/:sampleId/adjudications/publish', (req, res) => evalController.publishDatasetVersionAssignmentAdjudication(req, res));
 router.post('/dataset-versions/:id/assignments/range', (req, res) => evalController.assignDatasetVersionRange(req, res));
 router.post('/dataset-versions/:id/assignments/users/:userId/approve', (req, res) => evalController.approveUserAssignmentSubmission(req, res));
 router.delete('/dataset-versions/:id/assignments/range', (req, res) => evalController.clearDatasetVersionAssignmentRange(req, res));

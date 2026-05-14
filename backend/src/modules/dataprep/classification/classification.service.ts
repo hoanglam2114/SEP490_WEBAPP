@@ -1,8 +1,7 @@
 import mongoose from 'mongoose';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
-import { getHardRejectedSampleIds } from '../../../utils/labelFilters';
-import { getContributorCountsForSample } from '../../../services/labelAssignmentService';
+import { getEffectiveHardRejectedSampleIdsForVersion, getEffectiveSampleLabelsForVersion } from '../../../services/labelAssignmentService';
 
 /**
  * Subject-only classification groups.
@@ -77,7 +76,7 @@ export class ClassificationService {
     const sampleOids = items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)));
 
     // 2. Load all labels associated with these samples
-    const labels = await getContributorCountsForSample(sampleOids);
+    const labels = await getEffectiveSampleLabelsForVersion(version._id, sampleOids);
 
     // 3. Build per-sample label index
     const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; assignedUserCount: number }>>();
@@ -94,7 +93,7 @@ export class ClassificationService {
       sampleLabelsMap.set(sid, list);
     }
 
-    const hardRejectedItemIds = await getHardRejectedSampleIds(sampleOids);
+    const hardRejectedItemIds = await getEffectiveHardRejectedSampleIdsForVersion(version._id, sampleOids);
     const hardRejectedSampleIds = items
       .filter((item: any) => hardRejectedItemIds.has(String(item._id)))
       .map((item: any) => String(item.sampleId));
@@ -162,7 +161,8 @@ export class ClassificationService {
     }
 
     const items = await ProcessedDatasetItem.find({ datasetVersionId: version._id }).lean();
-    const hardRejectedItemIds = await getHardRejectedSampleIds(
+    const hardRejectedItemIds = await getEffectiveHardRejectedSampleIdsForVersion(
+      version._id,
       items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)))
     );
 

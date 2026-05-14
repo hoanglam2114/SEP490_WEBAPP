@@ -8,6 +8,10 @@ import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { User } from '../models/User';
 import { DatasetSampleAssignment } from '../models/DatasetSampleAssignment';
 import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmission';
+import { DatasetAssignmentAdjudication } from '../models/DatasetAssignmentAdjudication';
+import { DatasetCanonicalLabel } from '../models/DatasetCanonicalLabel';
+import { DatasetAssignmentActivity } from '../models/DatasetAssignmentActivity';
+import { LabelAssignment } from '../models/LabelAssignment';
 import { GeminiProvider } from '../services/providers/GeminiProvider';
 import { OpenAIProvider } from '../services/providers/OpenAIProvider';
 import { DeepseekProvider } from '../services/providers/DeepseekProvider';
@@ -19,8 +23,10 @@ import {
   buildAssignmentConflictList,
   buildAssignmentDashboard,
   buildAssignmentSampleComparison,
+  autoPublishAssignmentAdjudicationsForSample,
   calculateAssignmentProgressFromAssignments,
   getTopLabelForSampleIds,
+  publishAssignmentAdjudication,
   resolveAssignmentAdjudication,
 } from '../services/labelAssignmentService';
 
@@ -200,12 +206,72 @@ async function calculateAssignmentProgress(datasetVersionId: mongoose.Types.Obje
 }
 
 function formatSubmission(submission: any, progress: any) {
+  const rawStatus = String(submission?.status || 'draft');
+  const normalizedStatus = rawStatus === 'submitted' || rawStatus === 'approved'
+    ? 'submitted'
+    : 'draft';
   return {
-    status: submission?.status || 'draft',
-    submittedAt: submission?.submittedAt || null,
-    approvedAt: submission?.approvedAt || null,
-    approvedBy: submission?.approvedBy ? String(submission.approvedBy) : null,
+    status: normalizedStatus,
+    submittedAt: submission?.submittedAt || submission?.approvedAt || null,
     progress,
+  };
+}
+
+function isSubmittedAssignmentStatus(status: unknown): boolean {
+  const normalized = String(status || '');
+  return normalized === 'submitted' || normalized === 'approved';
+}
+
+async function hardResetAssignments(params: {
+  datasetVersionId: mongoose.Types.ObjectId;
+  assignmentRows: any[];
+}) {
+  if (!params.assignmentRows.length) {
+    return {
+      deletedAssignments: 0,
+      affectedAssigneeIds: [] as string[],
+      affectedSampleIds: [] as string[],
+    };
+  }
+
+  const affectedSampleIds = Array.from(new Set(
+    params.assignmentRows.map((row: any) => String(row.sampleId || '')).filter(Boolean)
+  ));
+  const affectedAssigneeIds = Array.from(new Set(
+    params.assignmentRows.map((row: any) => String(row.assigneeId || '')).filter(Boolean)
+  ));
+
+  await Promise.all([
+    DatasetSampleAssignment.deleteMany({
+      _id: { $in: params.assignmentRows.map((row: any) => row._id) },
+    }),
+    LabelAssignment.deleteMany({
+      sampleId: { $in: affectedSampleIds.map((id) => new mongoose.Types.ObjectId(id)) },
+      createdBy: { $in: affectedAssigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }),
+    DatasetAssignmentActivity.deleteMany({
+      datasetVersionId: params.datasetVersionId,
+      sampleId: { $in: affectedSampleIds.map((id) => new mongoose.Types.ObjectId(id)) },
+      annotatorId: { $in: affectedAssigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }),
+    DatasetAssignmentSubmission.deleteMany({
+      datasetVersionId: params.datasetVersionId,
+      assigneeId: { $in: affectedAssigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }),
+    DatasetAssignmentAdjudication.deleteMany({
+      datasetVersionId: params.datasetVersionId,
+      sampleId: { $in: affectedSampleIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }),
+    DatasetCanonicalLabel.deleteMany({
+      datasetVersionId: params.datasetVersionId,
+      sampleId: { $in: affectedSampleIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }),
+  ]);
+
+  return {
+    deletedAssignments: params.assignmentRows.length,
+    affectedAssigneeIds,
+    affectedSampleIds,
   };
 }
 
@@ -1338,6 +1404,7 @@ export class EvaluationController {
           user: item.user,
           count: item.count,
           ranges,
+          reviewAvailable: isSubmittedAssignmentStatus(submissionMap.get(item.user.id)?.status),
           submission: formatSubmission(submissionMap.get(item.user.id), progressMap.get(item.user.id)),
         };
       });
@@ -1442,6 +1509,7 @@ export class EvaluationController {
         assigneeId: new mongoose.Types.ObjectId(userId),
       }).lean();
       const progress = await calculateAssignmentProgress(version._id, userId);
+      const reviewAvailable = isSubmittedAssignmentStatus(submission?.status);
 
       const detailSamples = assignments
         .map((assignment: any) => {
@@ -1474,6 +1542,7 @@ export class EvaluationController {
           name: String((assignee as any).name || ''),
           email: String((assignee as any).email || ''),
         },
+        reviewAvailable,
         submission: formatSubmission(submission, progress),
         samples: detailSamples,
       });
@@ -1538,7 +1607,14 @@ export class EvaluationController {
       }
 
       const conflicts = await buildAssignmentConflictList(id, {
-        status: req.query.status === 'resolved' ? 'resolved' : req.query.status === 'pending' ? 'pending' : undefined,
+        status:
+          req.query.status === 'published'
+            ? 'published'
+            : req.query.status === 'resolved_unpublished'
+              ? 'resolved_unpublished'
+              : req.query.status === 'pending'
+                ? 'pending'
+                : undefined,
         assigneeId: typeof req.query.assigneeId === 'string' ? req.query.assigneeId : undefined,
         sampleIndex: Number.isInteger(Number(req.query.sampleIndex)) ? Number(req.query.sampleIndex) : undefined,
         minAgreement: Number.isFinite(Number(req.query.minAgreement)) ? Number(req.query.minAgreement) : undefined,
@@ -1644,6 +1720,101 @@ export class EvaluationController {
     }
   }
 
+  async publishDatasetVersionAssignmentAdjudication(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, sampleId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(sampleId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc sampleId không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const targetScope = req.body?.targetScope === 'message' ? 'message' : 'sample';
+      let messageIndex: number | undefined;
+      let messageRole: 'user' | 'assistant' | undefined;
+      if (targetScope === 'message') {
+        const parsedMessageIndex = Number(req.body?.messageIndex);
+        const parsedMessageRole = req.body?.messageRole === 'user' || req.body?.messageRole === 'assistant'
+          ? req.body.messageRole
+          : undefined;
+        if (!Number.isInteger(parsedMessageIndex) || parsedMessageIndex < 0 || !parsedMessageRole) {
+          res.status(400).json({ error: 'message target requires valid messageIndex and messageRole.' });
+          return;
+        }
+        messageIndex = parsedMessageIndex;
+        messageRole = parsedMessageRole;
+      }
+
+      const adjudication = await publishAssignmentAdjudication({
+        datasetVersionId: id,
+        sampleId,
+        targetScope,
+        messageIndex: targetScope === 'message' ? messageIndex : undefined,
+        messageRole,
+        publishedBy: ownerId,
+      });
+
+      res.json({
+        message: 'Đã publish final labels.',
+        adjudication,
+      });
+    } catch (error: any) {
+      console.error('Publish assignment adjudication error:', error);
+      res.status(error?.statusCode || 500).json({
+        error: error.message || 'Publish final labels thất bại',
+      });
+    }
+  }
+
+  async autoPublishDatasetVersionAssignmentAdjudications(req: Request, res: Response): Promise<void> {
+    try {
+      const ownerId = getAuthUserId(req);
+      if (!ownerId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const { id, sampleId } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(sampleId)) {
+        res.status(400).json({ error: 'Dataset version id hoặc sampleId không hợp lệ.' });
+        return;
+      }
+
+      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
+      if (!version) {
+        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
+        return;
+      }
+
+      const summary = await autoPublishAssignmentAdjudicationsForSample({
+        datasetVersionId: id,
+        sampleId,
+        ownerId,
+      });
+
+      res.json({
+        message: 'Đã xử lý tự động các target có IAA > 0.',
+        ...summary,
+      });
+    } catch (error: any) {
+      console.error('Auto publish assignment adjudications error:', error);
+      res.status(error?.statusCode || 500).json({
+        error: error.message || 'Xử lý tự động final labels thất bại',
+      });
+    }
+  }
+
   async assignDatasetVersionRange(req: Request, res: Response): Promise<void> {
     try {
       const ownerId = getAuthUserId(req);
@@ -1694,15 +1865,15 @@ export class EvaluationController {
 
       const selectedSamples = samples.slice(startIndex - 1, endIndex);
       const selectedSampleIds = selectedSamples.map((sample: any) => sample._id);
-
-      await DatasetSampleAssignment.deleteMany({
+      const existingAssignments = await DatasetSampleAssignment.find({
         datasetVersionId: version._id,
         sampleId: { $in: selectedSampleIds },
         assigneeId: new mongoose.Types.ObjectId(assigneeId),
-      });
-      await DatasetAssignmentSubmission.deleteOne({
-        datasetVersionId: version._id,
-        assigneeId: new mongoose.Types.ObjectId(assigneeId),
+      }).lean();
+
+      await hardResetAssignments({
+        datasetVersionId: version._id as mongoose.Types.ObjectId,
+        assignmentRows: existingAssignments,
       });
 
       await DatasetSampleAssignment.insertMany(
@@ -1756,15 +1927,18 @@ export class EvaluationController {
         return;
       }
 
-      const result = await DatasetSampleAssignment.deleteMany({
+      const assignmentRows = await DatasetSampleAssignment.find({
         datasetVersionId: version._id,
         sampleIndex: { $gte: startIndex, $lte: startIndex + count - 1 },
+      }).lean();
+      const result = await hardResetAssignments({
+        datasetVersionId: version._id as mongoose.Types.ObjectId,
+        assignmentRows,
       });
-      await DatasetAssignmentSubmission.deleteMany({ datasetVersionId: version._id });
 
       res.json({
-        message: `Đã xóa ${result.deletedCount || 0} assignment.`,
-        deletedCount: result.deletedCount || 0,
+        message: `Đã xóa ${result.deletedAssignments || 0} assignment và reset toàn bộ kết quả liên quan.`,
+        deletedCount: result.deletedAssignments || 0,
       });
     } catch (error: any) {
       console.error('Clear dataset version assignment range error:', error);
@@ -1795,18 +1969,18 @@ export class EvaluationController {
         return;
       }
 
-      const result = await DatasetSampleAssignment.deleteMany({
+      const assignmentRows = await DatasetSampleAssignment.find({
         datasetVersionId: version._id,
         assigneeId: new mongoose.Types.ObjectId(userId),
-      });
-      await DatasetAssignmentSubmission.deleteOne({
-        datasetVersionId: version._id,
-        assigneeId: new mongoose.Types.ObjectId(userId),
+      }).lean();
+      const result = await hardResetAssignments({
+        datasetVersionId: version._id as mongoose.Types.ObjectId,
+        assignmentRows,
       });
 
       res.json({
-        message: `Đã xóa ${result.deletedCount || 0} assignment của user.`,
-        deletedCount: result.deletedCount || 0,
+        message: `Đã xóa ${result.deletedAssignments || 0} assignment của user và reset toàn bộ kết quả liên quan.`,
+        deletedCount: result.deletedAssignments || 0,
       });
     } catch (error: any) {
       console.error('Clear dataset version user assignments error:', error);
@@ -1897,11 +2071,6 @@ export class EvaluationController {
         assigneeId: new mongoose.Types.ObjectId(assigneeId),
       }).lean();
 
-      if (existing?.status === 'approved') {
-        res.status(409).json({ error: 'Kết quả này đã được owner approve.', submission: formatSubmission(existing, progress) });
-        return;
-      }
-
       const submittedAt = existing?.submittedAt || new Date();
       const submission = await DatasetAssignmentSubmission.findOneAndUpdate(
         {
@@ -1931,64 +2100,10 @@ export class EvaluationController {
     }
   }
 
-  async approveUserAssignmentSubmission(req: Request, res: Response): Promise<void> {
-    try {
-      const ownerId = getAuthUserId(req);
-      if (!ownerId) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-
-      const { id, userId } = req.params;
-      if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
-        res.status(400).json({ error: 'Dataset version id hoặc userId không hợp lệ.' });
-        return;
-      }
-
-      const version = await DatasetVersion.findOne({ _id: id, ownerId }).lean();
-      if (!version) {
-        res.status(404).json({ error: 'Không tìm thấy dataset version.' });
-        return;
-      }
-
-      const submission = await DatasetAssignmentSubmission.findOne({
-        datasetVersionId: version._id,
-        assigneeId: new mongoose.Types.ObjectId(userId),
-      }).lean();
-
-      if (!submission || submission.status !== 'submitted') {
-        res.status(409).json({ error: 'User này chưa nộp kết quả để approve.' });
-        return;
-      }
-
-      const progress = await calculateAssignmentProgress(version._id, userId);
-      const updated = await DatasetAssignmentSubmission.findOneAndUpdate(
-        {
-          datasetVersionId: version._id,
-          assigneeId: new mongoose.Types.ObjectId(userId),
-        },
-        {
-          $set: {
-            status: 'approved',
-            approvedAt: new Date(),
-            approvedBy: new mongoose.Types.ObjectId(ownerId),
-            progressSnapshot: progress,
-          },
-        },
-        { returnDocument: 'after' }
-      ).lean();
-
-      res.json({
-        message: 'Đã approve kết quả gán nhãn.',
-        ...formatSubmission(updated, progress),
-      });
-    } catch (error: any) {
-      console.error('Approve user assignment submission error:', error);
-      res.status(500).json({
-        error: 'Approve kết quả gán nhãn thất bại',
-        details: error.message,
-      });
-    }
+  async approveUserAssignmentSubmission(_req: Request, res: Response): Promise<void> {
+    res.status(410).json({
+      error: 'Approve submission đã bị loại bỏ. Owner hãy review và publish final labels.',
+    });
   }
 
   async deleteDatasetVersionSample(req: Request, res: Response): Promise<void> {
@@ -2021,6 +2136,8 @@ export class EvaluationController {
         ProcessedDatasetItem.deleteOne({ _id: item._id }),
         EvaluationHistory.deleteMany({ sampleId: item._id, ownerId }),
         DatasetSampleAssignment.deleteMany({ sampleId: item._id }),
+        DatasetAssignmentAdjudication.deleteMany({ sampleId: item._id }),
+        DatasetCanonicalLabel.deleteMany({ sampleId: item._id }),
       ]);
 
       await DatasetVersion.updateOne(

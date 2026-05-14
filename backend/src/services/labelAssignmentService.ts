@@ -6,6 +6,7 @@ import { LabelAssignment } from '../models/LabelAssignment';
 import { ProcessedDatasetItem } from '../models/ProcessedDatasetItem';
 import { DatasetAssignmentActivity } from '../models/DatasetAssignmentActivity';
 import { DatasetAssignmentAdjudication } from '../models/DatasetAssignmentAdjudication';
+import { DatasetCanonicalLabel } from '../models/DatasetCanonicalLabel';
 import { DatasetAssignmentSubmission } from '../models/DatasetAssignmentSubmission';
 import { User } from '../models/User';
 import { QUALITY_AUTO_REJECT_MARKER } from '../modules/dataprep/quality/quality.constants';
@@ -61,6 +62,16 @@ export type LabelAssignmentAggregate = {
   assignedUserCount: number;
   assignedByCurrentUser: boolean;
   assignedUsers?: Array<{ id: string; name: string; email: string }>;
+};
+
+type EffectiveLabelAggregate = {
+  sampleId: mongoose.Types.ObjectId | string;
+  name: string;
+  type: LabelType;
+  targetScope: LabelScope;
+  messageIndex?: number | null;
+  messageRole?: LabelRole | null;
+  assignedUserCount: number;
 };
 
 type AggregateOptions = {
@@ -289,6 +300,50 @@ function mergeAggregateDocs(
   });
 }
 
+function mapCanonicalRowsToAggregateDocs(rows: any[]): any[] {
+  return rows.flatMap((row: any) =>
+    (Array.isArray(row.labels) ? row.labels : [])
+      .map((name: any) => String(name || '').trim().toUpperCase())
+      .filter(Boolean)
+      .map((name: string) => ({
+        sampleId: row.sampleId,
+        name,
+        type: 'hard',
+        targetScope: row.targetScope === 'message' ? 'message' : 'sample',
+        messageIndex: Number.isInteger(Number(row.messageIndex)) ? Number(row.messageIndex) : null,
+        messageRole: row.messageRole === 'user' || row.messageRole === 'assistant' ? row.messageRole : null,
+        targetTextSnapshot: row.targetTextSnapshot ? String(row.targetTextSnapshot) : undefined,
+        createdBy: row.publishedBy,
+        createdAt: row.publishedAt || row.updatedAt || row.createdAt || null,
+        updatedAt: row.updatedAt || row.publishedAt || row.createdAt || null,
+      }))
+  );
+}
+
+async function getCanonicalLabelsForSample(
+  sample: any,
+  scope: LabelQueryScope,
+  messageIndex?: number
+): Promise<any[]> {
+  const query: Record<string, any> = {
+    datasetVersionId: sample.datasetVersionId,
+    sampleId: sample._id,
+  };
+
+  if (scope === 'sample') {
+    query.targetScope = 'sample';
+  } else if (scope === 'message') {
+    query.targetScope = 'message';
+    if (messageIndex !== undefined) {
+      query.messageIndex = messageIndex;
+    }
+  }
+
+  return DatasetCanonicalLabel.find(query)
+    .sort({ publishedAt: -1, createdAt: -1 })
+    .lean();
+}
+
 export async function getAggregatedLabelsForSample(
   sampleId: string,
   viewerId: string,
@@ -297,6 +352,9 @@ export async function getAggregatedLabelsForSample(
   await ensureLabelAssignmentsForSamples([sampleId]);
   const sample = await resolveSample(sampleId);
   const visibilityMode = options.visibilityMode === 'review' ? 'review' : 'default';
+  const filterUserId = options.createdBy || options.contributedBy;
+  const datasetVersion = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId').lean();
+  const ownerId = String((datasetVersion as any)?.ownerId || '');
 
   const query: Record<string, any> = {
     sampleId: sample._id,
@@ -312,9 +370,24 @@ export async function getAggregatedLabelsForSample(
     }
   }
 
-  const filterUserId = options.createdBy || options.contributedBy;
   if (filterUserId) {
     query.createdBy = new mongoose.Types.ObjectId(filterUserId);
+  }
+
+  if (
+    visibilityMode === 'review'
+    && filterUserId
+    && ownerId
+    && String(viewerId) === ownerId
+  ) {
+    const submittedSubmission = await DatasetAssignmentSubmission.findOne({
+      datasetVersionId: new mongoose.Types.ObjectId(sample.datasetVersionId),
+      assigneeId: new mongoose.Types.ObjectId(filterUserId),
+      status: { $in: ['submitted', 'approved'] },
+    }).select('_id').lean();
+    if (!submittedSubmission) {
+      throw Object.assign(new Error('Assignee labels can only be reviewed after submission.'), { statusCode: 409 });
+    }
   }
 
   const docs = await LabelAssignment.find(query)
@@ -324,44 +397,30 @@ export async function getAggregatedLabelsForSample(
 
   let visibleDocs = docs;
   if (visibilityMode === 'default' && docs.length) {
-    const datasetVersion = await DatasetVersion.findById(sample.datasetVersionId).select('ownerId').lean();
-    const ownerId = String((datasetVersion as any)?.ownerId || '');
-    const contributorIds = Array.from(
-      new Set(
-        docs
-          .map((doc: any) => String(doc.createdBy?._id || doc.createdBy || ''))
-          .filter(Boolean)
-      )
-    );
+    if (String(viewerId) === ownerId) {
+      visibleDocs = docs.filter((doc: any) => {
+        const contributorId = String(doc.createdBy?._id || doc.createdBy || '');
+        if (!contributorId) {
+          return false;
+        }
+        return contributorId === ownerId;
+      });
+    } else {
+      visibleDocs = docs.filter((doc: any) => {
+        const contributorId = String(doc.createdBy?._id || doc.createdBy || '');
+        if (!contributorId) {
+          return false;
+        }
+        return contributorId === String(viewerId);
+      });
+    }
+  }
 
-    const assigneeIds = contributorIds.filter((contributorId) => contributorId !== ownerId);
-    const approvedSubmissionIds = assigneeIds.length
-      ? new Set(
-          (
-            await DatasetAssignmentSubmission.find({
-              datasetVersionId: sample.datasetVersionId,
-              assigneeId: { $in: assigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
-              status: 'approved',
-            })
-              .select('assigneeId')
-              .lean()
-          ).map((submission: any) => String(submission.assigneeId))
-        )
-      : new Set<string>();
-
-    visibleDocs = docs.filter((doc: any) => {
-      const contributorId = String(doc.createdBy?._id || doc.createdBy || '');
-      if (!contributorId) {
-        return false;
-      }
-      if (contributorId === ownerId) {
-        return true;
-      }
-      if (contributorId === String(viewerId)) {
-        return true;
-      }
-      return approvedSubmissionIds.has(contributorId);
-    });
+  const canonicalRows = String(viewerId) === ownerId
+    ? await getCanonicalLabelsForSample(sample, scope, options.messageIndex)
+    : [];
+  if (canonicalRows.length) {
+    visibleDocs = [...mapCanonicalRowsToAggregateDocs(canonicalRows), ...visibleDocs];
   }
 
   const contributorIds = Array.from(
@@ -659,6 +718,73 @@ export async function getAggregatedSampleLabels(sampleIds: mongoose.Types.Object
   ]);
 }
 
+export async function getCanonicalSampleLabelsForVersion(
+  datasetVersionId: string | mongoose.Types.ObjectId,
+  sampleIds: mongoose.Types.ObjectId[]
+): Promise<EffectiveLabelAggregate[]> {
+  if (!sampleIds.length) {
+    return [];
+  }
+
+  const versionOid = typeof datasetVersionId === 'string'
+    ? new mongoose.Types.ObjectId(datasetVersionId)
+    : datasetVersionId;
+
+  const rows = await DatasetCanonicalLabel.find({
+    datasetVersionId: versionOid,
+    sampleId: { $in: sampleIds },
+  }).lean();
+
+  return rows.flatMap((row: any) =>
+    (Array.isArray(row.labels) ? row.labels : [])
+      .map((name: any) => String(name || '').trim().toUpperCase())
+      .filter(Boolean)
+      .map((name: string) => ({
+        sampleId: row.sampleId,
+        name,
+        type: 'hard' as const,
+        targetScope: row.targetScope === 'message' ? 'message' : 'sample',
+        messageIndex: Number.isInteger(Number(row.messageIndex)) ? Number(row.messageIndex) : null,
+        messageRole: row.messageRole === 'user' || row.messageRole === 'assistant' ? row.messageRole : null,
+        assignedUserCount: 1,
+      }))
+  );
+}
+
+export async function getEffectiveSampleLabelsForVersion(
+  datasetVersionId: string | mongoose.Types.ObjectId,
+  sampleIds: mongoose.Types.ObjectId[]
+): Promise<EffectiveLabelAggregate[]> {
+  const versionOid = typeof datasetVersionId === 'string'
+    ? new mongoose.Types.ObjectId(datasetVersionId)
+    : datasetVersionId;
+  const hasAssignments = Boolean(
+    await DatasetSampleAssignment.exists({ datasetVersionId: versionOid })
+  );
+
+  if (!hasAssignments) {
+    return getAggregatedSampleLabels(sampleIds) as Promise<EffectiveLabelAggregate[]>;
+  }
+
+  return getCanonicalSampleLabelsForVersion(versionOid, sampleIds);
+}
+
+export async function getEffectiveHardRejectedSampleIdsForVersion(
+  datasetVersionId: string | mongoose.Types.ObjectId,
+  sampleIds: mongoose.Types.ObjectId[]
+): Promise<Set<string>> {
+  const effectiveLabels = await getEffectiveSampleLabelsForVersion(datasetVersionId, sampleIds);
+  return new Set(
+    effectiveLabels
+      .filter((label) =>
+        label.type === 'hard'
+        && label.name === 'REJECT'
+        && (label.targetScope === 'sample' || !label.targetScope)
+      )
+      .map((label) => String(label.sampleId))
+  );
+}
+
 export async function getContributorCountsForSample(sampleIds: mongoose.Types.ObjectId[]) {
   await ensureLabelAssignmentsForSamples(sampleIds.map((id) => String(id)));
   const rows = await LabelAssignment.aggregate([
@@ -859,6 +985,29 @@ function computeAgreement(annotatorSets: Array<{ annotatorId: string; labels: st
   return Number((scores.reduce((sum, value) => sum + value, 0) / scores.length).toFixed(4));
 }
 
+async function getSubmittedAssigneeIds(
+  datasetVersionId: mongoose.Types.ObjectId,
+  assigneeIds: string[]
+): Promise<string[]> {
+  if (!assigneeIds.length) {
+    return [];
+  }
+
+  const submissions = await DatasetAssignmentSubmission.find({
+    datasetVersionId,
+    assigneeId: { $in: assigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    status: { $in: ['submitted', 'approved'] },
+  })
+    .select('assigneeId')
+    .lean();
+
+  return Array.from(new Set(
+    submissions
+      .map((item: any) => String(item.assigneeId || ''))
+      .filter(Boolean)
+  ));
+}
+
 async function syncAdjudicationForTarget(params: {
   datasetVersionId: mongoose.Types.ObjectId;
   sampleId: mongoose.Types.ObjectId;
@@ -879,10 +1028,20 @@ async function syncAdjudicationForTarget(params: {
       targetScope: params.targetScope,
       messageIndex: params.targetScope === 'message' ? params.messageIndex ?? null : null,
       messageRole: params.targetScope === 'message' ? params.messageRole ?? null : null,
-      status: 'pending',
+      status: { $ne: 'published' },
     });
     return;
   }
+
+  const existing = await DatasetAssignmentAdjudication.findOne({
+    datasetVersionId: params.datasetVersionId,
+    sampleId: params.sampleId,
+    targetScope: params.targetScope,
+    messageIndex: params.targetScope === 'message' ? params.messageIndex ?? null : null,
+    messageRole: params.targetScope === 'message' ? params.messageRole ?? null : null,
+  })
+    .select('status')
+    .lean();
 
   await DatasetAssignmentAdjudication.findOneAndUpdate(
     {
@@ -894,7 +1053,12 @@ async function syncAdjudicationForTarget(params: {
     },
     {
       $set: {
-        status: 'pending',
+        status:
+          existing?.status === 'published'
+            ? 'published'
+            : existing?.status === 'resolved_unpublished'
+              ? 'resolved_unpublished'
+              : 'pending',
         threshold,
         agreementScore: params.agreementScore,
         majorityLabels: params.majorityLabels,
@@ -905,10 +1069,16 @@ async function syncAdjudicationForTarget(params: {
         finalLabels: [],
         note: '',
       },
-      $unset: {
-        resolvedBy: 1,
-        resolvedAt: 1,
-      },
+      ...(existing?.status === 'published' || existing?.status === 'resolved_unpublished'
+        ? {}
+        : {
+            $unset: {
+              resolvedBy: 1,
+              resolvedAt: 1,
+              publishedBy: 1,
+              publishedAt: 1,
+            },
+          }),
     },
     { upsert: true }
   );
@@ -927,6 +1097,8 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
   const sampleOid = new mongoose.Types.ObjectId(sampleId);
   const versionOid = new mongoose.Types.ObjectId(datasetVersionId);
   await ensureLabelAssignmentsForSamples([sampleId]);
+  const version = await DatasetVersion.findById(versionOid).select('ownerId').lean();
+  const ownerId = String((version as any)?.ownerId || '');
 
   const assignments = await DatasetSampleAssignment.find({
     datasetVersionId: versionOid,
@@ -934,30 +1106,19 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
   }).lean();
 
   const assigneeIds = Array.from(new Set(assignments.map((item: any) => String(item.assigneeId)).filter(Boolean)));
-  const hardAssignments = assigneeIds.length
+  const submittedAssigneeIds = await getSubmittedAssigneeIds(versionOid, assigneeIds);
+  const comparisonAnnotatorIds = Array.from(new Set(
+    [...submittedAssigneeIds, ownerId].filter(Boolean)
+  ));
+  const hardAssignments = comparisonAnnotatorIds.length
     ? await LabelAssignment.find({
         sampleId: sampleOid,
         type: 'hard',
-        createdBy: { $in: assigneeIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        createdBy: { $in: comparisonAnnotatorIds.map((id) => new mongoose.Types.ObjectId(id)) },
       }).lean()
     : [];
-  const adjudications = await DatasetAssignmentAdjudication.find({
-    datasetVersionId: versionOid,
-    sampleId: sampleOid,
-  }).lean();
-  const adjudicationMap = new Map(
-    adjudications.map((item: any) => [
-      buildTargetKey(
-        item.targetScope === 'message' ? 'message' : 'sample',
-        Number.isInteger(Number(item.messageIndex)) ? Number(item.messageIndex) : null,
-        item.messageRole === 'user' || item.messageRole === 'assistant' ? item.messageRole : null
-      ),
-      item,
-    ])
-  );
-
-  const userRows = assigneeIds.length
-    ? await User.find({ _id: { $in: assigneeIds.map((id) => new mongoose.Types.ObjectId(id)) } }).select('_id name email').lean()
+  const userRows = comparisonAnnotatorIds.length
+    ? await User.find({ _id: { $in: comparisonAnnotatorIds.map((id) => new mongoose.Types.ObjectId(id)) } }).select('_id name email').lean()
     : [];
   const userMap = new Map(
     userRows.map((user: any) => [
@@ -984,11 +1145,11 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
   });
 
   const requiredTargets = buildRequiredTargets(sample);
-  const targetComparisons = await Promise.all(
+  const targetSummaries = await Promise.all(
     requiredTargets.map(async (target) => {
       const targetKey = target.key;
       const perUserMap = decisionsByTarget.get(targetKey) || new Map<string, Set<string>>();
-      const annotatorSets = assigneeIds
+      const annotatorSets = comparisonAnnotatorIds
         .map((annotatorId) => ({
           annotatorId,
           labels: Array.from(perUserMap.get(annotatorId) || new Set<string>()).sort(),
@@ -1008,7 +1169,6 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
         majorityLabels,
         labelCounts,
       });
-      const adjudication = adjudicationMap.get(targetKey);
 
       return {
         targetKey,
@@ -1023,19 +1183,44 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
         annotators: annotatorSets.map((item) => ({
           annotator: userMap.get(item.annotatorId) || { id: item.annotatorId, name: '', email: '' },
           labels: item.labels,
+          isOwner: item.annotatorId === ownerId,
         })),
-        adjudication: adjudication
-          ? {
-              status: adjudication.status,
-              finalLabels: Array.isArray(adjudication.finalLabels) ? adjudication.finalLabels : [],
-              note: String(adjudication.note || ''),
-              resolvedAt: adjudication.resolvedAt || null,
-              resolvedBy: adjudication.resolvedBy ? String(adjudication.resolvedBy) : null,
-            }
-          : null,
       };
     })
   );
+
+  const adjudications = await DatasetAssignmentAdjudication.find({
+    datasetVersionId: versionOid,
+    sampleId: sampleOid,
+  }).lean();
+  const adjudicationMap = new Map(
+    adjudications.map((item: any) => [
+      buildTargetKey(
+        item.targetScope === 'message' ? 'message' : 'sample',
+        Number.isInteger(Number(item.messageIndex)) ? Number(item.messageIndex) : null,
+        item.messageRole === 'user' || item.messageRole === 'assistant' ? item.messageRole : null
+      ),
+      item,
+    ])
+  );
+
+  const targetComparisons = targetSummaries.map((target) => {
+    const adjudication = adjudicationMap.get(target.targetKey);
+    return {
+      ...target,
+      adjudication: adjudication
+        ? {
+            status: adjudication.status,
+            finalLabels: Array.isArray(adjudication.finalLabels) ? adjudication.finalLabels : [],
+            note: String(adjudication.note || ''),
+            resolvedAt: adjudication.resolvedAt || null,
+            resolvedBy: adjudication.resolvedBy ? String(adjudication.resolvedBy) : null,
+            publishedAt: adjudication.publishedAt || null,
+            publishedBy: adjudication.publishedBy ? String(adjudication.publishedBy) : null,
+          }
+        : null,
+    };
+  });
 
   const targetScores = targetComparisons
     .map((item) => item.agreementScore)
@@ -1051,8 +1236,68 @@ export async function buildAssignmentSampleComparison(datasetVersionId: string, 
       ? Number((targetScores.reduce((sum, value) => sum + value, 0) / targetScores.length).toFixed(4))
       : null,
     hasConflict: targetComparisons.some((item) => item.hasConflict),
-    pendingAdjudicationCount: targetComparisons.filter((item) => item.hasConflict && item.adjudication?.status !== 'resolved').length,
+    pendingAdjudicationCount: targetComparisons.filter((item) => item.hasConflict && item.adjudication?.status !== 'published').length,
     targets: targetComparisons,
+  };
+}
+
+export async function autoPublishAssignmentAdjudicationsForSample(params: {
+  datasetVersionId: string;
+  sampleId: string;
+  ownerId: string;
+}) {
+  const comparison = await buildAssignmentSampleComparison(params.datasetVersionId, params.sampleId);
+  const eligibleTargets = comparison.targets.filter((target) => {
+    if (!target.hasConflict) {
+      return false;
+    }
+    if (target.adjudication?.status === 'published') {
+      return false;
+    }
+    return typeof target.agreementScore === 'number' && target.agreementScore > 0;
+  });
+
+  let publishedTargets = 0;
+  let skippedEmptyMajorityTargets = 0;
+
+  for (const target of eligibleTargets) {
+    if (!Array.isArray(target.majorityLabels) || target.majorityLabels.length === 0) {
+      skippedEmptyMajorityTargets += 1;
+      continue;
+    }
+
+    await resolveAssignmentAdjudication({
+      datasetVersionId: params.datasetVersionId,
+      sampleId: params.sampleId,
+      targetScope: target.targetScope,
+      messageIndex: target.messageIndex,
+      messageRole: target.messageRole,
+      finalLabels: target.majorityLabels,
+      note: target.adjudication?.note || 'Auto published from majority labels.',
+      resolvedBy: params.ownerId,
+    });
+
+    await publishAssignmentAdjudication({
+      datasetVersionId: params.datasetVersionId,
+      sampleId: params.sampleId,
+      targetScope: target.targetScope,
+      messageIndex: target.messageIndex,
+      messageRole: target.messageRole,
+      publishedBy: params.ownerId,
+    });
+    publishedTargets += 1;
+  }
+
+  return {
+    processedTargets: eligibleTargets.length,
+    publishedTargets,
+    skippedZeroIaaTargets: comparison.targets.filter((target) => {
+      if (!target.hasConflict || target.adjudication?.status === 'published') {
+        return false;
+      }
+      return target.agreementScore === 0;
+    }).length,
+    skippedEmptyMajorityTargets,
   };
 }
 
@@ -1083,7 +1328,7 @@ export async function resolveAssignmentAdjudication(params: {
     },
     {
       $set: {
-        status: 'resolved',
+        status: 'resolved_unpublished',
         threshold: 0.6,
         agreementScore: target.agreementScore,
         majorityLabels: target.majorityLabels,
@@ -1097,13 +1342,78 @@ export async function resolveAssignmentAdjudication(params: {
         resolvedBy: new mongoose.Types.ObjectId(params.resolvedBy),
         resolvedAt: new Date(),
       },
+      $unset: {
+        publishedBy: 1,
+        publishedAt: 1,
+      },
     },
     { upsert: true, returnDocument: 'after' }
   ).lean();
 }
 
+export async function publishAssignmentAdjudication(params: {
+  datasetVersionId: string;
+  sampleId: string;
+  targetScope: LabelScope;
+  messageIndex?: number;
+  messageRole?: LabelRole;
+  publishedBy: string;
+}) {
+  const query = {
+    datasetVersionId: new mongoose.Types.ObjectId(params.datasetVersionId),
+    sampleId: new mongoose.Types.ObjectId(params.sampleId),
+    targetScope: params.targetScope,
+    messageIndex: params.targetScope === 'message' ? params.messageIndex ?? null : null,
+    messageRole: params.targetScope === 'message' ? params.messageRole ?? null : null,
+  };
+
+  const adjudication = await DatasetAssignmentAdjudication.findOne(query).lean();
+  if (!adjudication || adjudication.status !== 'resolved_unpublished') {
+    throw Object.assign(new Error('Final decision must be saved before publishing.'), { statusCode: 409 });
+  }
+  if (!Array.isArray(adjudication.finalLabels) || adjudication.finalLabels.length === 0) {
+    throw Object.assign(new Error('Cannot publish without final labels.'), { statusCode: 409 });
+  }
+
+  const sample = await resolveSample(params.sampleId);
+  await DatasetCanonicalLabel.findOneAndUpdate(
+    query,
+    {
+      $set: {
+        datasetVersionId: sample.datasetVersionId,
+        sampleId: sample._id,
+        targetScope: params.targetScope,
+        messageIndex: params.targetScope === 'message' ? params.messageIndex ?? null : null,
+        messageRole: params.targetScope === 'message' ? params.messageRole ?? null : null,
+        labels: adjudication.finalLabels,
+        targetTextSnapshot: String((adjudication as any).targetTextSnapshot || ''),
+        sourceType: 'owner_manual_resolution',
+        resolutionRef: adjudication._id,
+        sourceAnnotatorIds: Array.isArray(adjudication.annotatorSets)
+          ? adjudication.annotatorSets.map((item: any) => String(item.annotatorId || '')).filter(Boolean)
+          : [],
+        publishedBy: new mongoose.Types.ObjectId(params.publishedBy),
+        publishedAt: new Date(),
+      },
+    },
+    { upsert: true, returnDocument: 'after' }
+  ).lean();
+
+  return DatasetAssignmentAdjudication.findOneAndUpdate(
+    { _id: adjudication._id },
+    {
+      $set: {
+        status: 'published',
+        publishedBy: new mongoose.Types.ObjectId(params.publishedBy),
+        publishedAt: new Date(),
+      },
+    },
+    { returnDocument: 'after' }
+  ).lean();
+}
+
 export async function buildAssignmentConflictList(datasetVersionId: string, filters?: {
-  status?: 'pending' | 'resolved';
+  status?: 'pending' | 'resolved_unpublished' | 'published';
   assigneeId?: string;
   sampleIndex?: number;
   minAgreement?: number;
@@ -1134,9 +1444,19 @@ export async function buildAssignmentConflictList(datasetVersionId: string, filt
     if (filters?.minAgreement !== undefined && typeof comparison.agreementScore === 'number' && comparison.agreementScore < filters.minAgreement) {
       continue;
     }
-    const resolvedCount = comparison.targets.filter((target) => target.adjudication?.status === 'resolved').length;
-    const pendingCount = comparison.targets.filter((target) => target.hasConflict && target.adjudication?.status !== 'resolved').length;
-    const status = pendingCount > 0 ? 'pending' : 'resolved';
+    const publishedCount = comparison.targets.filter((target) => target.adjudication?.status === 'published').length;
+    const savedCount = comparison.targets.filter((target) => target.adjudication?.status === 'resolved_unpublished').length;
+    const pendingCount = comparison.targets.filter((target) => {
+      if (!target.hasConflict) {
+        return false;
+      }
+      return !target.adjudication || target.adjudication.status === 'pending';
+    }).length;
+    const status = pendingCount > 0
+      ? 'pending'
+      : savedCount > 0
+        ? 'resolved_unpublished'
+        : 'published';
     if (filters?.status && status !== filters.status) {
       continue;
     }
@@ -1145,10 +1465,10 @@ export async function buildAssignmentConflictList(datasetVersionId: string, filt
       sampleId,
       sampleKey: String(sampleMap.get(sampleId)?.sampleId || ''),
       sampleIndex,
-      assigneeCount: assignmentsForSample.length,
+      assigneeCount: comparison.targets.reduce((maxCount, target) => Math.max(maxCount, target.annotators.length), 0),
       agreementScore: comparison.agreementScore,
       pendingAdjudicationCount: pendingCount,
-      resolvedAdjudicationCount: resolvedCount,
+      resolvedAdjudicationCount: savedCount + publishedCount,
       status,
     });
   }
@@ -1211,11 +1531,12 @@ export async function buildAssignmentDashboard(datasetVersionId: string) {
         completionPercent: progress.percent,
         labelsPerHour: hourCount,
         latestActivityAt: latestActivityMap.get(assigneeId) || null,
+        reviewAvailable: String((submissionMap.get(assigneeId) as any)?.status || '') === 'submitted'
+          || String((submissionMap.get(assigneeId) as any)?.status || '') === 'approved',
         submission: submissionMap.get(assigneeId)
           ? {
-              status: String((submissionMap.get(assigneeId) as any).status || 'draft'),
+              status: ['submitted', 'approved'].includes(String((submissionMap.get(assigneeId) as any).status || 'draft')) ? 'submitted' : 'draft',
               submittedAt: (submissionMap.get(assigneeId) as any).submittedAt || null,
-              approvedAt: (submissionMap.get(assigneeId) as any).approvedAt || null,
             }
           : null,
       };
@@ -1223,9 +1544,11 @@ export async function buildAssignmentDashboard(datasetVersionId: string) {
   );
 
   const conflicts = await buildAssignmentConflictList(datasetVersionId);
+  const adjudications = await DatasetAssignmentAdjudication.find({ datasetVersionId: versionOid }).select('status').lean();
   const submittedCount = userRows.filter((row) => row.submission?.status === 'submitted').length;
-  const approvedCount = userRows.filter((row) => row.submission?.status === 'approved').length;
   const inProgressCount = userRows.filter((row) => row.completionPercent > 0 && row.completionPercent < 100).length;
+  const savedDecisionCount = adjudications.filter((row: any) => row.status === 'resolved_unpublished').length;
+  const publishedDecisionCount = adjudications.filter((row: any) => row.status === 'published').length;
 
   return {
     overview: {
@@ -1233,11 +1556,12 @@ export async function buildAssignmentDashboard(datasetVersionId: string) {
       totalAssignees: assigneeIds.length,
       inProgressAssignees: inProgressCount,
       submittedAssignees: submittedCount,
-      approvedAssignees: approvedCount,
+      savedDecisionCount,
+      publishedDecisionCount,
       pendingConflicts: conflicts.filter((item) => item.status === 'pending').length,
     },
     users: userRows,
-    conflicts,
+    conflicts: conflicts.filter((item) => item.status !== 'published'),
     refreshedAt: new Date().toISOString(),
   };
 }

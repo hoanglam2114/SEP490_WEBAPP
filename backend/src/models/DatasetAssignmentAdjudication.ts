@@ -6,7 +6,7 @@ export interface IDatasetAssignmentAdjudication extends Document {
   targetScope: 'sample' | 'message';
   messageIndex?: number | null;
   messageRole?: 'user' | 'assistant' | null;
-  status: 'pending' | 'resolved';
+  status: 'pending' | 'resolved_unpublished' | 'published';
   threshold: number;
   agreementScore?: number | null;
   majorityLabels: string[];
@@ -15,6 +15,8 @@ export interface IDatasetAssignmentAdjudication extends Document {
   finalLabels: string[];
   resolvedBy?: Types.ObjectId | null;
   resolvedAt?: Date | null;
+  publishedBy?: Types.ObjectId | null;
+  publishedAt?: Date | null;
   note?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -48,7 +50,7 @@ const DatasetAssignmentAdjudicationSchema = new Schema<IDatasetAssignmentAdjudic
     },
     status: {
       type: String,
-      enum: ['pending', 'resolved'] as const,
+      enum: ['pending', 'resolved_unpublished', 'published'] as const,
       default: 'pending',
       index: true,
     },
@@ -86,6 +88,12 @@ const DatasetAssignmentAdjudicationSchema = new Schema<IDatasetAssignmentAdjudic
       default: null,
     },
     resolvedAt: { type: Date, default: null },
+    publishedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    publishedAt: { type: Date, default: null },
     note: { type: String, default: '' },
   },
   {

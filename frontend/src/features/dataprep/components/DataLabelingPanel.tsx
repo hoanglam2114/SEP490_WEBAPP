@@ -363,7 +363,7 @@ export function DataLabelingPanel({
     Number.isInteger(parsedBatchCount) && parsedBatchCount > 0 ? parsedBatchCount : 1,
   );
   const assignmentStatus = assignmentStatusQuery.data;
-  const assignmentIsLocked = assignmentStatus?.status === 'submitted' || assignmentStatus?.status === 'approved';
+  const assignmentIsLocked = assignmentStatus?.status === 'submitted';
   const effectiveLockInteractions = lockInteractions || assignmentIsLocked;
   const effectiveLockReason = assignmentIsLocked
     ? `Assignment is ${assignmentStatus?.status}; labels are locked.`

@@ -5,6 +5,7 @@ import { DataPrepProject } from '../../../models/DataPrepProject';
 import { LabelAssignment } from '../../../models/LabelAssignment';
 import { DatasetAssignmentActivity } from '../../../models/DatasetAssignmentActivity';
 import { DatasetAssignmentAdjudication } from '../../../models/DatasetAssignmentAdjudication';
+import { DatasetCanonicalLabel } from '../../../models/DatasetCanonicalLabel';
 import { EvaluationHistory } from '../../../models/EvaluationHistory';
 import { ensureLabelAssignmentsForSamples } from '../../../services/labelAssignmentService';
 import { DatasetSampleAssignment } from '../../../models/DatasetSampleAssignment';
@@ -69,6 +70,7 @@ type DeleteVersionTreeResult = {
     assignments: number;
     submissions: number;
     labels: number;
+    canonicalLabels: number;
     activities: number;
     adjudications: number;
     evaluations: number;
@@ -219,6 +221,106 @@ export class VersionService {
     await LabelAssignment.insertMany(docs as any[], { ordered: false });
   }
 
+  private async copyCanonicalLabelsFromSources(
+    datasetVersionId: mongoose.Types.ObjectId,
+    sourceToCreatedSampleMap: Record<string, string>
+  ) {
+    const sourceIds = Object.keys(sourceToCreatedSampleMap).filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (!sourceIds.length) {
+      return;
+    }
+
+    const canonicalLabels = await DatasetCanonicalLabel.find({
+      sampleId: { $in: sourceIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }).lean();
+
+    if (!canonicalLabels.length) {
+      return;
+    }
+
+    const docs = canonicalLabels
+      .map((label: any) => {
+        const nextSampleId = sourceToCreatedSampleMap[String(label.sampleId)];
+        if (!nextSampleId || !mongoose.Types.ObjectId.isValid(nextSampleId)) {
+          return null;
+        }
+
+        return {
+          datasetVersionId,
+          sampleId: new mongoose.Types.ObjectId(nextSampleId),
+          targetScope: label.targetScope || 'sample',
+          ...(Number.isInteger(Number(label.messageIndex)) ? { messageIndex: Number(label.messageIndex) } : {}),
+          ...(label.messageRole ? { messageRole: label.messageRole } : {}),
+          labels: Array.isArray(label.labels) ? label.labels : [],
+          targetTextSnapshot: label.targetTextSnapshot ? String(label.targetTextSnapshot) : '',
+          sourceType: 'owner_manual_resolution',
+          resolutionRef: label.resolutionRef || null,
+          sourceAnnotatorIds: Array.isArray(label.sourceAnnotatorIds) ? label.sourceAnnotatorIds : [],
+          publishedBy: label.publishedBy,
+          publishedAt: label.publishedAt || label.createdAt,
+        };
+      })
+      .filter(Boolean);
+
+    if (!docs.length) {
+      return;
+    }
+
+    await DatasetCanonicalLabel.insertMany(docs as any[], { ordered: false });
+  }
+
+  private async copyAdjudicationsFromSources(
+    datasetVersionId: mongoose.Types.ObjectId,
+    sourceToCreatedSampleMap: Record<string, string>
+  ) {
+    const sourceIds = Object.keys(sourceToCreatedSampleMap).filter((id) => mongoose.Types.ObjectId.isValid(id));
+    if (!sourceIds.length) {
+      return;
+    }
+
+    const adjudications = await DatasetAssignmentAdjudication.find({
+      sampleId: { $in: sourceIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }).lean();
+
+    if (!adjudications.length) {
+      return;
+    }
+
+    const docs = adjudications
+      .map((item: any) => {
+        const nextSampleId = sourceToCreatedSampleMap[String(item.sampleId)];
+        if (!nextSampleId || !mongoose.Types.ObjectId.isValid(nextSampleId)) {
+          return null;
+        }
+        return {
+          datasetVersionId,
+          sampleId: new mongoose.Types.ObjectId(nextSampleId),
+          targetScope: item.targetScope || 'sample',
+          ...(Number.isInteger(Number(item.messageIndex)) ? { messageIndex: Number(item.messageIndex) } : {}),
+          ...(item.messageRole ? { messageRole: item.messageRole } : {}),
+          status: item.status || 'pending',
+          threshold: item.threshold ?? 0.6,
+          agreementScore: item.agreementScore ?? null,
+          majorityLabels: Array.isArray(item.majorityLabels) ? item.majorityLabels : [],
+          labelCounts: Array.isArray(item.labelCounts) ? item.labelCounts : [],
+          annotatorSets: Array.isArray(item.annotatorSets) ? item.annotatorSets : [],
+          finalLabels: Array.isArray(item.finalLabels) ? item.finalLabels : [],
+          resolvedBy: item.resolvedBy || null,
+          resolvedAt: item.resolvedAt || null,
+          publishedBy: item.publishedBy || null,
+          publishedAt: item.publishedAt || null,
+          note: String(item.note || ''),
+        };
+      })
+      .filter(Boolean);
+
+    if (!docs.length) {
+      return;
+    }
+
+    await DatasetAssignmentAdjudication.insertMany(docs as any[], { ordered: false });
+  }
+
   async createVersion(params: CreateVersionParams): Promise<CreatedVersionResult> {
     const { project, datasetVersion } = await this.buildVersionBase(params);
     const { rows } = this.buildRows(params.data, params.format);
@@ -281,6 +383,8 @@ export class VersionService {
     }, {});
 
     await this.copyLabelsFromSources(sourceToCreatedSampleMap);
+    await this.copyCanonicalLabelsFromSources(datasetVersion._id, sourceToCreatedSampleMap);
+    await this.copyAdjudicationsFromSources(datasetVersion._id, sourceToCreatedSampleMap);
 
     return {
       project,
@@ -388,6 +492,9 @@ export class VersionService {
     const labelResult = deletedSampleObjectIds.length
       ? await LabelAssignment.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
       : { deletedCount: 0 };
+    const canonicalLabelResult = deletedSampleObjectIds.length
+      ? await DatasetCanonicalLabel.deleteMany({ sampleId: { $in: deletedSampleObjectIds } })
+      : { deletedCount: 0 };
     const activityResult = await DatasetAssignmentActivity.deleteMany({
       datasetVersionId: { $in: deletedVersionObjectIds },
     });
@@ -477,6 +584,7 @@ export class VersionService {
         assignments: assignmentResult.deletedCount || 0,
         submissions: submissionResult.deletedCount || 0,
         labels: labelResult.deletedCount || 0,
+        canonicalLabels: canonicalLabelResult.deletedCount || 0,
         activities: activityResult.deletedCount || 0,
         adjudications: adjudicationResult.deletedCount || 0,
         evaluations: evaluationResult.deletedCount || 0,
