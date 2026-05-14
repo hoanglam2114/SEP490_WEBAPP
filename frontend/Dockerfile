@@ -15,8 +15,8 @@ FROM nginx:alpine AS production
 # Remove default nginx config
 RUN rm /etc/nginx/conf.d/default.conf
 
-# Copy custom nginx config
-COPY nginx.conf /etc/nginx/conf.d/app.conf
+# Copy custom nginx config (dev: no SSL)
+COPY nginx.dev.conf /etc/nginx/conf.d/app.conf
 
 # Copy built static files from builder
 COPY --from=builder /app/dist /usr/share/nginx/html

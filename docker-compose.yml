@@ -16,26 +16,17 @@ services:
 
   # ── GPU Service ────────────────────────────────────────────────────────────
   gpu-service:
-    build:
-      context: ./gpu-service
-      dockerfile: Dockerfile
     image: hoanglam51/sep490-gpu-service:latest
     container_name: sep490_gpu
     restart: unless-stopped
-    # Secrets đọc từ file (docker compose, không cần Swarm)
-    # Tạo thư mục secrets/ và đặt nội dung vào từng file:
-    #   echo "sk-ant-xxx" > secrets/ANTHROPIC_API_KEY
-    #   echo "hf_xxx"     > secrets/HF_TOKEN
-    #   echo "http://backend:3000" > secrets/BACKEND_URL
-    secrets:
-      - ANTHROPIC_API_KEY
-      - HF_TOKEN
-      - BACKEND_URL
+    env_file:
+      - .env
     environment:
       - HOST=0.0.0.0
       - PORT=5000
       - TORCHDYNAMO_DISABLE=1
       - CUDA_LAUNCH_BLOCKING=1
+      - BACKEND_URL=http://backend:3000
     # Không expose ra host — backend gọi nội bộ qua http://gpu-service:5000
     expose:
       - "5000"
@@ -54,9 +45,7 @@ services:
 
   # ── Backend ────────────────────────────────────────────────────────────────
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: hoanglam51/sep490-backend:latest
     container_name: sep490_backend
     restart: unless-stopped
     env_file:
@@ -79,21 +68,13 @@ services:
 
   # ── Frontend ───────────────────────────────────────────────────────────────
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: hoanglam51/sep490-frontend:latest
     container_name: sep490_frontend
     restart: unless-stopped
     ports:
       - "80:80"
       # Port 443 chỉ dùng trên production server (có SSL cert)
       # - "443:443"
-    volumes:
-      # Dev: dùng nginx.dev.conf (HTTP only, không cần SSL cert)
-      - ./frontend/nginx.dev.conf:/etc/nginx/conf.d/app.conf:ro
-      # Production: bỏ comment 2 dòng dưới, comment dòng trên
-      # - certbot_certs:/etc/letsencrypt:ro
-      # - certbot_webroot:/var/www/certbot
     networks:
       - app_network
     depends_on:
@@ -119,20 +100,9 @@ volumes:
   gpu_uploads:
     driver: local
   certbot_certs:
-    external: true
-    name: sep490_webapp_certbot_certs
+    driver: local
   certbot_webroot:
-    external: true
-    name: sep490_webapp_certbot_webroot
-
-# ── Docker Compose Secrets (đọc từ file, không phải Swarm) ───────────────────
-secrets:
-  ANTHROPIC_API_KEY:
-    file: ./secrets/ANTHROPIC_API_KEY
-  HF_TOKEN:
-    file: ./secrets/HF_TOKEN
-  BACKEND_URL:
-    file: ./secrets/BACKEND_URL
+    driver: local
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:
