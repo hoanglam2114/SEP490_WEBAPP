@@ -16,6 +16,9 @@ services:
 
   # ── GPU Service ────────────────────────────────────────────────────────────
   gpu-service:
+    build:
+      context: ./gpu-service
+      dockerfile: Dockerfile
     image: hoanglam51/sep490-gpu-service:latest
     container_name: sep490_gpu
     restart: unless-stopped
@@ -35,6 +38,13 @@ services:
       - gpu_uploads:/app/dataset_uploads
     networks:
       - app_network
+    # Healthcheck: đợi Flask thực sự sẵn sàng trước khi backend kết nối
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/train/status/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s   # unsloth + torch load lâu, cho 2 phút
+      retries: 5
     deploy:
       resources:
         reservations:
@@ -45,6 +55,9 @@ services:
 
   # ── Backend ────────────────────────────────────────────────────────────────
   backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: hoanglam51/sep490-backend:latest
     container_name: sep490_backend
     restart: unless-stopped
@@ -64,10 +77,13 @@ services:
       mongo:
         condition: service_healthy
       gpu-service:
-        condition: service_started
+        condition: service_healthy
 
   # ── Frontend ───────────────────────────────────────────────────────────────
   frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     image: hoanglam51/sep490-frontend:latest
     container_name: sep490_frontend
     restart: unless-stopped

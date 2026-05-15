@@ -27,19 +27,32 @@ export class ConversionService {
     return Array.from(conversationMap.entries()).map(([id, msgs]) => {
       const sortedMsgs = msgs.sort(
         (a, b) =>
-          new Date(a.created_at.$date).getTime() -
-          new Date(b.created_at.$date).getTime()
+          this.parseDate(a.created_at).getTime() -
+          this.parseDate(b.created_at).getTime()
       );
 
       return {
         conversation_id: id,
         messages: sortedMsgs,
         user_id: msgs[0].user_id,
-        start_time: new Date(sortedMsgs[0].created_at.$date),
-        end_time: new Date(sortedMsgs[sortedMsgs.length - 1].created_at.$date),
+        start_time: this.parseDate(sortedMsgs[0].created_at),
+        end_time: this.parseDate(sortedMsgs[sortedMsgs.length - 1].created_at),
         message_count: sortedMsgs.length,
       };
     });
+  }
+
+  /**
+   * Parse created_at — hỗ trợ cả hai format:
+   *  - MongoDB Extended JSON: { $date: "2024-01-01T00:00:00Z" }
+   *  - Plain string/Date/số timestamp
+   */
+  private parseDate(value: any): Date {
+    if (!value) return new Date(0);
+    if (typeof value === 'object' && value.$date) {
+      return new Date(value.$date);
+    }
+    return new Date(value);
   }
 
   /**
