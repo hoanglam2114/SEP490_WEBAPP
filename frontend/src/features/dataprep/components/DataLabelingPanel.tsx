@@ -368,6 +368,7 @@ export function DataLabelingPanel({
   const effectiveLockReason = assignmentIsLocked
     ? `Assignment is ${assignmentStatus?.status}; labels are locked.`
     : lockReason;
+  const canUseAutoLabeling = !assignmentSubmissionEnabled;
   const contributionFilterUserId = '';
 
   useEffect(() => {
@@ -911,37 +912,41 @@ export function DataLabelingPanel({
             <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-t-xl">
               <Tag className="w-4 h-4 text-amber-600" />
               <h3 className="text-sm font-semibold text-gray-900">Add Label</h3>
-              <input
-                type="number"
-                min={1}
-                max={maxBatchCount}
-                value={autoLabelBatchCountInput}
-                onChange={(event) => setAutoLabelBatchCountInput(event.target.value)}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions || !samples.length}
-                className="ml-auto w-16 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-center text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Number of samples to auto-label from the start of the current list"
-              />
-              <select
-                value={autoLabelProvider}
-                onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions}
-                className="rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Choose AI provider for message auto-labeling"
-              >
-                <option value="gemini">Gemini</option>
-                <option value="openai">OpenAI</option>
-                <option value="deepseek">Deepseek</option>
-              </select>
-              <button
-                type="button"
-                onClick={handleAutoLabelMessages}
-                disabled={isAutoLabelingMessages || isSavingAutoLabels || !samples.length || effectiveLockInteractions}
-                className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Use AI to auto-label the first N samples in the current list"
-              >
-                {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                Auto Labeling
-              </button>
+              {canUseAutoLabeling && (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    max={maxBatchCount}
+                    value={autoLabelBatchCountInput}
+                    onChange={(event) => setAutoLabelBatchCountInput(event.target.value)}
+                    disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions || !samples.length}
+                    className="ml-auto w-16 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-center text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Number of samples to auto-label from the start of the current list"
+                  />
+                  <select
+                    value={autoLabelProvider}
+                    onChange={(event) => setAutoLabelProvider(event.target.value as AiProvider)}
+                    disabled={isAutoLabelingMessages || isSavingAutoLabels || effectiveLockInteractions}
+                    className="rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm outline-none hover:bg-amber-50 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Choose AI provider for message auto-labeling"
+                  >
+                    <option value="gemini">Gemini</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="deepseek">Deepseek</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleAutoLabelMessages}
+                    disabled={isAutoLabelingMessages || isSavingAutoLabels || !samples.length || effectiveLockInteractions}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Use AI to auto-label the first N samples in the current list"
+                  >
+                    {isAutoLabelingMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    Auto Labeling
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 onClick={() => setIsUserGuideOpen(true)}
@@ -954,14 +959,14 @@ export function DataLabelingPanel({
             </div>
 
             <div className="p-3 space-y-3">
-              {batchAutoLabelResult && (
+              {canUseAutoLabeling && batchAutoLabelResult && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                   <p className="text-xs font-semibold text-amber-800">
                     Processed {batchAutoLabelResult.processedCount} samples. Success: {batchAutoLabelResult.successCount}. Failed: {batchAutoLabelResult.failureCount}. Inserted labels: {batchAutoLabelResult.insertedCount}.
                   </p>
                 </div>
               )}
-              {autoLabelSuggestionCount > 0 && (
+              {canUseAutoLabeling && autoLabelSuggestionCount > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-semibold text-amber-800">

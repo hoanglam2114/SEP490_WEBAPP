@@ -533,7 +533,7 @@ export function ShareAssignPanel({
                 : `Reset all assignments of ${resetConfirm.user.name || resetConfirm.user.email}.`}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-rose-600">
-              Thao tác này sẽ xóa assignment, submission, labels, activity và toàn bộ conflict/final labels liên quan. Nếu assign lại sau đó, assignee sẽ phải gán nhãn từ đầu.
+              Thao tác này sẽ xóa assignment, submission, labels, activity, conflict labels và cả previously published final labels của các sample bị ảnh hưởng. Nếu assign lại sau đó, assignee sẽ phải gán nhãn từ đầu.
             </p>
             <div className="mt-5 flex justify-end gap-3">
               <button
