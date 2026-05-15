@@ -1,8 +1,7 @@
 import mongoose from 'mongoose';
-import { Label } from '../../../models/Label';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
-import { getHardRejectedSampleIds } from '../../../utils/labelFilters';
+import { getEffectiveHardRejectedSampleIdsForVersion, getEffectiveSampleLabelsForVersion } from '../../../services/labelAssignmentService';
 
 /**
  * Subject-only classification groups.
@@ -77,32 +76,24 @@ export class ClassificationService {
     const sampleOids = items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)));
 
     // 2. Load all labels associated with these samples
-    const labels = await Label.find({
-      sampleId: { $in: sampleOids },
-      $or: [
-        { targetScope: 'sample' },
-        { targetScope: { $exists: false } },
-        { targetScope: null },
-      ],
-    }).lean();
+    const labels = await getEffectiveSampleLabelsForVersion(version._id, sampleOids);
 
     // 3. Build per-sample label index
-    const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; upvoteCount: number; downvoteCount: number }>>();
+    const sampleLabelsMap = new Map<string, Array<{ name: string; type: string; assignedUserCount: number }>>();
 
     for (const label of labels) {
       const sid = String((label as any).sampleId);
       const entry = {
         name: String((label as any).name || '').toUpperCase(),
         type: String((label as any).type || ''),
-        upvoteCount: Array.isArray((label as any).upvotes) ? (label as any).upvotes.length : 0,
-        downvoteCount: Array.isArray((label as any).downvotes) ? (label as any).downvotes.length : 0,
+        assignedUserCount: Number((label as any).assignedUserCount || 0),
       };
       const list = sampleLabelsMap.get(sid) || [];
       list.push(entry);
       sampleLabelsMap.set(sid, list);
     }
 
-    const hardRejectedItemIds = await getHardRejectedSampleIds(sampleOids);
+    const hardRejectedItemIds = await getEffectiveHardRejectedSampleIdsForVersion(version._id, sampleOids);
     const hardRejectedSampleIds = items
       .filter((item: any) => hardRejectedItemIds.has(String(item._id)))
       .map((item: any) => String(item.sampleId));
@@ -170,7 +161,8 @@ export class ClassificationService {
     }
 
     const items = await ProcessedDatasetItem.find({ datasetVersionId: version._id }).lean();
-    const hardRejectedItemIds = await getHardRejectedSampleIds(
+    const hardRejectedItemIds = await getEffectiveHardRejectedSampleIdsForVersion(
+      version._id,
       items.map((item: any) => new mongoose.Types.ObjectId(String(item._id)))
     );
 
@@ -199,12 +191,12 @@ export class ClassificationService {
    * Determine the subject classification group for a single sample.
    */
   private resolveGroup(
-    sampleLabels: Array<{ name: string; type: string; upvoteCount: number; downvoteCount: number }>
+    sampleLabels: Array<{ name: string; type: string; assignedUserCount: number }>
   ): ClassificationGroup {
-    // Prefer the subject label with the most upvotes.
+    // Prefer the subject label with the highest contributor count.
     const subjectLabels = sampleLabels
       .filter((l) => SUBJECT_LABELS.has(l.name))
-      .sort((a, b) => b.upvoteCount - a.upvoteCount);
+      .sort((a, b) => b.assignedUserCount - a.assignedUserCount);
 
     if (subjectLabels.length > 0) {
       return subjectLabels[0].name as ClassificationGroup;

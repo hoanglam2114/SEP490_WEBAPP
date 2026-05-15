@@ -55,6 +55,30 @@ export class DataPrepVersionController {
     return legacyEvaluationController.getDatasetVersionAssignments(req, res);
   }
 
+  async getAssignmentDashboard(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getDatasetVersionAssignmentDashboard(req, res);
+  }
+
+  async getAssignmentConflicts(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getDatasetVersionAssignmentConflicts(req, res);
+  }
+
+  async getAssignmentSampleComparison(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.getDatasetVersionAssignmentSampleComparison(req, res);
+  }
+
+  async resolveAssignmentAdjudication(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.resolveDatasetVersionAssignmentAdjudication(req, res);
+  }
+
+  async publishAssignmentAdjudication(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.publishDatasetVersionAssignmentAdjudication(req, res);
+  }
+
+  async autoPublishAssignmentAdjudications(req: Request, res: Response): Promise<void> {
+    return legacyEvaluationController.autoPublishDatasetVersionAssignmentAdjudications(req, res);
+  }
+
   async assignRange(req: Request, res: Response): Promise<void> {
     return legacyEvaluationController.assignDatasetVersionRange(req, res);
   }

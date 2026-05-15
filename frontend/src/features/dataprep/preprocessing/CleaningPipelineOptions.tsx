@@ -61,30 +61,34 @@ export function CleaningPipelineOptions({ onAccept, isLoading }: CleaningPipelin
           <div className="grid grid-cols-2 gap-3">
             {conversionOptions.format === 'openai' ? (
               <>
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">Min &lt;think&gt;</label>
-                  <input
-                    type="number"
-                    value={conversionOptions.minCharsThink ?? 10}
-                    onChange={(e) =>
-                      updateConversionOptions({ minCharsThink: parseInt(e.target.value, 10) || 10 })
-                    }
-                    min="1"
-                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">Max &lt;think&gt;</label>
-                  <input
-                    type="number"
-                    value={conversionOptions.maxCharsThink ?? 2000}
-                    onChange={(e) =>
-                      updateConversionOptions({ maxCharsThink: parseInt(e.target.value, 10) || 2000 })
-                    }
-                    min="1"
-                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
-                  />
-                </div>
+                {!conversionOptions.removeThinkTags && (
+                  <>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Min &lt;think&gt;</label>
+                      <input
+                        type="number"
+                        value={conversionOptions.minCharsThink ?? 10}
+                        onChange={(e) =>
+                          updateConversionOptions({ minCharsThink: parseInt(e.target.value, 10) || 10 })
+                        }
+                        min="1"
+                        className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Max &lt;think&gt;</label>
+                      <input
+                        type="number"
+                        value={conversionOptions.maxCharsThink ?? 2000}
+                        onChange={(e) =>
+                          updateConversionOptions({ maxCharsThink: parseInt(e.target.value, 10) || 2000 })
+                        }
+                        min="1"
+                        className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg"
+                      />
+                    </div>
+                  </>
+                )}
                 <div>
                   <label className="block text-xs text-gray-600 mb-1">Min chars assistant</label>
                   <input

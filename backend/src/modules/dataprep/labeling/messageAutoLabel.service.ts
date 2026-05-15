@@ -1,10 +1,10 @@
 import mongoose from 'mongoose';
-import { Label } from '../../../models/Label';
 import { DatasetVersion } from '../../../models/DatasetVersion';
 import { ProcessedDatasetItem } from '../../../models/ProcessedDatasetItem';
 import { DatasetSampleAssignment } from '../../../models/DatasetSampleAssignment';
 import { DatasetAssignmentSubmission } from '../../../models/DatasetAssignmentSubmission';
 import { ILlmProvider } from '../../../services/providers/ILlmProvider';
+import { replaceHardLabelsForUserOnTarget } from '../../../services/labelAssignmentService';
 
 export const USER_MESSAGE_LABELS = [
   'CORRECT',
@@ -387,77 +387,36 @@ export class MessageAutoLabelingService {
     suggestions: MessageAutoLabelSaveSuggestion[],
     normalizedMessages: MessageAutoLabelInput[],
   ): Promise<number> {
-    const sampleOid = new mongoose.Types.ObjectId(sampleId);
-    const userOid = new mongoose.Types.ObjectId(userId);
     const candidates = this.buildCandidates(suggestions, normalizedMessages);
     if (!candidates.length) {
       return 0;
     }
-
-    const existingLabels = await Label.find({
-      sampleId: sampleOid,
-      targetScope: 'message',
-      type: 'hard',
-      $or: candidates.map((candidate) => ({
-        messageIndex: candidate.messageIndex,
-        messageRole: candidate.messageRole,
-        name: candidate.name,
-      })),
-    })
-      .sort({ createdAt: 1 });
-
-    const existingByKey = new Map<string, any>();
-    existingLabels.forEach((label: any) => {
-      const key = `${Number(label.messageIndex)}:${String(label.messageRole)}:${String(label.name).toUpperCase()}`;
-      if (!existingByKey.has(key)) {
-        existingByKey.set(key, label);
+    const groupedByTarget = new Map<string, { messageIndex: number; messageRole: MessageRole; targetTextSnapshot: string; labels: string[] }>();
+    candidates.forEach((candidate) => {
+      const key = `${candidate.messageIndex}:${candidate.messageRole}`;
+      if (!groupedByTarget.has(key)) {
+        groupedByTarget.set(key, {
+          messageIndex: candidate.messageIndex,
+          messageRole: candidate.messageRole,
+          targetTextSnapshot: candidate.targetTextSnapshot,
+          labels: [],
+        });
       }
+      groupedByTarget.get(key)!.labels.push(candidate.name);
     });
 
     let appliedCount = 0;
-    const saves: Promise<any>[] = [];
-    for (const candidate of candidates) {
-      const existing = existingByKey.get(candidate.key);
-      if (!existing) {
-        continue;
-      }
-      const hasUpvote = existing.upvotes.some((id: any) => id.equals(userOid));
-      const hasDownvote = existing.downvotes.some((id: any) => id.equals(userOid));
-      if (hasUpvote && !hasDownvote) {
-        continue;
-      }
-      if (!hasUpvote) {
-        existing.upvotes.push(userOid);
-      }
-      if (hasDownvote) {
-        existing.downvotes = existing.downvotes.filter((id: any) => !id.equals(userOid));
-      }
-      saves.push(existing.save());
-      appliedCount += 1;
-    }
-
-    if (saves.length) {
-      await Promise.all(saves);
-    }
-
-    const docs = candidates
-      .filter((candidate) => !existingByKey.has(candidate.key))
-      .map((candidate) => ({
-        sampleId: sampleOid,
-        name: candidate.name,
-        type: 'hard',
+    for (const item of groupedByTarget.values()) {
+      await replaceHardLabelsForUserOnTarget({
+        sampleId,
+        userId,
         targetScope: 'message',
-        messageIndex: candidate.messageIndex,
-        messageRole: candidate.messageRole,
-        targetTextSnapshot: candidate.targetTextSnapshot,
-        createdBy: userOid,
-        upvotes: [userOid],
-        downvotes: [],
-      }));
-
-    if (docs.length) {
-      await Label.insertMany(docs, { ordered: false });
-      appliedCount += docs.length;
+        messageIndex: item.messageIndex,
+        messageRole: item.messageRole,
+        labels: item.labels,
+        targetTextSnapshot: item.targetTextSnapshot,
+      });
+      appliedCount += item.labels.length;
     }
 
     return appliedCount;

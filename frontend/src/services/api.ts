@@ -115,12 +115,16 @@ export type DatasetAssignmentSample = {
   preview: string;
   assignees: ShareUser[];
   assignee: ShareUser | null;
+  hasConflict?: boolean;
+  lowestAgreementScore?: number | null;
+  pendingAdjudicationCount?: number;
 };
 
 export type DatasetAssignmentSummary = {
   user: ShareUser;
   count: number;
   ranges: string[];
+  reviewAvailable?: boolean;
   submission?: AssignmentSubmissionStatus;
 };
 
@@ -140,10 +144,8 @@ export type AssignmentSubmissionProgress = {
 };
 
 export type AssignmentSubmissionStatus = {
-  status: 'draft' | 'submitted' | 'approved';
+  status: 'draft' | 'submitted';
   submittedAt?: string | null;
-  approvedAt?: string | null;
-  approvedBy?: string | null;
   progress: AssignmentSubmissionProgress;
 };
 
@@ -160,7 +162,99 @@ export type DatasetAssignmentsResponse = {
     totalSamples: number;
     assigned: number;
     unassigned: number;
+    pendingConflicts?: number;
   };
+};
+
+export type AggregatedLabel = {
+  _id: string;
+  sampleId: string;
+  name: string;
+  type: 'hard' | 'soft';
+  targetScope: 'sample' | 'message';
+  messageIndex?: number;
+  messageRole?: 'user' | 'assistant';
+  targetTextSnapshot?: string;
+  assignedUserCount: number;
+  assignedByCurrentUser: boolean;
+  assignedUsers?: ShareUser[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type AssignmentConflictItem = {
+  sampleId: string;
+  sampleKey: string;
+  sampleIndex: number;
+  assigneeCount: number;
+  agreementScore: number | null;
+  pendingAdjudicationCount: number;
+  resolvedAdjudicationCount: number;
+  status: 'pending' | 'resolved_unpublished' | 'published';
+};
+
+export type AssignmentDashboardResponse = {
+  overview: {
+    totalAssignedSamples: number;
+    totalAssignees: number;
+    inProgressAssignees: number;
+    submittedAssignees: number;
+    savedDecisionCount: number;
+    publishedDecisionCount: number;
+    pendingConflicts: number;
+  };
+  users: Array<{
+    user: ShareUser;
+    assignedSamples: number;
+    completedTargets: number;
+    totalTargets: number;
+    completionPercent: number;
+    labelsPerHour: number;
+    latestActivityAt: string | null;
+    reviewAvailable?: boolean;
+    submission: {
+      status: 'draft' | 'submitted';
+      submittedAt?: string | null;
+    } | null;
+  }>;
+  conflicts: AssignmentConflictItem[];
+  refreshedAt: string;
+};
+
+export type AssignmentSampleComparisonResponse = {
+  sample: {
+    id: string;
+    sampleKey: string;
+    preview: string;
+  };
+  agreementScore: number | null;
+  hasConflict: boolean;
+  pendingAdjudicationCount: number;
+  targets: Array<{
+    targetKey: string;
+    targetScope: 'sample' | 'message';
+    messageIndex?: number;
+    messageRole?: 'user' | 'assistant';
+    targetTextSnapshot?: string;
+    agreementScore: number | null;
+    hasConflict: boolean;
+    labelCounts: Array<{ name: string; count: number }>;
+    majorityLabels: string[];
+    annotators: Array<{
+      annotator: ShareUser;
+      labels: string[];
+      isOwner?: boolean;
+    }>;
+    adjudication: {
+      status: 'pending' | 'resolved_unpublished' | 'published';
+      finalLabels: string[];
+      note: string;
+      resolvedAt: string | null;
+      resolvedBy: string | null;
+      publishedAt?: string | null;
+      publishedBy?: string | null;
+    } | null;
+  }>;
 };
 
 export type DatasetAssignmentDetailSample = {
@@ -183,6 +277,7 @@ export type DatasetAssignmentDetailResponse = {
     totalSamples: number;
   };
   assignee: ShareUser;
+  reviewAvailable?: boolean;
   submission: AssignmentSubmissionStatus;
   samples: DatasetAssignmentDetailSample[];
 };
@@ -877,7 +972,7 @@ export const apiService = {
         _id: string;
         name: string;
         type: 'hard' | 'soft';
-        upvoteCount: number;
+        assignedUserCount: number;
       } | null;
     }>;
   }> => {
@@ -917,6 +1012,69 @@ export const apiService = {
     return response.data;
   },
 
+  getDatasetVersionAssignmentDashboard: async (id: string): Promise<AssignmentDashboardResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/dashboard`);
+    return response.data;
+  },
+
+  getDatasetVersionAssignmentConflicts: async (
+    id: string,
+    params?: { status?: 'pending' | 'resolved'; assigneeId?: string; sampleIndex?: number; minAgreement?: number }
+  ): Promise<{ conflicts: AssignmentConflictItem[] }> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/conflicts`, { params });
+    return response.data;
+  },
+
+  getDatasetVersionAssignmentSampleComparison: async (
+    id: string,
+    sampleId: string
+  ): Promise<AssignmentSampleComparisonResponse> => {
+    const response = await api.get(`/dataprep/versions/${id}/assignments/samples/${sampleId}/comparison`);
+    return response.data;
+  },
+
+  resolveDatasetVersionAssignmentAdjudication: async (
+    id: string,
+    sampleId: string,
+    payload: {
+      targetScope: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+      finalLabels: string[];
+      note?: string;
+    }
+  ): Promise<{ message: string; adjudication: any }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/samples/${sampleId}/adjudications`, payload);
+    return response.data;
+  },
+
+  publishDatasetVersionAssignmentAdjudication: async (
+    id: string,
+    sampleId: string,
+    payload: {
+      targetScope: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+    }
+  ): Promise<{ message: string; adjudication: any }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/samples/${sampleId}/adjudications/publish`, payload);
+    return response.data;
+  },
+
+  autoPublishDatasetVersionAssignmentAdjudications: async (
+    id: string,
+    sampleId: string
+  ): Promise<{
+    message: string;
+    processedTargets: number;
+    publishedTargets: number;
+    skippedZeroIaaTargets: number;
+    skippedEmptyMajorityTargets: number;
+  }> => {
+    const response = await api.post(`/dataprep/versions/${id}/assignments/samples/${sampleId}/adjudications/auto-publish`);
+    return response.data;
+  },
+
   getDatasetVersionUserAssignmentDetail: async (
     id: string,
     userId: string
@@ -932,14 +1090,6 @@ export const apiService = {
 
   submitMyAssignment: async (id: string): Promise<AssignmentSubmissionStatus & { message: string }> => {
     const response = await api.post(`/dataprep/versions/${id}/assignments/me/submit`);
-    return response.data;
-  },
-
-  approveAssignmentSubmission: async (
-    id: string,
-    userId: string
-  ): Promise<AssignmentSubmissionStatus & { message: string }> => {
-    const response = await api.post(`/dataprep/versions/${id}/assignments/users/${userId}/approve`);
     return response.data;
   },
 
@@ -969,8 +1119,14 @@ export const apiService = {
 
   getSampleLabels: async (
     sampleId: string,
-    params?: { scope?: 'sample' | 'message' | 'all'; messageIndex?: number; createdBy?: string; contributedBy?: string; includeUnvoted?: boolean }
-  ): Promise<{ labels: any[] }> => {
+    params?: {
+      scope?: 'sample' | 'message' | 'all';
+      messageIndex?: number;
+      createdBy?: string;
+      contributedBy?: string;
+      visibilityMode?: 'default' | 'review';
+    }
+  ): Promise<{ labels: AggregatedLabel[] }> => {
     const response = await api.get(`/dataprep/samples/${sampleId}/labels`, { params });
     return response.data;
   },
@@ -986,19 +1142,26 @@ export const apiService = {
       targetTextSnapshot?: string;
     },
     fromCommunityHub = false
-  ): Promise<{ label: any }> => {
+  ): Promise<{ label: AggregatedLabel | undefined }> => {
     const response = await api.post(`/dataprep/samples/${sampleId}/labels`, payload, {
       params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
     });
     return response.data;
   },
 
-  voteSampleLabel: async (
-    labelId: string,
-    voteAction: 'up' | 'down',
+  removeSampleLabel: async (
+    sampleId: string,
+    payload: {
+      name: string;
+      type: 'hard' | 'soft';
+      targetScope?: 'sample' | 'message';
+      messageIndex?: number;
+      messageRole?: 'user' | 'assistant';
+    },
     fromCommunityHub = false
-  ): Promise<any> => {
-    const response = await api.post(`/dataprep/labels/${labelId}/votes`, { voteAction }, {
+  ): Promise<{ removed: boolean; name: string; type: 'hard' | 'soft'; targetScope: 'sample' | 'message'; messageIndex: number | null; messageRole: 'user' | 'assistant' | null }> => {
+    const response = await api.delete(`/dataprep/samples/${sampleId}/labels`, {
+      data: payload,
       params: fromCommunityHub ? { fromCommunityHub: 'true' } : undefined,
     });
     return response.data;

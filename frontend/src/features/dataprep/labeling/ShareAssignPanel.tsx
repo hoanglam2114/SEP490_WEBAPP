@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, ChevronLeft, ChevronRight, Eye, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Eye, Gauge, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { dataprepApi } from '../api/dataprepApi';
-import type { DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
+import type { AssignmentDashboardResponse, DatasetAssignmentsResponse, ShareUser } from '../../../services/api';
 import { AssignmentSubmissionDetailModal } from './AssignmentSubmissionDetailModal';
+import { AssignmentConflictComparisonModal } from './AssignmentConflictComparisonModal';
 
 type ShareAssignPanelProps = {
   versionId: string;
@@ -37,15 +38,26 @@ export function ShareAssignPanel({
   const [clearCount, setClearCount] = useState('20');
   const [conflictMessage, setConflictMessage] = useState('');
   const [reviewAssignee, setReviewAssignee] = useState<ShareUser | null>(null);
+  const [comparisonSampleId, setComparisonSampleId] = useState<string | null>(null);
+  const [resetConfirm, setResetConfirm] = useState<null | { type: 'range'; startIndex: number; count: number } | { type: 'user'; user: ShareUser }>(null);
 
   const assignmentsQuery = useQuery<DatasetAssignmentsResponse>({
     queryKey: ['dataset-version-assignments', versionId],
     queryFn: () => dataprepApi.getDatasetVersionAssignments(versionId),
     enabled: Boolean(versionId && canManage),
+    refetchInterval: 10000,
+  });
+
+  const dashboardQuery = useQuery<AssignmentDashboardResponse>({
+    queryKey: ['dataset-version-assignment-dashboard', versionId],
+    queryFn: () => dataprepApi.getDatasetVersionAssignmentDashboard(versionId),
+    enabled: Boolean(versionId && canManage),
+    refetchInterval: 10000,
   });
 
   const invalidateAssignments = () => {
     queryClient.invalidateQueries({ queryKey: ['dataset-version-assignments', versionId] });
+    queryClient.invalidateQueries({ queryKey: ['dataset-version-assignment-dashboard', versionId] });
   };
 
   const assignMutation = useMutation({
@@ -95,21 +107,12 @@ export function ShareAssignPanel({
     },
   });
 
-  const approveMutation = useMutation({
-    mutationFn: (userId: string) => dataprepApi.approveAssignmentSubmission(versionId, userId),
-    onSuccess: (payload) => {
-      toast.success(payload.message || 'Approved assignment submission.');
-      invalidateAssignments();
-    },
-    onError: (error: any) => {
-      toast.error(error?.response?.data?.error || error?.message || 'Approve submission failed.');
-    },
-  });
-
   const samples = assignmentsQuery.data?.samples || [];
-  const totals = assignmentsQuery.data?.totals || { totalSamples: 0, assigned: 0, unassigned: 0 };
+  const totals = assignmentsQuery.data?.totals || { totalSamples: 0, assigned: 0, unassigned: 0, pendingConflicts: 0 };
   const summary = assignmentsQuery.data?.summary || [];
   const isRefreshingAssignments = assignmentsQuery.isFetching && !assignmentsQuery.isLoading;
+  const dashboard = dashboardQuery.data;
+  const conflicts = dashboard?.conflicts || [];
 
   const selectedRangeLabel = useMemo(() => {
     const start = Number(startIndex);
@@ -127,6 +130,10 @@ export function ShareAssignPanel({
     Number.isInteger(Number(count)) &&
     Number(count) >= 1
   );
+  const canResetRange = Number.isInteger(Number(clearStartIndex))
+    && Number(clearStartIndex) >= 1
+    && Number.isInteger(Number(clearCount))
+    && Number(clearCount) >= 1;
 
   if (!canManage) {
     return (
@@ -188,6 +195,37 @@ export function ShareAssignPanel({
         </div>
       </div>
 
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-7">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Assigned</p>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{dashboard?.overview.totalAssignedSamples ?? totals.assigned}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Assignees</p>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{dashboard?.overview.totalAssignees ?? summary.length}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">In Progress</p>
+          <p className="mt-2 text-2xl font-bold text-amber-700">{dashboard?.overview.inProgressAssignees ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Submitted</p>
+          <p className="mt-2 text-2xl font-bold text-blue-700">{dashboard?.overview.submittedAssignees ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved Decisions</p>
+          <p className="mt-2 text-2xl font-bold text-violet-700">{dashboard?.overview.savedDecisionCount ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Needs Review</p>
+          <p className="mt-2 text-2xl font-bold text-rose-700">{dashboard?.overview.pendingConflicts ?? totals.pendingConflicts ?? 0}</p>
+        </div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Published</p>
+          <p className="mt-2 text-2xl font-bold text-emerald-700">{dashboard?.overview.publishedDecisionCount ?? 0}</p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4">
           <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -225,19 +263,32 @@ export function ShareAssignPanel({
           </section>
 
           <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-semibold text-slate-900">Clear Range</h3>
+            <h3 className="text-sm font-semibold text-slate-900">Reset Assignment Range</h3>
             <div className="mt-4 grid grid-cols-2 gap-2">
               <input value={clearStartIndex} onChange={(event) => setClearStartIndex(event.target.value)} className="h-10 rounded-lg border border-slate-300 px-3 text-sm" placeholder="Start" />
               <input value={clearCount} onChange={(event) => setClearCount(event.target.value)} className="h-10 rounded-lg border border-slate-300 px-3 text-sm" placeholder="Count" />
             </div>
+            <p className="mt-3 text-xs text-slate-500">
+              Reset sẽ xóa assignment, submission, labels, activity và conflict/final labels liên quan trong phạm vi này.
+            </p>
             <button
               type="button"
-              onClick={() => clearRangeMutation.mutate()}
+              onClick={() => {
+                if (!canResetRange) {
+                  toast.error('Start và Count phải là số nguyên dương.');
+                  return;
+                }
+                setResetConfirm({
+                  type: 'range',
+                  startIndex: Number(clearStartIndex),
+                  count: Number(clearCount),
+                });
+              }}
               disabled={clearRangeMutation.isPending}
               className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
               {clearRangeMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Clear
+              Reset Assignment
             </button>
           </section>
 
@@ -267,19 +318,17 @@ export function ShareAssignPanel({
                     </div>
                     <button
                       type="button"
-                      onClick={() => clearUserMutation.mutate(item.user.id)}
+                      onClick={() => setResetConfirm({ type: 'user', user: item.user })}
                       disabled={clearUserMutation.isPending}
                       className="rounded-lg border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 disabled:opacity-60"
-                      title="Clear this user's assignments"
+                      title="Reset this user's assignments"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                   <p className="mt-1 text-[11px] font-medium text-slate-600">{item.count} samples: {item.ranges.join(', ') || '-'}</p>
                   <div className="mt-2 flex items-center justify-between gap-2">
-                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${item.submission?.status === 'approved'
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                      : item.submission?.status === 'submitted'
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${item.submission?.status === 'submitted'
                         ? 'border-blue-200 bg-blue-50 text-blue-700'
                         : 'border-slate-200 bg-slate-50 text-slate-600'
                       }`}
@@ -287,26 +336,27 @@ export function ShareAssignPanel({
                       {item.submission?.status || 'draft'} · {item.submission?.progress?.completedMessages || 0}/{item.submission?.progress?.requiredMessages || 0}
                     </span>
                     <div className="flex items-center gap-2">
+                      {!item.reviewAvailable && (
+                        <span className="text-[10px] font-medium text-slate-400">
+                          Review available after submit
+                        </span>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setReviewAssignee(item.user)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
-                        title="View assignment labeling detail"
+                        onClick={() => {
+                          if (!item.reviewAvailable) {
+                            toast.error('Owner chỉ có thể review sau khi assignee submit kết quả.');
+                            return;
+                          }
+                          setReviewAssignee(item.user);
+                        }}
+                        disabled={!item.reviewAvailable}
+                        className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                        title={item.reviewAvailable ? 'View assignment labeling detail' : 'Review available after submit'}
                       >
                         <Eye className="h-3 w-3" />
                         View
                       </button>
-                      {item.submission?.status === 'submitted' && (
-                        <button
-                          type="button"
-                          onClick={() => approveMutation.mutate(item.user.id)}
-                          disabled={approveMutation.isPending}
-                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
-                        >
-                          {approveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
-                          Approve
-                        </button>
-                      )}
                     </div>
                   </div>
                   {item.submission?.submittedAt && (
@@ -317,6 +367,67 @@ export function ShareAssignPanel({
                 </div>
               ))}
               {!summary.length && <p className="text-xs text-slate-500">No assignments yet.</p>}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-blue-600" />
+              <h3 className="text-sm font-semibold text-slate-900">Realtime Productivity</h3>
+            </div>
+            <div className="mt-3 space-y-2">
+              {(dashboard?.users || []).map((item) => (
+                <div key={item.user.id} className="rounded-lg border border-slate-200 px-3 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-900">{item.user.name}</p>
+                      <p className="truncate text-[11px] text-slate-500">{item.user.email}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                      {item.labelsPerHour} label/h
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-600">
+                    {item.completedTargets}/{item.totalTargets} targets · {item.completionPercent}% · {item.assignedSamples} samples
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Latest: {item.latestActivityAt ? new Date(item.latestActivityAt).toLocaleString() : 'No activity yet'}
+                  </p>
+                </div>
+              ))}
+              {!dashboard?.users?.length && <p className="text-xs text-slate-500">No productivity data yet.</p>}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-rose-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-rose-600" />
+              <h3 className="text-sm font-semibold text-slate-900">Conflict Review Queue</h3>
+            </div>
+            <div className="mt-3 space-y-2">
+              {conflicts.map((item) => (
+                <button
+                  key={item.sampleId}
+                  type="button"
+                  onClick={() => setComparisonSampleId(item.sampleId)}
+                  className="w-full rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-left hover:bg-rose-100"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-rose-900">#{item.sampleIndex} · {item.sampleKey}</p>
+                    <span className={`rounded-full border bg-white px-2 py-0.5 text-[10px] font-semibold ${
+                      item.status === 'resolved_unpublished'
+                        ? 'border-violet-200 text-violet-700'
+                        : 'border-rose-200 text-rose-700'
+                    }`}>
+                      {item.status === 'resolved_unpublished' ? 'decision saved' : `${item.pendingAdjudicationCount} pending`}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-rose-700">
+                    IAA {typeof item.agreementScore === 'number' ? item.agreementScore.toFixed(2) : 'N/A'} · {item.assigneeCount} annotators
+                  </p>
+                </button>
+              ))}
+              {!conflicts.length && <p className="text-xs text-slate-500">No conflicts detected.</p>}
             </div>
           </section>
         </div>
@@ -333,11 +444,28 @@ export function ShareAssignPanel({
               </div>
             )}
             {!assignmentsQuery.isLoading && samples.map((sample) => (
-              <div key={sample.sampleId} className="grid grid-cols-[70px_1fr_220px] gap-3 border-b border-slate-100 px-4 py-3 text-sm">
+              <div key={sample.sampleId} className={`grid grid-cols-[70px_1fr_220px] gap-3 border-b px-4 py-3 text-sm ${sample.hasConflict ? 'border-rose-100 bg-rose-50/40' : 'border-slate-100'}`}>
                 <span className="font-semibold text-slate-600">#{sample.sampleIndex}</span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold text-slate-800">{sample.sampleKey}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-xs font-semibold text-slate-800">{sample.sampleKey}</p>
+                    {sample.hasConflict && (
+                      <button
+                        type="button"
+                        onClick={() => setComparisonSampleId(sample.sampleId)}
+                        className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
+                      >
+                        <AlertTriangle className="h-3 w-3" />
+                        Conflict
+                      </button>
+                    )}
+                  </div>
                   <p className="mt-1 line-clamp-2 text-xs text-slate-500">{sample.preview || '-'}</p>
+                  {sample.hasConflict && (
+                    <p className="mt-1 text-[10px] text-rose-600">
+                      IAA {typeof sample.lowestAgreementScore === 'number' ? sample.lowestAgreementScore.toFixed(2) : 'N/A'} · {sample.pendingAdjudicationCount || 0} pending adjudication
+                    </p>
+                  )}
                 </div>
                 <div className="min-w-0 text-right">
                   {sample.assignees && sample.assignees.length > 0 ? (
@@ -385,6 +513,58 @@ export function ShareAssignPanel({
         assignee={reviewAssignee}
         onClose={() => setReviewAssignee(null)}
       />
+      <AssignmentConflictComparisonModal
+        isOpen={Boolean(comparisonSampleId)}
+        versionId={versionId}
+        sampleId={comparisonSampleId}
+        onClose={() => setComparisonSampleId(null)}
+        onResolved={() => {
+          invalidateAssignments();
+          dashboardQuery.refetch();
+        }}
+      />
+      {resetConfirm && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-base font-semibold text-slate-900">Confirm Reset Assignment</h3>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600">
+              {resetConfirm.type === 'range'
+                ? `Reset assignment range #${resetConfirm.startIndex}-${resetConfirm.startIndex + resetConfirm.count - 1}.`
+                : `Reset all assignments of ${resetConfirm.user.name || resetConfirm.user.email}.`}
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-rose-600">
+              Thao tác này sẽ xóa assignment, submission, labels, activity, conflict labels và cả previously published final labels của các sample bị ảnh hưởng. Nếu assign lại sau đó, assignee sẽ phải gán nhãn từ đầu.
+            </p>
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setResetConfirm(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (resetConfirm.type === 'range') {
+                    clearRangeMutation.mutate(undefined, {
+                      onSettled: () => setResetConfirm(null),
+                    });
+                    return;
+                  }
+                  clearUserMutation.mutate(resetConfirm.user.id, {
+                    onSettled: () => setResetConfirm(null),
+                  });
+                }}
+                disabled={clearRangeMutation.isPending || clearUserMutation.isPending}
+                className="rounded-lg border border-rose-200 bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+              >
+                {clearRangeMutation.isPending || clearUserMutation.isPending ? 'Resetting...' : 'Confirm Reset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
